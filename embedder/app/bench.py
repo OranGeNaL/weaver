@@ -1,4 +1,4 @@
-"""Speed and memory of the real model on library files:
+"""Speed and memory of the real model on library files on a Linux host:
 docker compose run --rm embedder python -m app.bench --songs 64 [--device cpu|cuda]"""
 
 import argparse
@@ -47,19 +47,24 @@ async def main() -> None:
     t = time.monotonic()
     model.embed_text(["energetic russian rock with male vocals"])
     t_text = time.monotonic() - t
-    print(json.dumps({
-        "device": model.device,
-        "gpu": torch.cuda.get_device_name() if model.device == "cuda" else None,
-        "songs": len(wavs),
-        "clip_s": s.clip_s,
-        "batch": s.batch,
-        "load_s": round(t_load, 1),
-        "decode_songs_per_s": round(len(wavs) / t_decode, 1),
-        "model_songs_per_s": round(len(wavs) / t_model, 2),
-        "text_s": round(t_text, 3),
-        "gpu_peak_mb": round(torch.cuda.max_memory_allocated() / 2**20) if model.device == "cuda" else None,
-        "ram_peak_mb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024),
-    }, indent=1))
+    print(
+        json.dumps(
+            {
+                "device": model.device,
+                "gpu": torch.cuda.get_device_name() if model.device == "cuda" else None,
+                "songs": len(wavs),
+                "clip_s": s.clip_s,
+                "batch": s.batch,
+                "load_s": round(t_load, 1),
+                "decode_songs_per_s": round(len(wavs) / t_decode, 1),
+                "model_songs_per_s": round(len(wavs) / t_model, 2),
+                "text_s": round(t_text, 3),
+                "gpu_peak_mb": round(torch.cuda.max_memory_allocated() / 2**20) if model.device == "cuda" else None,
+                "ram_peak_mb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024),
+            },
+            indent=1,
+        )
+    )
 
 
 if __name__ == "__main__":

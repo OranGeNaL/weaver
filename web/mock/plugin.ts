@@ -48,6 +48,9 @@ const TITLES = ['Демоны', 'Где ты', 'Перезаряжай', 'Не �
 
 function albumOut(i: number, artist = ARTISTS[0]) {
   const r = RELEASES[i];
+  let ownedCount = 0;
+  if (r.owned === 'full') ownedCount = r.n;
+  else if (r.owned === 'partial') ownedCount = Math.ceil(r.n / 2);
   return {
     ref: `dz:${100 + i}`,
     source: 'dz',
@@ -63,7 +66,7 @@ function albumOut(i: number, artist = ARTISTS[0]) {
     nb_tracks: r.n,
     explicit: r.explicit ?? false,
     owned_status: r.owned,
-    owned_count: r.owned === 'full' ? r.n : r.owned === 'partial' ? Math.ceil(r.n / 2) : 0,
+    owned_count: ownedCount,
     genre: 'Rock',
   };
 }
@@ -165,7 +168,10 @@ const ndArtistIds = new Map<string, string>();
 const ndArtistId = (name: string) => {
   if (!ndArtistIds.size) for (const n of [...libAlbums.map((a) => a.album_artist), ...WAVE_ARTISTS]) if (!ndArtistIds.has(n)) ndArtistIds.set(n, `ndar${ndArtistIds.size + 1}`);
   let id = ndArtistIds.get(name);
-  if (!id) ndArtistIds.set(name, (id = `ndar${ndArtistIds.size + 1}`));
+  if (!id) {
+    id = `ndar${ndArtistIds.size + 1}`;
+    ndArtistIds.set(name, id);
+  }
   return id;
 };
 
@@ -211,42 +217,59 @@ const ndSong = (id: string) => libTracks.find((t) => `nd${t.id}` === id);
 type DL = Json & { id: number; batch_id: number; status: string; progress: number; artist: string; title: string; ref?: string };
 let dlSeq = 300;
 let batchSeq = 40;
-const hitmozCand = (artist: string, title: string, i: number) => ({
-  provider: i === 2 ? 'ytdlp' : i === 1 ? 'hitmos_fm' : 'hitmoz',
-  provider_id: `${i}-${title}`,
-  artist,
-  title: i === 0 ? title : `${title}${i === 1 ? ' (Explicit)' : ' (Live)'}`,
-  duration_s: 200 + i * 4,
-  bitrate_kbps: i === 2 ? 160 : 320,
-  explicit: i !== 2,
-  upload_date: i === 0 ? '2024-05-11' : i === 1 ? '2026-04-02' : null,
-  page_url: i === 2 ? 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' : 'https://ru.hitmoz.org/song/123',
-  cover_url: cover(title),
-  album: i === 0 ? 'Магнит' : null,
-  year: i === 0 ? 2023 : null,
-  score: 0.95 - i * 0.12,
-  extra: i === 1 ? { full_title: `${title} (Soundtrack Version (Explicit))` } : {},
-});
+const hitmozCand = (artist: string, title: string, i: number) => {
+  let provider = 'hitmoz';
+  if (i === 2) provider = 'ytdlp';
+  else if (i === 1) provider = 'hitmos_fm';
+  let uploadDate: string | null = null;
+  if (i === 0) uploadDate = '2024-05-11';
+  else if (i === 1) uploadDate = '2026-04-02';
+  const variant = i === 1 ? ' (Explicit)' : ' (Live)';
+  return {
+    provider,
+    provider_id: `${i}-${title}`,
+    artist,
+    title: i === 0 ? title : `${title}${variant}`,
+    duration_s: 200 + i * 4,
+    bitrate_kbps: i === 2 ? 160 : 320,
+    explicit: i !== 2,
+    upload_date: uploadDate,
+    page_url: i === 2 ? 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' : 'https://ru.hitmoz.org/song/123',
+    cover_url: cover(title),
+    album: i === 0 ? 'Магнит' : null,
+    year: i === 0 ? 2023 : null,
+    score: 0.95 - i * 0.12,
+    extra: i === 1 ? { full_title: `${title} (Soundtrack Version (Explicit))` } : {},
+  };
+};
 // re-uploads by small channels: titled "(без цензуры)", an old SoundCloud copy, a copy titled "(без мата)"
-const reuploadCand = (artist: string, title: string, i: number) => ({
-  provider: i === 1 ? 'soundcloud' : 'yt_reupload',
-  provider_id: `r${i}-${title}`,
-  artist,
-  title,
-  duration_s: 154 + i,
-  bitrate_kbps: i === 1 ? 160 : 129,
-  explicit: i === 0 ? true : i === 2 ? false : null,
-  upload_date: i === 1 ? '2023-10-23' : '2026-06-27',
-  page_url: i === 1 ? 'https://soundcloud.com/user/track' : 'https://www.youtube.com/watch?v=voSx7C0LyhQ',
-  cover_url: cover(title),
-  score: 0.98 - i * 0.04,
-  extra: {
-    reupload: true,
-    channel: ['Олег Овощенский', 'пук хрюк', 'music_hub'][i],
-    original_title: [`${title} – ${artist} (без цензуры)`, `${artist} - ${title}`, `${artist} - ${title} (БЕЗ МАТА)`][i],
-    ...(i === 0 ? { uncensored: true } : i === 2 ? { uncensored: false } : {}),
-  },
-});
+const reuploadCand = (artist: string, title: string, i: number) => {
+  let explicit: boolean | null = null;
+  if (i === 0) explicit = true;
+  else if (i === 2) explicit = false;
+  const uncensored: { uncensored?: boolean } = {};
+  if (i === 0) uncensored.uncensored = true;
+  else if (i === 2) uncensored.uncensored = false;
+  return {
+    provider: i === 1 ? 'soundcloud' : 'yt_reupload',
+    provider_id: `r${i}-${title}`,
+    artist,
+    title,
+    duration_s: 154 + i,
+    bitrate_kbps: i === 1 ? 160 : 129,
+    explicit,
+    upload_date: i === 1 ? '2023-10-23' : '2026-06-27',
+    page_url: i === 1 ? 'https://soundcloud.com/user/track' : 'https://www.youtube.com/watch?v=voSx7C0LyhQ',
+    cover_url: cover(title),
+    score: 0.98 - i * 0.04,
+    extra: {
+      reupload: true,
+      channel: ['Олег Овощенский', 'пук хрюк', 'music_hub'][i],
+      original_title: [`${title} – ${artist} (без цензуры)`, `${artist} - ${title}`, `${artist} - ${title} (БЕЗ МАТА)`][i],
+      ...uncensored,
+    },
+  };
+};
 
 let downloads: DL[] = [
   { id: 201, batch_id: 31, status: 'downloading', progress: 0.42, artist: 'Кино', title: 'Звезда по имени Солнце', album: 'Звезда по имени Солнце', provider: 'hitmoz', warnings: [], chosen: hitmozCand('Кино', 'Звезда по имени Солнце', 0) },
@@ -398,7 +421,9 @@ function enqueue(items: Array<{ artist: string; title: string; album?: string | 
     emit('download', dlOut(d));
     return [d];
   });
-  created.forEach((d, i) => setTimeout(() => simulate(d), i * 2500));
+  created.forEach((d, i) => {
+    setTimeout(() => simulate(d), i * 2500);
+  });
   return { batch_id, queued: created.length + joined, already_owned: 0, expanding: false };
 }
 
@@ -414,6 +439,14 @@ let imps: Imp[] = [];
 
 const IMP_NAMES = ['Кукушка', 'Группа крови', 'Звезда по имени Солнце', 'Хочешь?', 'Мотылёк', 'Демоны', 'Где ты', 'Кассета', 'Искала', 'Прогулка', 'Город золотой', 'Осень', 'Ветер', 'Луна', 'Нет такого трека'];
 const IMP_ARTISTS = ['Кино', 'Земфира', 'Три дня дождя', 'ДДТ', 'Аквариум', 'Мона'];
+
+function importMatch(kind: string, i: number, k: number): string {
+  if (kind === 'artists') return i === 2 ? 'not_found' : 'exact';
+  if (k === 14 || i % 11 === 5) return 'not_found';
+  if (i % 9 === 4) return 'probable';
+  if (i % 4 === 0) return 'owned';
+  return 'exact';
+}
 
 function newImport(method: string, account: string | null): Imp {
   const id = ++impSeq;
@@ -432,11 +465,11 @@ function newImport(method: string, account: string | null): Imp {
     for (let i = 0; i < n; i++) {
       const k = (i * 7 + c.id) % IMP_NAMES.length;
       const artist = IMP_ARTISTS[(i + c.id) % IMP_ARTISTS.length];
-      const match = c.kind === 'artists' ? (i === 2 ? 'not_found' : 'exact') : k === 14 || i % 11 === 5 ? 'not_found' : i % 9 === 4 ? 'probable' : i % 4 === 0 ? 'owned' : 'exact';
+      const match = importMatch(c.kind, i, k);
       const base = { id: ++impItemSeq, collection_id: c.id, position: i, artist, nd: match === 'owned' ? `nd${5001 + (i % 3)}` : null };
       if (c.kind === 'albums') items.push({ ...base, kind: 'album', title: RELEASES[i].title, album: null, duration_s: null, cover_url: cover(RELEASES[i].title), ref: `dz:${100 + i}`, match: i === 2 ? 'owned' : 'exact', nd: null });
       else if (c.kind === 'artists') items.push({ ...base, kind: 'artist', artist: '', title: ARTISTS[i].name, album: null, duration_s: null, cover_url: ARTISTS[i].picture_url, ref: match === 'exact' ? ARTISTS[i].ref : null, match });
-      else items.push({ ...base, kind: 'track', title: IMP_NAMES[k], album: 'Альбом ' + artist, duration_s: 160 + ((i * 29) % 140), cover_url: cover(IMP_NAMES[k]), ref: match === 'not_found' ? null : `dz:${1000 + (i % 8) * 100 + 1 + (i % 5)}`, match });
+      else items.push({ ...base, kind: 'track', title: IMP_NAMES[k], album: `Альбом ${artist}`, duration_s: 160 + ((i * 29) % 140), cover_url: cover(IMP_NAMES[k]), ref: match === 'not_found' ? null : `dz:${1000 + (i % 8) * 100 + 1 + (i % 5)}`, match });
     }
   }
   return { id, method, account, mode: 'economy', keep_token: false, download_albums: false, has_token: method !== 'profile', created: Date.now(), started: null, cancelled: false, colls, items };
@@ -560,10 +593,12 @@ function mockFavorite(target: FavoriteTarget, liked: boolean, eventId: string, t
   const aliases = [...(target.ref ? [`ref:${target.ref}`] : []), ...(id ? [`nd:${id}`] : [])];
   const previous = [...favoriteSubjects.values()].find((s) => s.target_type === target.target_type && s.aliases.some((a) => aliases.includes(a)));
   const key = previous?.key ?? `${target.target_type}:${aliases[0]}`;
+  let likedSince: string | null = null;
+  if (liked) likedSince = previous?.liked ? (previous.liked_since ?? ts) : ts;
   const subject: FavoriteSubject = {
     target_type: target.target_type, key, ref: target.ref ?? previous?.ref, nd_id: id ?? previous?.nd_id,
     aliases: [...new Set([...(previous?.aliases ?? []), ...aliases])], liked, event_id: eventId,
-    liked_since: liked ? (previous?.liked ? previous.liked_since : ts) : null,
+    liked_since: likedSince,
     provenance: 'own', target_data: target.target_data,
   };
   favoriteSubjects.set(key, subject);
@@ -683,14 +718,24 @@ function listenPick(ref: string): Promise<Json | null> {
       const t = trackByRef(ref);
       const preview = ref === 'dz:1304';
       const yt = Number(ref.slice(3)) % 2 === 1;
+      let kind: 'library' | 'preview' | 'full';
+      if (t.owned) kind = 'library';
+      else if (preview) kind = 'preview';
+      else kind = 'full';
+      let provider: string | null = null;
+      let bitrate: number | null = null;
+      if (!preview && !t.owned) {
+        provider = yt ? 'ytdlp' : 'hitmoz';
+        bitrate = yt ? 130 : 320;
+      }
       return {
         ref,
-        kind: t.owned ? 'library' : preview ? 'preview' : 'full',
+        kind,
         artist: t.artist,
         title: t.title,
         duration_s: preview ? 30 : t.duration_s,
-        provider: preview || t.owned ? null : yt ? 'ytdlp' : 'hitmoz',
-        bitrate_kbps: preview || t.owned ? null : yt ? 130 : 320,
+        provider,
+        bitrate_kbps: bitrate,
         page_url: null,
         nd_song_id: t.owned ? t.nd_song_id : null,
         stream_url: `/api/listen/stream?ref=${encodeURIComponent(ref)}`,
@@ -730,7 +775,10 @@ function sendRange(req: IncomingMessage, res: ServerResponse, body: Buffer, type
 function send(res: ServerResponse, status: number, body?: unknown, type = 'application/json; charset=utf-8') {
   res.statusCode = status;
   res.setHeader('Content-Type', type);
-  res.end(body === undefined ? '' : typeof body === 'string' ? body : JSON.stringify(body));
+  let payload = '';
+  if (typeof body === 'string') payload = body;
+  else if (body !== undefined) payload = JSON.stringify(body);
+  res.end(payload);
 }
 
 async function readBody(req: IncomingMessage): Promise<Buffer> {
@@ -752,8 +800,11 @@ function multipartFiles(buf: Buffer): Array<{ field: string; filename: string; s
   const text = buf.toString('latin1');
   const out: Array<{ field: string; filename: string; size: number }> = [];
   const re = /name="([^"]+)"; filename="([^"]*)"/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text))) out.push({ field: m[1], filename: Buffer.from(m[2], 'latin1').toString('utf8'), size: Math.round(buf.length / 1.0) });
+  let m = re.exec(text);
+  while (m) {
+    out.push({ field: m[1], filename: Buffer.from(m[2], 'latin1').toString('utf8'), size: Math.round(buf.length / 1.0) });
+    m = re.exec(text);
+  }
   return out;
 }
 
@@ -926,7 +977,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
     const b = await readJson(req);
     if (!b.username || b.password !== 'test') return send(res, 401, { detail: 'Неверный логин или пароль' }), true;
     res.setHeader('Set-Cookie', 'hm_session=mock; Path=/; HttpOnly; SameSite=Lax');
-    return send(res, 200, { id: 1, username: String(b.username), is_admin: true, public_music_url: 'https://203.0.113.10:8444' }), true;
+    return send(res, 200, { id: 1, username: String(b.username), is_admin: true, public_music_url: 'https://navidrome.example.net' }), true;
   }
   if (p === '/api/auth/options') return send(res, 200, { invites: true, email_signup: true, google_client_id: null }), true;
   // email registration: the letter's code is always 123456
@@ -940,7 +991,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
     if (String(b.code ?? '').replace(/\D/g, '') !== '123456') return send(res, 400, { detail: 'Неверный код: осталось попыток — 4' }), true;
     if (String(b.password ?? '').length < 6) return send(res, 400, { detail: 'Пароль — не короче 6 символов' }), true;
     res.setHeader('Set-Cookie', 'hm_session=mock; Path=/; HttpOnly; SameSite=Lax');
-    return send(res, 200, { id: 6, username: String(b.username), is_admin: false, email: String(b.email).trim().toLowerCase(), public_music_url: 'https://203.0.113.10:8444' }), true;
+    return send(res, 200, { id: 6, username: String(b.username), is_admin: false, email: String(b.email).trim().toLowerCase(), public_music_url: 'https://navidrome.example.net' }), true;
   }
   if (p === '/api/auth/register' && m === 'POST') {
     const b = await readJson(req);
@@ -950,7 +1001,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
     if (String(b.password ?? '').length < 6) return send(res, 400, { detail: 'Пароль — не короче 6 символов' }), true;
     Object.assign(inv, { status: 'used', used_at: now().slice(0, 19), used_by: String(b.username) });
     res.setHeader('Set-Cookie', 'hm_session=mock; Path=/; HttpOnly; SameSite=Lax');
-    return send(res, 200, { id: 5, username: String(b.username), is_admin: false, public_music_url: 'https://203.0.113.10:8444' }), true;
+    return send(res, 200, { id: 5, username: String(b.username), is_admin: false, public_music_url: 'https://navidrome.example.net' }), true;
   }
   if (!authed) return send(res, 401, { detail: 'Требуется вход' }), true;
 
@@ -1013,7 +1064,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
     return send(res, 200, { ok: true }), true;
   }
 
-  if (p === '/api/auth/me') return send(res, 200, { id: 1, username: 'owner', is_admin: true, public_music_url: 'https://203.0.113.10:8444', public_hub_url: 'https://203.0.113.10:8445' }), true;
+  if (p === '/api/auth/me') return send(res, 200, { id: 1, username: 'owner', is_admin: true, public_music_url: 'https://navidrome.example.net', public_hub_url: 'https://hub.example.net' }), true;
   if (p === '/api/auth/logout') {
     res.setHeader('Set-Cookie', 'hm_session=; Path=/; Max-Age=0');
     return send(res, 200, { ok: true }), true;
@@ -1166,7 +1217,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
     if (!pick) return send(res, 404, { detail: ref.startsWith('file:') ? 'Файл не найден: повторите поиск' : 'Трек не нашёлся ни в одном источнике' }), true;
     if (p === '/api/listen') return send(res, 200, pick), true;
     let audio = listenAudio.get(ref);
-    if (!audio) listenAudio.set(ref, (audio = wav(Number(pick.duration_s) || 30, String(pick.title))));
+    if (!audio) {
+      audio = wav(Number(pick.duration_s) || 30, String(pick.title));
+      listenAudio.set(ref, audio);
+    }
     return sendRange(req, res, audio, 'audio/wav'), true;
   }
 
@@ -1614,10 +1668,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
   if (p === '/api/assistant/tasks' && m === 'POST') {
     const ct = req.headers['content-type'] ?? '';
     const body = ct.includes('json') ? await readJson(req) : (await readBody(req), {});
+    let inputKind: 'images' | 'link' | 'text' = 'text';
+    if (ct.includes('multipart')) inputKind = 'images';
+    else if (body.url) inputKind = 'link';
     const task: Task = {
       id: ++taskSeq,
       status: 'queued',
-      input_kind: ct.includes('multipart') ? 'images' : body.url ? 'link' : 'text',
+      input_kind: inputKind,
       context: {},
       rows: [],
       suggested_playlist_name: null,
@@ -1633,7 +1690,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
       }, ms);
     step(600, { status: 'extracting' });
     step(2500, { status: 'resolving', source_app: 'yandex_music', page_type: 'playlist' });
-    step(4500, { status: 'awaiting_confirmation', rows: assistantRows(), confirm_token: 'tok' + task.id, suggested_playlist_name: 'Вечерний плейлист', context: { playlist_name: 'Вечерний плейлист' } });
+    step(4500, { status: 'awaiting_confirmation', rows: assistantRows(), confirm_token: `tok${task.id}`, suggested_playlist_name: 'Вечерний плейлист', context: { playlist_name: 'Вечерний плейлист' } });
     return send(res, 200, task), true;
   }
   if (p === '/api/assistant/chats' && m === 'GET') {

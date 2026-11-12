@@ -1,5 +1,5 @@
 """The model on demand (loaded lazily, unloaded when idle) and the queue worker: download/decode the next batch
-while the current one is on the GPU."""
+while the current one is on the GPU; the same worker runs on a CPU-only Linux host."""
 
 import asyncio
 import logging
@@ -105,8 +105,13 @@ class Worker:
         async with self._sem:
             try:
                 return await audio.load(
-                    self.client, it.kind, it.source, music_root=self.s.music_root, sr=self.sr,
-                    clip_s=self.s.clip_s, max_bytes=self.s.max_download_mb * 2**20,
+                    self.client,
+                    it.kind,
+                    it.source,
+                    music_root=self.s.music_root,
+                    sr=self.sr,
+                    clip_s=self.s.clip_s,
+                    max_bytes=self.s.max_download_mb * 2**20,
                 )
             except audio.AudioError as e:
                 self._fail(it.key, str(e), retry=e.retry)
@@ -145,7 +150,11 @@ class Worker:
         self.stats.last_rate = len(p.items) / dt if dt > 0 else None
         log.info(
             "embedded %d in %.2f s on %s (%.1f songs/s; fetch+decode %.2f s)",
-            len(p.items), dt, getattr(self.engine.model, "device", "?"), self.stats.last_rate or 0, p.seconds_fetch,
+            len(p.items),
+            dt,
+            getattr(self.engine.model, "device", "?"),
+            self.stats.last_rate or 0,
+            p.seconds_fetch,
         )
 
     async def step(self) -> int:
@@ -193,7 +202,12 @@ class Worker:
 
     async def _idle(self) -> None:
         idle = self.s.idle_unload_s
-        if idle and self.engine.model and time.monotonic() - self.engine.last_used >= idle and not self.engine.busy.locked():
+        if (
+            idle
+            and self.engine.model
+            and time.monotonic() - self.engine.last_used >= idle
+            and not self.engine.busy.locked()
+        ):
             await self.engine.unload()
         self.wake.clear()
         if self.store.pending():  # queued between the check and clear()

@@ -1,9 +1,6 @@
 # secrets and local config
 .env
 config.yaml
-gateway/tunnel/tunnel_key
-gateway/tunnel/tunnel_key.pub
-gateway/tunnel/known_hosts
 .youtube-cookies.txt
 
 # python

@@ -3,13 +3,20 @@
 import hashlib
 import threading
 from dataclasses import dataclass
+from typing import Protocol
 
 import numpy as np
 
-from .db import Store
-
 EPS = 1e-12
 MAX_DIM = 4096
+
+
+class SnapshotStore(Protocol):
+    """What `Geometry.current` needs: one atomic revision of the vectors."""
+
+    version: int
+
+    def geometry_snapshot(self, model: str) -> tuple[int, list[tuple[str, np.ndarray]]]: ...
 
 
 def unit(v: np.ndarray) -> np.ndarray | None:
@@ -20,6 +27,7 @@ def unit(v: np.ndarray) -> np.ndarray | None:
 @dataclass(frozen=True)
 class Axes:
     """Two principal axes of a set of centered vectors (for the 2D map, MIXES.md 4.2 `/v2/project`)."""
+
     mean: np.ndarray
     axes: np.ndarray  # (dim, 2)
     explained: tuple[float, float]
@@ -42,7 +50,7 @@ class Geometry:
     def __init__(self):
         self._lock = threading.Lock()
         self._space: Space | None = None
-        self._store: Store | None = None
+        self._store: SnapshotStore | None = None
         self._axes: tuple[str, Axes] | None = None  # the "global" axes of the one retained snapshot
 
     def clear(self):
@@ -61,9 +69,13 @@ class Geometry:
             self._axes = (space.space_id, fitted)
         return fitted
 
-    def current(self, store: Store, model: str) -> Space:
+    def current(self, store: SnapshotStore, model: str) -> Space:
         with self._lock:
-            if self._store is store and self._space and (self._space.model, self._space.revision) == (model, store.version):
+            if (
+                self._store is store
+                and self._space
+                and (self._space.model, self._space.revision) == (model, store.version)
+            ):
                 return self._space
             revision, rows = store.geometry_snapshot(model)
             # A model has one dimension; reject corrupt minority dimensions deterministically.
@@ -72,8 +84,7 @@ class Geometry:
                 if 0 < len(v) <= MAX_DIM and np.isfinite(v).all():
                     sizes[len(v)] = sizes.get(len(v), 0) + 1
             dim = min(sizes, key=lambda d: (-sizes[d], d)) if sizes else None
-            good = [(k, v.astype(np.float64)) for k, v in rows
-                    if len(v) == dim and np.isfinite(v).all()]
+            good = [(k, v.astype(np.float64)) for k, v in rows if len(v) == dim and np.isfinite(v).all()]
             invalid = frozenset(k for k, _ in rows) - {k for k, _ in good}
             digest = hashlib.sha256(b"homemusic-centered-v2\0" + model.encode())
             # Content identity also survives restarts (the in-memory revision does not).
@@ -92,8 +103,7 @@ class Geometry:
                     else:
                         residual.setflags(write=False)
                         vectors[key] = residual
-            self._space = Space(model, digest.hexdigest(), revision, dim, vectors,
-                                frozenset(zero), invalid)
+            self._space = Space(model, digest.hexdigest(), revision, dim, vectors, frozenset(zero), invalid)
             self._store = store
             return self._space
 
@@ -139,17 +149,16 @@ def facets(vectors: dict[str, np.ndarray], weights: dict[str, float]) -> list[Fa
     labels, centers, objective = _fit(matrix, w, 1)
     for k in range(2, min(5, 1 + len(keys) // 15) + 1):
         proposed, cs, value = _fit(matrix, w, k)
-        if value - objective < .03:
+        if value - objective < 0.03:
             break
         labels, centers, objective = proposed, cs, value
     groups = {j: list(np.flatnonzero(labels == j)) for j in range(len(centers)) if (labels == j).any()}
     while len(groups) > 1:
-        small = [j for j, ids in groups.items() if w[ids].sum() / w.sum() < .08]
+        small = [j for j, ids in groups.items() if w[ids].sum() / w.sum() < 0.08]
         if not small:
             break
         j = min(small, key=lambda j: (float(w[groups[j]].sum()), keys[groups[j][0]]))
-        target = min((t for t in groups if t != j), key=lambda t: (-float(centers[j] @ centers[t]),
-                                                                 keys[groups[t][0]]))
+        target = min((t for t in groups if t != j), key=lambda t: (-float(centers[j] @ centers[t]), keys[groups[t][0]]))
         groups[target] = sorted(groups[target] + groups.pop(j))
         ids = groups[target]
         c = unit((matrix[ids] * w[ids, None]).sum(axis=0))
@@ -174,12 +183,12 @@ def similarity(vectors: dict[str, np.ndarray], centers: list[list[float]], negat
     n = np.stack(negative).T if negative else None
     # Bound temporary memory even for 5000 candidates against 5000 negatives.
     for start in range(0, len(keys), 128):
-        chunk = keys[start:start + 128]
+        chunk = keys[start : start + 128]
         matrix = np.stack([vectors[k] for k in chunk])
         pos = np.max(matrix @ p, axis=1) if p is not None else np.zeros(len(chunk))
-        neg = np.maximum(0., np.max(matrix @ n, axis=1)) if n is not None else np.zeros(len(chunk))
+        neg = np.maximum(0.0, np.max(matrix @ n, axis=1)) if n is not None else np.zeros(len(chunk))
         for i, key in enumerate(chunk):
-            yield {"key": key, "pos": float(pos[i]), "neg": float(neg[i]), "score": float(pos[i] - .5 * neg[i])}
+            yield {"key": key, "pos": float(pos[i]), "neg": float(neg[i]), "score": float(pos[i] - 0.5 * neg[i])}
 
 
 def fit_axes(vectors: dict[str, np.ndarray]) -> Axes:

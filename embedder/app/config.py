@@ -31,7 +31,7 @@ class Settings:
     # fp16 — the audio tower on the GPU under fp16 autocast (vectors as fp32 ones, MIXES.md 4.2); fp32 — off
     precision: str = field(default_factory=lambda: _env("EMBEDDER_PRECISION", "fp16"))
     # songs per GPU batch and 10-second clips per forward pass. Speed hardly depends on clip_batch (14.1 songs/s at 4,
-    # 14.3 at 24), video memory does (3.4 vs 7.7 GB) — and under WSL2 video memory is charged to Windows' commit limit
+    # 14.3 at 24), video memory does (3.4 vs 7.7 GB); a shared desktop GPU may spill into system memory
     batch: int = field(default_factory=lambda: int(_env("EMBEDDER_BATCH", "16")))
     clip_batch: int = field(default_factory=lambda: int(_env("EMBEDDER_CLIP_BATCH", "4")))
     # fragment of a song that is embedded: this many seconds from its middle (a preview is taken whole)

@@ -8,6 +8,7 @@ import json
 import logging
 import re
 from pathlib import Path
+from typing import Literal, cast
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
@@ -25,6 +26,8 @@ from app.services import svc
 
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["system"])
+
+SoulseekState = Literal["disabled", "unreachable", "auth_error", "connecting", "disconnected", "ready"]
 
 
 async def _navidrome_ok() -> bool:
@@ -67,14 +70,16 @@ async def health(user: User = Depends(admin_user)):
 
     providers: dict = {}
     hitmoz = svc.providers.get("hitmoz")
-    if hitmoz is not None and hasattr(hitmoz, "health"):
+    health_fn = getattr(hitmoz, "health", None)
+    if health_fn is not None:
         try:
-            providers["hitmoz_domain"] = await hitmoz.health()
+            providers["hitmoz_domain"] = await health_fn()
         except Exception as e:
             providers["hitmoz_domain"] = {"ok": False, "error": repr(e)}
     providers["search"] = await smoke_test_providers()
-    return HealthOut(ok=True, navidrome=await _navidrome_ok(), providers=providers,
-                     web_build=web_build(get_settings().static_dir))
+    return HealthOut(
+        ok=True, navidrome=await _navidrome_ok(), providers=providers, web_build=web_build(get_settings().static_dir)
+    )
 
 
 @router.get("/api/system/soulseek", response_model=SoulseekStatusOut)
@@ -82,13 +87,13 @@ async def soulseek_status(search: bool = False, user: User = Depends(admin_user)
     provider = svc.providers.get("soulseek")
     out = SoulseekStatusOut(state="disabled")
     if isinstance(provider, SoulseekProvider):
-        out.state = await provider.health(force=True)
+        out.state = cast(SoulseekState, await provider.health(force=True))
         if search and out.state == "ready":
             try:
                 out.search_matches = await asyncio.wait_for(provider.probe_search(), 8)
             except (ProviderError, TimeoutError):
                 out.search_error = True
-                out.state = await provider.health(force=True)
+                out.state = cast(SoulseekState, await provider.health(force=True))
     return out
 
 
@@ -153,10 +158,15 @@ def _valid_entry(entry: object, kind: str) -> bool:
         return False
     url, size, digest = entry.get("url"), entry.get("size"), entry.get("sha256")
     prefix = "/app/artifacts/"
-    if (not isinstance(url, str) or not url.startswith(prefix) or not isinstance(digest, str)
-            or type(size) is not int or size <= 0):
+    if (
+        not isinstance(url, str)
+        or not url.startswith(prefix)
+        or not isinstance(digest, str)
+        or type(size) is not int
+        or size <= 0
+    ):
         return False
-    name = url[len(prefix):]
+    name = url[len(prefix) :]
     if not name.startswith(kind + "-"):
         return False
     return _artifact(name, size, digest) is not None
@@ -168,20 +178,35 @@ async def apk_latest():
     data["url"] = "/app/latest.apk"
     data.pop("file", None)
     full = data.get("full")
-    if (not _valid_entry(full, "apk") or not isinstance(full, dict)
-            or full.get("sha256") != data.get("sha256") or full.get("size") != data.get("size")):
+    if (
+        not _valid_entry(full, "apk")
+        or not isinstance(full, dict)
+        or full.get("sha256") != data.get("sha256")
+        or full.get("size") != data.get("size")
+    ):
         data.pop("full", None)
         data.pop("patches", None)
     else:
         patches = data.get("patches")
-        data["patches"] = [p for p in patches if isinstance(p, dict)
-                           and p.get("format") == "bsdiff40-v1"
-                           and type(p.get("baseVersionCode")) is int and p["baseVersionCode"] > 0
-                           and type(data.get("versionCode")) is int and p["baseVersionCode"] < data["versionCode"]
-                           and type(p.get("size")) is int and p["size"] < full["size"]
-                           and isinstance(p.get("baseSha256"), str)
-                           and re.fullmatch(r"[0-9a-f]{64}", p["baseSha256"])
-                           and _valid_entry(p, "patch")] if isinstance(patches, list) else []
+        data["patches"] = (
+            [
+                p
+                for p in patches
+                if isinstance(p, dict)
+                and p.get("format") == "bsdiff40-v1"
+                and type(p.get("baseVersionCode")) is int
+                and p["baseVersionCode"] > 0
+                and type(data.get("versionCode")) is int
+                and p["baseVersionCode"] < data["versionCode"]
+                and type(p.get("size")) is int
+                and p["size"] < full["size"]
+                and isinstance(p.get("baseSha256"), str)
+                and re.fullmatch(r"[0-9a-f]{64}", p["baseSha256"])
+                and _valid_entry(p, "patch")
+            ]
+            if isinstance(patches, list)
+            else []
+        )
     return data
 
 
@@ -205,11 +230,12 @@ async def apk_file():
 async def apk_artifact(name: str):
     from fastapi import HTTPException
     from fastapi.responses import FileResponse
-
     from starlette.concurrency import run_in_threadpool
 
     path = await run_in_threadpool(_artifact, name, verify=True)
     if path is None:
         raise HTTPException(404, "Нет сборки приложения")
     media_type = "application/vnd.android.package-archive" if name.endswith(".apk") else "application/octet-stream"
-    return FileResponse(path, media_type=media_type, filename=name, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+    return FileResponse(
+        path, media_type=media_type, filename=name, headers={"Cache-Control": "public, max-age=31536000, immutable"}
+    )

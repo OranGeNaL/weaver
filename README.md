@@ -2,25 +2,27 @@
 
 Личный музыкальный сервис на домашнем ПК: библиотека и стриминг — **Navidrome**, плеер на телефоне — **Tempus**,
 поиск, скачивание, загрузка своих файлов и ИИ-ассистент — свой сервис **Хаб** (FastAPI + PWA).
-API Хаба — [hub/API.md](hub/API.md).
+API Хаба — [hub/API.md](hub/API.md), архитектурная карта — [ARCHITECTURE.md](ARCHITECTURE.md).
 
 **Скачать Android-приложение:** [HomeMusic.apk](https://github.com/justman-1/HomeMusic-public/releases/latest/download/HomeMusic.apk)
 (все версии — [Releases](https://github.com/justman-1/HomeMusic-public/releases)). Приложению нужен свой сервер HomeMusic:
 вход только по приглашению его владельца.
 
 ```
-Телефон ──HTTPS──> VPS 203.0.113.10 (Caddy, сертификат Let's Encrypt на IP)
-                     :8444 → 127.0.0.1:4533 ─┐
-                     :8445 → 127.0.0.1:8080 ─┤ обратный SSH-туннель (пользователь homemusic-tunnel)
-                                             ▼
-             ПК (Docker Desktop): homemusic_tunnel → navidrome:4533, hub:8080
-                                  MUSIC_ROOT = B:\Music (library/, staging/, .trash/, .backups/)
+Телефон/браузер ──NetBird (или аналог)──> Linux-хост (Docker Engine)
+                                           navidrome:4533, hub:8080
+                                           MUSIC_ROOT = /srv/music (library/, staging/, .trash/, .backups/)
 ```
 
-| Что | Адрес снаружи | Адрес дома |
+| Что | Адрес через VPN/mesh | Адрес в локальной сети |
 |---|---|---|
-| Navidrome (Tempus, веб-плеер) | `https://203.0.113.10:8444` | `http://192.168.1.10:4533` |
-| Хаб (PWA) | `https://203.0.113.10:8445` | `http://192.168.1.10:8080` |
+| Navidrome (Tempus, веб-плеер) | `http://<navidrome-host>:4533` | `http://192.168.1.10:4533` |
+| Хаб (PWA) | `http://<hub-host>:8080` | `http://192.168.1.10:8080` |
+
+Собственного шлюза, reverse proxy, SSH-туннеля или настройки VPS в проекте нет. Доступ из интернета
+обеспечивает **NetBird** или аналогичная VPN/mesh-сеть. Hub и Navidrome слушают локальные порты `8080` и `4533`;
+адреса для клиентов задаются в `.env` (`PUBLIC_HUB_URL`, `PUBLIC_MUSIC_URL`) — они нужны для приглашений,
+QR-кодов и кнопки «Navidrome». TLS, DNS и маршрутизация — на стороне выбранного решения.
 
 В обычном браузере Хаб — весь сервис без приложения: Главная, библиотека Navidrome («Понравившиеся», плейлисты,
 исполнители, альбомы) и плеер с очередью. Внутри Android-приложения он открывается только своими разделами.
@@ -29,37 +31,36 @@ API Хаба — [hub/API.md](hub/API.md).
 
 ## Запуск с нуля
 
-1. Docker Desktop (WSL2), Git. Docker Desktop должен стартовать при входе в Windows (сейчас так и есть).
-   Сон ПК отключён (питание от сети → «никогда»).
-2. Папка музыки: `B:\Music` с подпапками `library`, `staging`, `.trash`, `.backups`.
-3. Настройки:
+1. Linux-хост с Docker Engine и плагином Compose, Git. Для embedder — NVIDIA Container Toolkit.
+   Хост работает постоянно, сон и гибернация отключены.
+2. Папка музыки: `/srv/music` с подпапками `library`, `staging`, `.trash`, `.backups`:
+   ```bash
+   sudo mkdir -p /srv/music/{library,staging,.trash,.backups}
    ```
-   copy .env.example .env          # заполнить секреты (см. комментарии в файле)
-   copy config.example.yaml config.yaml
+   Путь можно изменить через `MUSIC_ROOT` в `.env`. Контейнеры должны иметь право записи в
+   `library` и `.backups`.
+3. Настройки:
+   ```bash
+   cp .env.example .env          # заполнить секреты (см. комментарии в файле)
+   cp config.example.yaml config.yaml
    ```
    `LLM_API_KEY` — ключ OpenRouter для ИИ-ассистента (без него работают ссылки и текстовые списки, но не скриншоты).
    `LASTFM_API_KEY` — ключ Last.fm для «Микса дня» (похожие треки и исполнители, теги для названия; без него
    микс собирается из остальных источников).
-4. Ключ туннеля (один раз):
+4. Внешний доступ (по желанию): установите и настройте NetBird (или аналог), затем укажите в `.env`
+   `PUBLIC_HUB_URL` и `PUBLIC_MUSIC_URL` — адреса, по которым клиенты открывают Хаб и Navidrome.
+5. Запуск:
    ```
-   ssh-keygen -t ed25519 -N "" -C homemusic-tunnel -f gateway\tunnel\tunnel_key
-   ssh-keyscan -t ed25519 203.0.113.10 > gateway\tunnel\known_hosts
+   docker compose up -d
    ```
-5. VPS (один раз, идемпотентно; другие сервисы на VPS не трогает, все изменённые файлы бэкапит в `/root/homemusic-gateway-backup/`):
-   ```
-   scp gateway\vps\setup-vps.sh myvps:/root/homemusic-setup-vps.sh
-   ssh myvps "bash /root/homemusic-setup-vps.sh 203.0.113.10 '<содержимое gateway\tunnel\tunnel_key.pub>'"
-   ```
-6. Запуск:
-   ```
-   docker compose up -d --build
-   ```
-7. Первый запуск Navidrome: админ создаётся в веб-интерфейсе `http://localhost:4533` (или его уже создал установщик —
+   Compose сам собирает локальные образы `hub` и `embedder` перед запуском контейнеров.
+6. Первый запуск Navidrome: админ создаётся в веб-интерфейсе `http://localhost:4533` (или его уже создал установщик —
    логин/пароль в `.env`: `NAVIDROME_ADMIN_USER` / `NAVIDROME_ADMIN_PASSWORD`). Остальных пользователей заводит админ
    в Navidrome → «Пользователи».
-8. Телефон:
-   - **Tempus** (https://github.com/eddyizm/tempus/releases, `app-tempus-release.apk`): сервер `https://203.0.113.10:8444`.
-   - **Хаб**: открыть `https://203.0.113.10:8445` в Chrome → меню → «Установить приложение». После этого Хаб есть
+7. Телефон:
+   - **Tempus** (https://github.com/eddyizm/tempus/releases, `app-tempus-release.apk`): сервер — адрес Navidrome,
+     выданный NetBird или локальной сетью.
+   - **Хаб**: открыть адрес Хаба в Chrome → меню → «Установить приложение». После этого Хаб есть
      в меню «Поделиться» Android: скриншот → ассистент, аудиофайл → загрузка в библиотеку.
 
 ## Android-приложение HomeMusic (форк Tempus)
@@ -70,9 +71,9 @@ API Хаба — [hub/API.md](hub/API.md).
 скачивании на телефон. Во время автосинхронизации на телефон служба Android может показать общий статус синхронизации.
 Ставится рядом с оригинальным Tempus (`app.homemusic`).
 
-- **Установить на телефон:** открыть `https://203.0.113.10:8445/app/latest.apk` в браузере телефона, разрешить установку.
-  Вход: сервер (предложен `https://203.0.113.10:8444`) → имя и пароль, или «Регистрация по коду» (приглашение),
-  или Google (см. «Аккаунты» ниже). Адрес Хаба по умолчанию уже прописан (настройки → «HomeMusic»).
+- **Установить на телефон:** открыть `<hub-url>/app/latest.apk` в браузере телефона, разрешить установку.
+  Вход: сервер (адрес Navidrome, выданный NetBird или локальной сетью) → имя и пароль, или «Регистрация по коду»
+  (приглашение), или Google (см. «Аккаунты» ниже). Адрес Хаба задаётся в настройках → «HomeMusic».
 - **Выпустить обновление:** из корня проекта на чистых `master` и Android `homemusic` выполнить одну команду:
   ```powershell
   pwsh -File .\scripts\release-android.ps1 -Notes 'Что нового по-русски'
@@ -138,7 +139,7 @@ API Хаба — [hub/API.md](hub/API.md).
 
 1. Админ: Хаб → «Ещё» → «Пользователи и приглашения» → «Пригласить», вписать, для кого (имя попадёт в Navidrome), выбрать срок.
    Появится одноразовый код вида `ABCD-EFGH` — его можно скопировать или отправить кнопкой «Поделиться».
-2. Человек ставит приложение, на экране входа оставляет предложенный сервер (`https://203.0.113.10:8444`),
+2. Человек ставит приложение, на экране входа указывает адрес Navidrome, выданный NetBird или локальной сетью,
    нажимает «Далее», затем «Регистрация по коду», вводит код, имя и пароль. Хаб создаёт пользователя в Navidrome
    (через `NAVIDROME_ADMIN_USER/PASSWORD`) и сразу входит. Код одноразовый, срок по умолчанию — `INVITE_DAYS` (7 дней).
 
@@ -237,7 +238,7 @@ API Хаба — [hub/API.md](hub/API.md).
 
 Приложение в лимитной сети (настройка «Экономия мобильного трафика») просит у Хаба лёгкий вариант звука: `GET /api/listen/stream?…&q=mobile`.
 Файл тяжелее 192 кбит/с (mp3 320, flac) Хаб перекодирует ffmpeg в Ogg Opus 160 кбит/с (~вдвое меньше, на слух почти то же),
-файл легче отдаёт как есть. Копии лежат в `staging/listen-light` (на диске `B:\Music\staging`, до 2,5 ГБ, лишние стираются
+файл легче отдаёт как есть. Копии лежат в `staging/listen-light` (на диске `/srv/music/staging`, до 2,5 ГБ, лишние стираются
 по давности использования — можно очистить папку руками, копии сделаются заново), делаются заранее — для песен «Микса дня» и
 треков «Моей волны» — и по первому запросу. Пока копии нет, поток идёт оригиналом (ответ помечен `X-HomeMusic-Variant`).
 Перекодирование идёт в фоне, с низким приоритетом, не больше трёх ffmpeg сразу. Подробности — `hub/API.md`, `PROGRESS.md`.
@@ -283,14 +284,14 @@ Navidrome 500 px вместо исходных. «Микс дня на теле�
 
 ```
 git pull
-docker compose up -d --build          # пересобрать Хаб (yt-dlp внутри образа обновляется пересборкой)
+docker compose up -d                  # собирает hub и embedder перед запуском
 docker compose pull navidrome         # после смены версии в docker-compose.yml
 docker image prune -f                 # убрать прежние версии образов, оставшиеся без имени (<none>) после пересборки
 ```
 
 Пересборка под тем же тегом не удаляет прежний образ: он остаётся без имени и занимает место в диске Docker
 (образ embedder — около 7 ГБ). `prune -f` (без `-a`) удаляет только такие образы, у которых нет контейнера;
-образы с тегом, контейнеры и тома не трогает. Запускайте после каждого `docker compose build` / `up -d --build`.
+образы с тегом, контейнеры и тома не трогает. Запускайте `docker image prune -f` после каждой пересборки.
 
 yt-dlp ломается после изменений YouTube — пересобирайте образ Хаба примерно раз в неделю
 (версия yt-dlp закреплена в `hub/pyproject.toml`: поднять её и выполнить `uv lock` в `hub/`).
@@ -323,13 +324,13 @@ PO-токены не гарантируют обход проверки вход
    войти в YouTube в отдельном приватном окне, в той же вкладке открыть `https://www.youtube.com/robots.txt`,
    экспортировать cookies и закрыть приватное окно. yt-dlp предупреждает о риске блокировки аккаунта;
    используйте отдельный аккаунт и подключайте его только при необходимости.
-2. Сохранить файл на серверном ПК как `B:\Music\.youtube-cookies.txt` (при другом `MUSIC_ROOT` — в его корне).
+2. Сохранить файл на сервере как `/srv/music/.youtube-cookies.txt` (при другом `MUSIC_ROOT` — в его корне).
    Cookies дают доступ к сессии: не отправлять их в чат и не добавлять в git.
 3. В `.env` добавить `YTDLP_COOKIES_FILE=/music/.youtube-cookies.txt` — это путь внутри контейнера.
    Применить окружение командой `docker compose up -d hub`, дождавшись завершения активных загрузок.
 4. Если yt-dlp сообщает `cookies are no longer valid` / `rotated`, заново выполнить шаг 1; продление дат в
    старом файле сессию не восстанавливает. Сначала полностью сохранить новый экспорт в отдельный локальный
-   файл вне репозитория и закрыть приватное окно, затем заменить `B:\Music\.youtube-cookies.txt` готовым файлом
+   файл вне репозитория и закрыть приватное окно, затем заменить `/srv/music/.youtube-cookies.txt` готовым файлом
    (не редактировать его по строкам во время работы загрузчика). Ручной вход и CAPTCHA выполняет владелец;
    содержимое экспорта не отправлять агенту и не печатать в логах.
 5. Повторить загрузку. Хаб замечает замену файла, сбрасывает паузу после отказа и кэш метаданных; перезапуск
@@ -353,22 +354,25 @@ Cookies не гарантируют снятие ограничений YouTube.
 
 ## Полезное
 
-**`HomeMusic.bat`** (ярлык на рабочем столе) включает и выключает HomeMusic одним запуском: если работают все
-контейнеры — спрашивает подтверждение, предупреждает о загрузках в очереди и делает `docker compose stop`;
-иначе запускает Docker Desktop (если он не запущен), `docker compose up -d` и ждёт ответа Хаба. Docker Desktop
-не выключает (в нём могут работать и другие контейнеры). Выключенный так HomeMusic не поднимается сам после перезагрузки ПК.
+Управление стеком — обычными командами Compose:
+
+```bash
+docker compose up -d          # запуск и обновление
+docker compose stop           # остановка без удаления контейнеров
+docker compose ps             # состояние сервисов
+```
 
 ```
 docker compose ps
 docker logs --tail 50 homemusic_hub          # JSON-логи Хаба
-docker logs --tail 20 homemusic_tunnel       # подключения туннеля
-docker compose restart tunnel
+docker logs --tail 50 homemusic_navidrome
+docker logs --tail 50 homemusic_embedder
 curl http://localhost:8080/healthz
 ```
 
-- Бэкапы: база Хаба — `B:\Music\.backups\hub\` (каждый день в 4:00, 7 копий), база Navidrome —
-  `B:\Music\.backups\navidrome\` (в 4:30, 7 копий).
-- Удалённое из Хаба лежит в `B:\Music\.trash\<дата>\` 30 дней.
+- Бэкапы: база Хаба — `/srv/music/.backups/hub/` (каждый день в 4:00, 7 копий), база Navidrome —
+  `/srv/music/.backups/navidrome/` (в 4:30, 7 копий).
+- Удалённое из Хаба лежит в `/srv/music/.trash/<дата>/` 30 дней.
 - ID треков Navidrome стабильны: Хаб пишет в файлы теги `HOMEMUSIC_TRACK_ID` / `HOMEMUSIC_ALBUM_ID`, из них Navidrome
   строит свои ID (`navidrome/navidrome.toml`). Не меняйте `PID.*` без бэкапа базы Navidrome.
 - Источники и лимиты — `config.yaml` (порядок источников для русской и остальной музыки — для русской по умолчанию
@@ -391,7 +395,7 @@ curl http://localhost:8080/healthz
 файла библиотеки или превью Deezer) и текст в векторы одного пространства; Хаб сравнивает по ним кандидатов миксов
 и «Моей волны» со вкусом пользователя. API — [hub/API.md](hub/API.md).
 
-- **Запуск:** `docker compose up -d --build embedder`, затем `docker image prune -f` (прежний образ — ~7 ГБ — иначе остаётся
+- **Запуск:** `docker compose up -d embedder`, затем `docker image prune -f` (прежний образ — ~7 ГБ — иначе остаётся
   без имени). Порт наружу не открыт: Хаб ходит в `http://embedder:8090`
   (`EMBEDDER_URL` в `.env`; `EMBEDDER_TOKEN` — по желанию, тот же в обоих сервисах).
 - **Первая загрузка весов:** при первом задании (или `POST /text`) сервис скачивает с Hugging Face ~2,5 ГБ в том
@@ -399,7 +403,7 @@ curl http://localhost:8080/healthz
   (пик RAM контейнера ~3,4 ГБ, лимит `mem_limit: 4g`). Без работы 5 минут модель выгружается из памяти
   (`EMBEDDER_IDLE_UNLOAD_S`) — видеокарта общая. Веса подмоделей (`models--OpenMuQ--MuQ-large-msd-iter`,
   `models--xlm-roberta-base`, ~2,4 ГБ) сервису больше не нужны — из них берутся только конфиги и токенизатор.
-- **Видеокарта:** нужен Docker Desktop с WSL2 и драйвер NVIDIA на Windows. Проверка, что GPU виден в контейнере:
+- **Видеокарта:** нужен Docker Engine на Linux с NVIDIA Container Toolkit и драйвером NVIDIA. Проверка, что GPU виден в контейнере:
   ```
   docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi
   ```
@@ -412,7 +416,7 @@ curl http://localhost:8080/healthz
   `docker compose run --rm embedder python -m app.bench --songs 64`.
 - Тесты — в образе сервиса (модель в них — фейк):
   ```
-  docker run --rm -v "${PWD}\embedder:/src" -w /src homemusic-embedder:local bash -c "uv sync -q --frozen --extra gpu && uv run --no-sync pytest -q -p no:cacheprovider -n 6"
+  docker run --rm -v "$PWD/embedder:/src" -w /src homemusic-embedder:local bash -c "uv sync -q --frozen --extra gpu && uv run --no-sync pytest -q -p no:cacheprovider -n 6"
   ```
   С настоящей моделью (медленно): добавить `--gpus all -v homemusic_embedder-models:/models -e EMBEDDER_REAL_MODEL_TESTS=1`
   и `-m gpu` к pytest.
@@ -424,25 +428,12 @@ cd hub
 uv sync
 uv run pytest -q                    # тесты; тестам с ffmpeg нужен Docker (см. ниже)
 uv run uvicorn app.main:app --reload --port 8080
-cd ..\web
+cd ../web
 npm install
 npm run dev                         # PWA на :5173 с прокси на :8080
 ```
 
-Тесты, которым нужен ffmpeg (теги, проверка файлов, полный сценарий), — в образе Хаба (`docker compose build hub`, затем `docker image prune -f`), из cmd:
-```
-docker run --rm -v homemusic-test-venv:/tmp/venv -e UV_PROJECT_ENVIRONMENT=/tmp/venv -e UV_LINK_MODE=copy -e PYTHONDONTWRITEBYTECODE= -v "%cd%\hub:/src" -w /src homemusic-hub:local bash -c "uv sync -q --frozen && uv run --no-sync pytest -q -p no:cacheprovider -n 6"
-```
-
-
-## Откат шлюза на VPS
-
-```
-ssh myvps
-systemctl disable --now homemusic-tunnel-watchdog homemusic-guard-firewall
-rm -f /etc/systemd/system/homemusic-tunnel-watchdog.service /etc/systemd/system/homemusic-guard-firewall.service /usr/local/sbin/homemusic-tunnel-watchdog
-rm -rf /etc/homemusic; nft delete table inet homemusic_guard 2>/dev/null; systemctl daemon-reload
-rm -f /etc/ssh/sshd_config.d/61-homemusic-tunnel.conf && sshd -t && systemctl reload ssh
-pkill -u homemusic-tunnel; userdel -r homemusic-tunnel
-# в /etc/caddy/Caddyfile удалить блок между "# >>> homemusic" и "# <<< homemusic", затем: systemctl reload caddy
+Тесты, которым нужен ffmpeg (теги, проверка файлов, полный сценарий), — в образе Хаба (`docker compose build hub`, затем `docker image prune -f`), из shell:
+```bash
+docker run --rm -v homemusic-test-venv:/tmp/venv -e UV_PROJECT_ENVIRONMENT=/tmp/venv -e UV_LINK_MODE=copy -e PYTHONDONTWRITEBYTECODE= -v "$PWD/hub:/src" -w /src homemusic-hub:local bash -c "uv sync -q --frozen && uv run --no-sync pytest -q -p no:cacheprovider -n 6"
 ```

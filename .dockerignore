@@ -11,4 +11,3 @@ eval
 data
 .env
 config.yaml
-gateway/tunnel/tunnel_key*
