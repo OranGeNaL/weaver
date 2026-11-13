@@ -122,7 +122,15 @@ async def items(
     )
     return ImportItemsOut(
         total=total,
-        items=[core.item_out(it, kind, songs.get(it.track_id), dls.get(it.download_item_id)) for it, kind in rows],
+        items=[
+            core.item_out(
+                it,
+                kind,
+                songs.get(it.track_id) if it.track_id is not None else None,
+                dls.get(it.download_item_id) if it.download_item_id is not None else None,
+            )
+            for it, kind in rows
+        ],
     )
 
 

@@ -12,12 +12,14 @@ from __future__ import annotations
 import json
 import logging
 import secrets
+from collections.abc import Iterable
 from datetime import timedelta
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from fastapi import HTTPException
 from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolUnionParam
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -216,7 +218,7 @@ def make_client() -> AsyncOpenAI:
         timeout=s.llm_timeout_s,
         max_retries=2,
         default_headers=headers,
-        http_client=http_client,
+        http_client=cast(Any, http_client),  # httpx is API-compatible with the SDK's httpx2 client
     )
 
 
@@ -385,7 +387,8 @@ class ChatTools:
     async def search_catalog(self, q: str, kind: str = "track", limit: int = 5) -> Any:
         from app.services import svc
 
-        res = await svc.deezer.search(q, kinds=(kind,), limit=min(limit, 10))
+        deezer = cast(Any, svc.deezer)
+        res = await deezer.search(q, kinds=(kind,), limit=min(limit, 10))
         if kind == "artist":
             return table(["ref", "name", "fans"], [[a.ref, a.name, a.nb_fans] for a in res.artists])
         if kind == "album":
@@ -396,7 +399,8 @@ class ChatTools:
         from app.services import svc
 
         src, id_ = split_ref(artist_ref)
-        page = await (svc.deezer.get_artist_page(id_) if src == "dz" else svc.hitmoz_catalog.get_artist(id_))
+        catalog = cast(Any, svc.deezer if src == "dz" else svc.hitmoz_catalog)
+        page = await (catalog.get_artist_page(id_) if src == "dz" else catalog.get_artist(id_))
         albums = [a for a in page.albums if not types or a.record_type in types][:limit]
         return {"artist": page.artist.name, "releases": _albums(await annotate_albums(self.s, albums))}
 
@@ -425,10 +429,11 @@ class ChatTools:
         from app.services import svc
 
         tracks = []
+        deezer = cast(Any, svc.deezer)
         for r in refs[:50]:
             src, id_ = split_ref(r)
             if src == "dz":
-                tracks.append(await svc.deezer.get_track(id_))
+                tracks.append(await deezer.get_track(id_))
         return {t.ref: t.owned for t in await annotate_tracks(self.s, tracks)}
 
     async def list_starred(self, kind: str = "song", only: str = "all", offset: int = 0, limit: int = 100) -> Any:
@@ -483,7 +488,8 @@ class ChatTools:
         q = select(DownloadItem).where(DownloadItem.user_id == self.user.id)
         if status:
             q = q.where(DownloadItem.status.in_([x.strip() for x in status.split(",") if x.strip()]))
-        rows = (await self.s.execute(q.order_by(DownloadItem.id.desc()).limit(min(limit, 100)))).scalars().all()
+        session = self.s
+        rows = (await session.execute(q.order_by(DownloadItem.id.desc()).limit(min(limit, 100)))).scalars().all()
         return table(
             ["item_id", "track", "status", "error"],
             [
@@ -790,8 +796,8 @@ async def run_chat(
             try:
                 resp = await client.chat.completions.create(
                     model=settings.llm_model,
-                    messages=convo,
-                    tools=TOOLS,
+                    messages=cast("Iterable[ChatCompletionMessageParam]", convo),
+                    tools=cast("Iterable[ChatCompletionToolUnionParam]", TOOLS),
                     tool_choice="auto",
                     max_tokens=2500,
                     extra_body=extra_body,
@@ -813,9 +819,9 @@ async def run_chat(
                 {"role": "assistant", "content": msg.content or "", "tool_calls": [c.model_dump() for c in calls]}
             )
             for call in calls:
-                name = call.function.name
+                name = cast(Any, call).function.name
                 try:
-                    args = json.loads(call.function.arguments or "{}")
+                    args = json.loads(cast(Any, call).function.arguments or "{}")
                 except json.JSONDecodeError:
                     args = {}
                 try:

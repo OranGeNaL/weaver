@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import Integer, cast, func, select
+from sqlalchemy import Integer, func, select
+from sqlalchemy import cast as sa_cast
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import (
+    MixMode,
     MixOut,
     MixRebuildIn,
     MixSettingsIn,
@@ -84,7 +87,7 @@ async def mix_out(s: AsyncSession, mix: Mix, user_id: int) -> MixOut:
 async def settings_out(s: AsyncSession, user_id: int) -> MixSettingsOut:
     st = await core.settings_of(s, user_id)
     return MixSettingsOut(
-        mode=st.mode,
+        mode=cast(MixMode, st.mode),  # written only as normal/favorites/discover
         mix_hour=st.mix_hour,
         timezone=get_settings().timezone,  # type: ignore[arg-type]
         next_build_at=core.next_build_at(st.mix_hour),
@@ -100,7 +103,7 @@ async def _building(s: AsyncSession, user_id: int) -> bool:
             .where(
                 Job.kind == "mix_build",
                 Job.status.in_(("queued", "running")),
-                cast(Job.payload_json["user_id"].astext, Integer) == user_id,
+                sa_cast(Job.payload_json["user_id"].astext, Integer) == user_id,
             )
             .limit(1)
         )
@@ -181,14 +184,16 @@ async def library_artists(s: AsyncSession, limit: int = 20) -> list[CatalogArtis
     ).all()
     assert svc.deezer is not None
 
+    deezer = svc.deezer
+
     async def one(track_id: str) -> CatalogArtist | None:
         try:
-            t = await svc.deezer.get_track(track_id)
-            return await svc.deezer.get_artist(split_ref(t.artist_ref)[1]) if t.artist_ref else None
+            t = await deezer.get_track(track_id)
+            return await deezer.get_artist(split_ref(t.artist_ref)[1]) if t.artist_ref else None
         except Exception:
             return None
 
-    found = await asyncio.gather(*(one(tid) for _, tid in rows))
+    found = await asyncio.gather(*(one(tid) for _, tid in rows if tid is not None))
     return [a for a in found if a is not None]
 
 

@@ -18,17 +18,23 @@ import asyncio
 import logging
 import shutil
 from datetime import timedelta
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import Integer, case, cast, delete, func, select
+from sqlalchemy import Integer, case, delete, func, select
+from sqlalchemy import cast as sa_cast
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import (
+    CollectionKind,
     ImportAuthOut,
     ImportCollectionOut,
     ImportItemOut,
+    ImportMethod,
+    ImportMode,
     ImportOut,
+    ImportSource,
     ImportStatsOut,
+    ItemKind,
 )
 from app.config import get_settings
 from app.db import session_scope
@@ -112,7 +118,7 @@ async def stats(s: AsyncSession, imp: Import, colls: list[ImportCollection]) -> 
     for status, n in (
         await s.execute(
             select(DownloadItem.status, func.count(DownloadItem.id))
-            .where(cast(DownloadItem.query_json["import"]["id"].astext, Integer) == imp.id)
+            .where(sa_cast(DownloadItem.query_json["import"]["id"].astext, Integer) == imp.id)
             .group_by(DownloadItem.status)
         )
     ).all():
@@ -156,10 +162,11 @@ async def import_out(s: AsyncSession, imp: Import) -> ImportOut:
         )
     return ImportOut(
         id=imp.id,
-        source=imp.source,
-        method=imp.method,
+        # the columns are plain text; the app writes only the literals of these types
+        source=cast(ImportSource, imp.source),
+        method=cast(ImportMethod, imp.method),
         status=imp.status,
-        mode=imp.mode,
+        mode=cast(ImportMode, imp.mode),
         account=imp.account,
         has_token=bool(imp.token_enc),
         keep_token=imp.keep_token,
@@ -170,7 +177,7 @@ async def import_out(s: AsyncSession, imp: Import) -> ImportOut:
         collections=[
             ImportCollectionOut(
                 id=c.id,
-                kind=c.kind,
+                kind=cast(CollectionKind, c.kind),
                 title=c.title,
                 selected=c.selected,
                 count=counts.get(c.id, (0, 0))[0],
@@ -192,7 +199,7 @@ def item_out(it: ImportItem, kind: str, nd_song_id: str | None = None, dl: Downl
         id=it.id,
         collection_id=it.collection_id,
         position=it.position,
-        kind=ITEM_KIND.get(kind, "track"),
+        kind=cast(ItemKind, ITEM_KIND.get(kind, "track")),
         artist=raw.get("artist") or raw.get("name") or "",
         title=raw.get("title") or raw.get("name") or "",
         album=raw.get("album"),
@@ -233,7 +240,7 @@ async def enqueue_once(s: AsyncSession, kind: str, import_id: int, *, delay_s: f
             .where(
                 Job.kind == kind,
                 Job.status == "queued",
-                cast(Job.payload_json["import_id"].astext, Integer) == import_id,
+                sa_cast(Job.payload_json["import_id"].astext, Integer) == import_id,
             )
             .limit(1)
         )
@@ -269,9 +276,10 @@ async def create(
         )
         return imp
     if method == "token":
-        if not (token or "").strip():
+        token_text = (token or "").strip()
+        if not token_text:
             raise SourceError("Вставьте токен")
-        imp.token_enc = encrypt(token.strip())
+        imp.token_enc = encrypt(token_text)
     elif method == "profile":
         imp.account = yandex.profile_login(url or "")
     else:
@@ -492,18 +500,18 @@ async def handle_resolve(job: Job) -> None:
 
     await asyncio.gather(*(one(i, k) for i, k in ids))
     async with session_scope() as s:
-        imp = await s.get(Import, import_id)
-        if imp is None or imp.status != "running":
+        finished = await s.get(Import, import_id)
+        if finished is None or finished.status != "running":
             return
         await enqueue_once(s, "import_playlists", import_id, delay_s=0 if not down else PLAYLISTS_DELAY_S)
         if down:
             await enqueue(s, "import_resolve", {"import_id": import_id}, delay_s=60, priority=PRIORITY_IMPORT)
-        elif await _next_batch(s, imp):
+        elif await _next_batch(s, finished):
             await enqueue(s, "import_resolve", {"import_id": import_id}, priority=PRIORITY_IMPORT)
         else:
             await enqueue_once(s, "import_finish", import_id)
     notify()
-    publish(imp)
+    publish(finished)
 
 
 @handler("import_playlists")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -24,6 +25,11 @@ MAX_IMAGE_MB = 15
 IMAGE_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/heic": "heic"}
 
 
+def _form_text(value: Any) -> str | None:
+    """A multipart field that is text (not an uploaded file)."""
+    return value if isinstance(value, str) else None
+
+
 @router.post("/tasks", response_model=AssistantTaskOut)
 async def create_task(
     request: Request, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
@@ -36,12 +42,12 @@ async def create_task(
         files = [f for f in form.getlist("images") if hasattr(f, "read")]
         if len(files) > MAX_IMAGES:
             raise HTTPException(400, f"В одном сообщении не больше {MAX_IMAGES} фотографий")
-        body = AssistantTextIn(url=form.get("url") or None, text=form.get("text") or None)
+        body = AssistantTextIn(url=_form_text(form.get("url")), text=_form_text(form.get("text")))
         for value in (body.text, body.url):
             if value:
                 validate_message_text(value)
         for f in files:
-            data = await f.read()
+            data = await cast(Any, f).read()
             if len(data) > MAX_IMAGE_MB * 1024 * 1024:
                 raise HTTPException(413, f"Картинка больше {MAX_IMAGE_MB} МБ")
             images.append((data, IMAGE_EXT.get(getattr(f, "content_type", "") or "", "png")))
@@ -271,7 +277,7 @@ async def chat(
         if len(files) > MAX_IMAGES:
             raise HTTPException(400, f"В одном сообщении не больше {MAX_IMAGES} фотографий")
         for f in files:
-            data = await f.read()
+            data = await cast(Any, f).read()
             if len(data) > MAX_IMAGE_MB * 1024 * 1024:
                 raise HTTPException(413, f"Картинка больше {MAX_IMAGE_MB} МБ")
             mime = getattr(f, "content_type", "") or ""

@@ -93,8 +93,8 @@ class TagData(BaseModel):
     source_url: str | None = None
     source_date: dt.date | None = None
     acquired: dt.datetime | None = None
-    deezer_track_id: int | None = None
-    deezer_album_id: int | None = None
+    deezer_track_id: str | int | None = None
+    deezer_album_id: str | int | None = None
     cover: bytes | None = Field(default=None, repr=False)
 
     @field_validator("date", mode="before")
@@ -337,7 +337,8 @@ def _read_id3(tags: ID3 | None) -> tuple[dict[str, list[str]], bytes | None]:
         c["DATE"] = [str(frame.text[0])]
     reverse = {v.upper(): k for k, v in _ID3_TXXX_ALIASES.items()}
     for frame in tags.getall("TXXX"):
-        key = reverse.get(frame.desc.upper(), frame.desc.upper())
+        desc = frame.desc or ""
+        key = reverse.get(desc.upper(), desc.upper())
         c.setdefault(key, [str(x) for x in frame.text])
     pic = _pick_front(tags.getall("APIC"), lambda p: p.type)
     return c, (pic.data if pic is not None else None)
@@ -384,10 +385,11 @@ def _read_mp4(tags: Any) -> tuple[dict[str, list[str]], bytes | None]:
     reverse = {v.upper(): k for k, v in _MP4_FREEFORM_ALIASES.items()}
     prefix = _MP4_FREEFORM.lower()
     for name, values in tags.items():
-        if not name.lower().startswith(prefix):
+        if not name or not name.lower().startswith(prefix):
             continue
         key = name[len(prefix) :].upper()
-        key = reverse.get(key, key)
+        mapped = reverse.get(key)
+        key = mapped if mapped is not None else key
         c[key] = [bytes(v).decode("utf-8", "replace") for v in values]
     if tags.get("rtng"):
         c["ITUNESADVISORY"] = [str(tags["rtng"][0])]
@@ -426,6 +428,15 @@ def _ogg_cover(c: dict[str, list[str]]) -> bytes | None:
 # --------------------------------------------------------------------------- public API
 
 
+def _tags_of(f: Any) -> Any:
+    """The file's tag block, created on demand: mutagen adds it lazily."""
+    if f.tags is None:
+        f.add_tags()
+    if f.tags is None:
+        raise RuntimeError("не удалось создать теги файла")
+    return f.tags
+
+
 def write_tags(path: Path, t: TagData) -> None:
     """Replace all tags in the file with `t` (retag from scratch). Supports mp3, m4a, flac, ogg, opus, wav, aiff."""
     path = Path(path)
@@ -436,37 +447,29 @@ def write_tags(path: Path, t: TagData) -> None:
         _fill_id3(tags, c, t.cover)
         tags.save(path, v1=0, v2_version=4)  # replaces the whole ID3v2 tag, drops ID3v1
     elif isinstance(f, (WAVE, AIFF)):
-        if f.tags is None:
-            f.add_tags()
-        else:
-            f.tags.clear()
-        _fill_id3(f.tags, c, t.cover)
+        tags = _tags_of(f)
+        tags.clear()
+        _fill_id3(tags, c, t.cover)
         f.save(v2_version=4)
     elif isinstance(f, MP4):
-        if f.tags is None:
-            f.add_tags()
-        else:
-            f.tags.clear()
-        _fill_mp4(f.tags, c, t.cover)
+        tags = _tags_of(f)
+        tags.clear()
+        _fill_mp4(tags, c, t.cover)
         f.save()
     elif isinstance(f, FLAC):
-        if f.tags is None:
-            f.add_tags()
-        else:
-            f.tags.clear()
+        tags = _tags_of(f)
+        tags.clear()
         f.clear_pictures()
-        _fill_vorbis(f.tags, c)
+        _fill_vorbis(tags, c)
         if t.cover:
             f.add_picture(_flac_picture(t.cover))
         f.save(deleteid3=True)
     elif isinstance(f, (OggVorbis, OggOpus, OggFLAC)):
-        if f.tags is None:
-            f.add_tags()
-        else:
-            f.tags.clear()
-        _fill_vorbis(f.tags, c)
+        tags = _tags_of(f)
+        tags.clear()
+        _fill_vorbis(tags, c)
         if t.cover:
-            f.tags["METADATA_BLOCK_PICTURE"] = [base64.b64encode(_flac_picture(t.cover).write()).decode("ascii")]
+            tags["METADATA_BLOCK_PICTURE"] = [base64.b64encode(_flac_picture(t.cover).write()).decode("ascii")]
         f.save()
     else:
         raise UnsupportedFormat(f"tag writing not supported for {type(f).__name__}: {path.name}")

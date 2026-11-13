@@ -7,6 +7,7 @@ import hashlib
 import logging
 import secrets
 import time
+from collections.abc import Sequence
 from typing import Any
 from urllib.parse import urlencode
 
@@ -208,13 +209,17 @@ class NavidromeClient:
         await self.call("createPlaylist", {"playlistId": playlist_id, "songId": song_ids or None}, form=True)
 
     # --- annotations ----------------------------------------------------------------
-    async def star(self, *, song_ids: list[str] = (), album_ids: list[str] = (), artist_ids: list[str] = ()) -> None:
+    async def star(
+        self, *, song_ids: Sequence[str] = (), album_ids: Sequence[str] = (), artist_ids: Sequence[str] = ()
+    ) -> None:
         await self.call(
             "star",
             {"id": list(song_ids) or None, "albumId": list(album_ids) or None, "artistId": list(artist_ids) or None},
         )
 
-    async def unstar(self, *, song_ids: list[str] = (), album_ids: list[str] = (), artist_ids: list[str] = ()) -> None:
+    async def unstar(
+        self, *, song_ids: Sequence[str] = (), album_ids: Sequence[str] = (), artist_ids: Sequence[str] = ()
+    ) -> None:
         await self.call(
             "unstar",
             {"id": list(song_ids) or None, "albumId": list(album_ids) or None, "artistId": list(artist_ids) or None},
@@ -222,13 +227,13 @@ class NavidromeClient:
 
     # --- media ---------------------------------------------------------------------
     def cover_art_url_params(self, cover_id: str, size: int | None = None) -> tuple[str, list[tuple[str, Any]]]:
-        params = [*self._auth_params().items(), ("id", cover_id)]
+        params: list[tuple[str, Any]] = [*self._auth_params().items(), ("id", cover_id)]
         if size:
             params.append(("size", size))
         return f"{self.base_url}/rest/getCoverArt", params
 
     def stream_url_params(self, song_id: str, max_bitrate: int | None = None) -> tuple[str, list[tuple[str, Any]]]:
-        params = [*self._auth_params().items(), ("id", song_id)]
+        params: list[tuple[str, Any]] = [*self._auth_params().items(), ("id", song_id)]
         if max_bitrate:
             params.append(("maxBitRate", max_bitrate))
         return f"{self.base_url}/rest/stream", params
@@ -278,7 +283,10 @@ class NavidromeAdmin:
                 raise AuthError(40, "admin login failed")
             r.raise_for_status()
             cls._token, cls._token_at = r.json()["token"], time.monotonic()
-        return cls._token
+        token = cls._token
+        if token is None:
+            raise AuthError(50, "admin login failed")
+        return token
 
     async def _request(self, method: str, path: str, **kw: Any) -> httpx.Response:
         for fresh in (False, True):

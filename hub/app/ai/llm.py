@@ -13,7 +13,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import urlparse
 
 import httpx
@@ -142,7 +142,7 @@ class LLMClient:
             api_key=s.llm_api_key.strip() or "not-needed",
             timeout=s.llm_timeout_s,
             max_retries=2,
-            http_client=self._http,
+            http_client=cast(Any, self._http),  # the SDK's own client is httpx2; httpx is API-compatible here
             default_headers=OPENROUTER_HEADERS if is_openrouter(self.base_url) else None,
         )
 

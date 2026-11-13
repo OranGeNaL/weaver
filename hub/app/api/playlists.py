@@ -1,3 +1,5 @@
+from typing import cast
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -51,11 +53,11 @@ async def add(
     user: User = Depends(current_user),
     s: AsyncSession = Depends(get_session, scope="function"),
 ):
-    ids = list(body.song_ids)
+    ids = cast(list[str], list(body.song_ids))
     if body.library_track_ids:
         rows = (await s.execute(select(Track.id, Track.nd_song_id).where(Track.id.in_(body.library_track_ids)))).all()
         by_id = dict(rows)
-        ids += [by_id[i] for i in body.library_track_ids if by_id.get(i)]
+        ids += [cast(str, by_id[i]) for i in body.library_track_ids if by_id.get(i)]
     if not ids:
         raise HTTPException(400, "Эти треки ещё не появились в Navidrome")
     nd = user_navidrome(user)

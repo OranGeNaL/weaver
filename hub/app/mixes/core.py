@@ -145,7 +145,7 @@ async def build_for(user_id: int) -> Mix | None:
             from app.mixes.taste_snapshot import load_snapshot
 
             async with session_scope() as s:
-                shadow_snapshot = await load_snapshot(s, user.id, now=shadow_now)
+                shadow_snapshot = await load_snapshot(s, user.id, now=shadow_now or utcnow())
         except Exception:
             shadow_error = "snapshot_failed"
             log.warning("mix shadow snapshot failed", exc_info=True)
@@ -162,11 +162,12 @@ async def build_for(user_id: int) -> Mix | None:
     )
     if cfg.taste_shadow:
         if shadow_snapshot is not None:
+            shadow_at = shadow_now or utcnow()
             try:
                 from app.mixes.shadow import compare, sound_diff
 
                 built.stats["taste_shadow"] = compare(
-                    shadow_snapshot, pool, now=shadow_now, timezone=get_settings().timezone, cfg=cfg
+                    shadow_snapshot, pool, now=shadow_at, timezone=get_settings().timezone, cfg=cfg
                 )
                 built.stats["taste_shadow"]["active_seed_keys"] = built.stats.get("seed_keys", [])[:100]
                 built.stats["taste_shadow"]["pool_complete"] = built.stats.get("candidates", 0) == len(pool)
@@ -175,7 +176,7 @@ async def build_for(user_id: int) -> Mix | None:
                         built.stats["taste_shadow"],
                         shadow_snapshot,
                         pool,
-                        now=shadow_now,
+                        now=shadow_at,
                         timezone=get_settings().timezone,
                         cfg=cfg,
                         mode=mode,

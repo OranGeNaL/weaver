@@ -290,7 +290,12 @@ async def _song_ids(s: AsyncSession, items: list[ImportItem]) -> dict[int, str]:
             )
         ).all()
     )
-    return {i.id: songs[i.track_id] for i in items if i.track_id in songs}
+    out: dict[int, str] = {}
+    for i in items:
+        song = songs.get(i.track_id) if i.track_id is not None else None
+        if song:
+            out[i.id] = song
+    return out
 
 
 def playlist_order(items: list[ImportItem], songs: dict[int, str]) -> list[str]:
@@ -335,10 +340,11 @@ async def sync_playlists(s: AsyncSession, imp: Import) -> None:
             want = playlist_order(items, await _song_ids(s, items))
             if c.nd_playlist_id is None:
                 pl = await nd.create_playlist(c.title, want[:300])
-                c.nd_playlist_id = pl.get("id")
-                if c.nd_playlist_id and len(want) > 300:
-                    await nd.set_playlist_songs(c.nd_playlist_id, want)
-            elif want != list(c.nd_song_ids or []):
+                new_id = pl.get("id")
+                c.nd_playlist_id = new_id
+                if new_id and len(want) > 300:
+                    await nd.set_playlist_songs(new_id, want)
+            elif c.nd_playlist_id is not None and want != list(c.nd_song_ids or []):
                 await nd.set_playlist_songs(c.nd_playlist_id, want)
             c.nd_song_ids = want
     except Exception as e:

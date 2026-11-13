@@ -11,7 +11,7 @@ import asyncio
 import hashlib
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -51,12 +51,18 @@ class Hit:
 
     @classmethod
     def of(cls, d: dict[str, Any]) -> Hit:
-        return cls(**{k: d.get(k) for k in ("artist", "title", "duration_s", "source_id")})
+        # the providers always fill artist/title; cast keeps the old values (no None -> "" coercion)
+        return cls(
+            artist=cast(str, d.get("artist")),
+            title=cast(str, d.get("title")),
+            duration_s=d.get("duration_s"),
+            source_id=d.get("source_id"),
+        )
 
 
 def _key(*parts: Any) -> str:
     raw = "|".join(" ".join(str(p).split()).casefold() for p in parts)
-    return hashlib.sha1(raw.encode()).hexdigest() if len(raw) > 200 else raw
+    return hashlib.sha1(raw.encode(), usedforsecurity=False).hexdigest() if len(raw) > 200 else raw
 
 
 async def _cached_hits(key: str, produce) -> list[Hit]:

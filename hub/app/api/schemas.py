@@ -643,6 +643,8 @@ class AssistantTextIn(BaseModel):
 # --- imports from music services ----------------------------------------------------------
 
 ImportSource = Literal["yandex", "spotify"]
+CollectionKind = Literal["likes", "playlist", "albums", "artists", "dislikes"]
+ItemKind = Literal["track", "album", "artist"]
 ImportMethod = Literal["device", "token", "profile", "file"]  # file: a Spotify export (POST /api/imports/spotify)
 ImportMode = Literal["economy", "full"]
 
@@ -680,7 +682,7 @@ class ImportStatsOut(BaseModel):
 
 class ImportCollectionOut(BaseModel):
     id: int
-    kind: Literal["likes", "playlist", "albums", "artists", "dislikes"]
+    kind: CollectionKind
     title: str
     selected: bool
     count: int
@@ -720,7 +722,7 @@ class ImportItemOut(BaseModel):
     id: int
     collection_id: int
     position: int
-    kind: Literal["track", "album", "artist"]
+    kind: ItemKind
     artist: str = ""
     title: str = ""
     album: str | None = None
@@ -1085,13 +1087,16 @@ class SmartAddOut(BaseModel):
 # --- admin insights (INSIGHTS.md 7; read-only, admin only). Aggregate blocks stay dicts: their keys are in API.md.
 
 
-class InsightsTrackName(BaseModel):
+class InsightsRefFields(BaseModel):
     key: str | None = None  # nd:<song>, else the catalog ref
     ref: str | None = None
     nd_song_id: str | None = None
-    artist: str = ""
     title: str = ""
     owned: bool = False  # the song is in the library
+
+
+class InsightsTrackName(InsightsRefFields):
+    artist: str = ""
 
 
 class InsightsUser(BaseModel):
@@ -1141,7 +1146,9 @@ class InsightsListeningOut(BaseModel):
     quality: dict[str, Any]
 
 
-class InsightsTasteTrackRow(InsightsTrackName):
+class InsightsTasteTrackRow(InsightsRefFields):
+    # a display name in the summary rows, a metadata block in the detailed ones
+    artist: str | dict[str, Any] | None = None
     s: float
     p: float  # positive_raw
     sat_p: float  # sat(P); P itself for the local v1
@@ -1215,7 +1222,6 @@ class InsightsTasteTrackOut(InsightsTasteTrackRow):
     late_skips: int
     contributions: list[InsightsContribution]
     formula: str
-    artist: dict[str, Any] | None = None
     rest: dict[str, datetime | None]
     facet_cos: dict[str, float] | None = None  # facet id -> cosine; None without the embedder
     mixes: list[dict[str, Any]]

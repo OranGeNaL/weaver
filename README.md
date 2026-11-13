@@ -434,6 +434,7 @@ curl http://localhost:8080/healthz
 cd hub
 uv run ruff check                   # линтер
 uv run ruff format --check          # форматирование (исправить: uv run ruff format)
+uv run pyright                      # статические типы (hub/pyrightconfig.json, app/)
 TEST_DATABASE_URL=postgresql+asyncpg://hub:hub@localhost:5432/hub_test uv run pytest -q
 cd ../web
 npm run typecheck
@@ -444,7 +445,7 @@ npm run typecheck
 Форматный коммит `style: ruff format` не учитывается в истории строк:
 `git config blame.ignoreRevsFile .git-blame-ignore-revs`.
 
-```
+```bash
 cd hub
 uv sync
 uv run pytest -q                    # тесты; тестам с ffmpeg нужен Docker (см. ниже)
@@ -455,6 +456,7 @@ npm run dev                         # PWA на :5173 с прокси на :8080
 ```
 
 Тесты, которым нужен ffmpeg (теги, проверка файлов, полный сценарий), — в образе Хаба (`docker compose build hub`, затем `docker image prune -f`), из shell:
+
 ```bash
 docker run --rm -v homemusic-test-venv:/tmp/venv -e UV_PROJECT_ENVIRONMENT=/tmp/venv -e UV_LINK_MODE=copy -e PYTHONDONTWRITEBYTECODE= -v "$PWD/hub:/src" -w /src homemusic-hub:local bash -c "uv sync -q --frozen && uv run --no-sync pytest -q -p no:cacheprovider -n 6"
 ```

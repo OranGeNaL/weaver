@@ -108,7 +108,7 @@ def identify(filename: str, query: TrackQuery, *, artist_min: float) -> FileIden
     if not query.title:
         fields = re.split(r"\s+-\s+", _text(stem), maxsplit=1)
         if len(fields) == 2:
-            return FileIdentity(*fields, 0.0)
+            return FileIdentity(fields[0], fields[1], 0.0)
         return FileIdentity("", _text(stem), 0.0)
 
     stem = _plain_version(stem, query)

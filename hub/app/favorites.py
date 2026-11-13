@@ -74,6 +74,8 @@ class AliasIndex:
     `subjects` are the ORM rows or the taste snapshot's light ones: only `target_type` and `aliases` are read.
     """
 
+    # subjects: the ORM `FavoriteSubject` rows or the taste snapshot's light `Subject` ones (same five fields);
+    # a structural Protocol cannot match SQLAlchemy's `Mapped[...]` declarations under Pyright
     def __init__(self, events: Iterable[Any] = (), subjects: Iterable[Any] = ()):
         self.parent: dict[tuple[str, str], tuple[str, str]] = {}
         for subject in subjects:
@@ -210,7 +212,7 @@ def _decision_inputs(events, subjects, now):
 
 
 def effective_decisions(
-    events: Iterable[PlayEvent], subjects: Iterable[FavoriteSubject] = (), now: datetime | None = None
+    events: Iterable[PlayEvent], subjects: Iterable[Any] = (), now: datetime | None = None
 ) -> list[PlayEvent]:
     """Effective independent rows only; causal nodes and legacy redundant retries are not actions."""
     _rows, _index, active, _roots, ordered, redundant = _decision_inputs(events, list(subjects), now)
@@ -222,7 +224,7 @@ def effective_decisions(
 
 
 def fold(
-    events: Iterable[PlayEvent], subjects: Iterable[FavoriteSubject] = (), now: datetime | None = None
+    events: Iterable[PlayEvent], subjects: Iterable[Any] = (), now: datetime | None = None
 ) -> dict[tuple[str, str], State]:
     """Pure fold. Rollbacks remove their exact decision, even if delivered before it.
 

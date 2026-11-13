@@ -109,8 +109,13 @@ async def register(
     if google is not None:
         await _check_google_free(s, google)
     # Taken first, within this transaction: a second registration with the same code waits for it and finds it used.
-    res = await s.execute(update(Invite).where(Invite.id == inv.id, Invite.used_at.is_(None)).values(used_at=utcnow()))
-    if res.rowcount != 1:
+    res = await s.execute(
+        update(Invite)
+        .where(Invite.id == inv.id, Invite.used_at.is_(None))
+        .values(used_at=utcnow())
+        .returning(Invite.id)
+    )
+    if res.first() is None:
         raise _fail(400, "Код приглашения уже использован")
     user, token = await _create_account(s, username, password, inv.note or username)
     inv.used_by = user.id
@@ -250,9 +255,12 @@ async def register_by_email(s: AsyncSession, email: str, code: str, username: st
     await _check_name_free(s, username)
     # Taken first, as an invite is: a second registration with the same letter finds it used.
     res = await s.execute(
-        update(EmailCode).where(EmailCode.id == row.id, EmailCode.used_at.is_(None)).values(used_at=utcnow())
+        update(EmailCode)
+        .where(EmailCode.id == row.id, EmailCode.used_at.is_(None))
+        .values(used_at=utcnow())
+        .returning(EmailCode.id)
     )
-    if res.rowcount != 1:
+    if res.first() is None:
         raise _fail(400, "Код уже использован: запросите новое письмо")
     user, token = await _create_account(s, username, password, username)
     user.email = email
@@ -263,8 +271,10 @@ async def register_by_email(s: AsyncSession, email: str, code: str, username: st
 async def purge_email_codes() -> int:
     """Codes past the daily count are of no use; returns how many went."""
     async with session_scope() as s:
-        res = await s.execute(delete(EmailCode).where(EmailCode.created_at < utcnow() - timedelta(days=2)))
-        return res.rowcount
+        res = await s.execute(
+            delete(EmailCode).where(EmailCode.created_at < utcnow() - timedelta(days=2)).returning(EmailCode.id)
+        )
+        return len(res.all())
 
 
 async def username_for_login(s: AsyncSession, login: str) -> str:

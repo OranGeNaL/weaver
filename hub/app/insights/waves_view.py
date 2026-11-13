@@ -142,7 +142,9 @@ async def detail(s: AsyncSession, h: History, sid: str) -> dict[str, Any] | None
     items = h.wave_items.get(sid, [])
     events = sorted([e for a in launch.attempts for e in a.events] + launch.marks, key=lambda e: (e.ts, e.id))
     pairs = [(i.ref, i.nd_song_id) for i in items] + [(e.ref, e.nd_song_id) for e in events]
-    known = {(i.ref, i.nd_song_id): (i.artist, i.title) for i in items}
+    known: dict[tuple[str | None, str | None], tuple[str, str]] = {
+        (i.ref, i.nd_song_id): (i.artist, i.title) for i in items
+    }
     name_of = await names.resolve(s, pairs, known)
 
     def name(ref, nd):

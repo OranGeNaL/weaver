@@ -13,7 +13,7 @@ import re
 import unicodedata
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
@@ -124,9 +124,9 @@ class ExtractionContext(BaseModel):
         return not (self.playlist_name or self.album_title or self.album_artist)
 
 
-def _items_before(v: Any) -> list[dict | ExtractedItem]:
+def _items_before(v: Any) -> list[ExtractedItem]:
     """Keep only rows that are dicts/items with a non-empty title; invalid rows are dropped, not fatal."""
-    out: list[dict | ExtractedItem] = []
+    out: list[ExtractedItem] = []
     for row in v or []:
         if isinstance(row, ExtractedItem):
             if row.title_raw:
@@ -403,7 +403,12 @@ def merge_extractions(parts: list[Extraction]) -> Extraction:
     page_type = next((p.page_type for p in parts if p.page_type != "other"), "other")
     context = next((p.context for p in parts if not p.context.is_empty()), ExtractionContext())
     items = dedupe_items([it for p in parts for it in p.items])
-    return Extraction(source_app=source_app, page_type=page_type, context=context, items=items)
+    return Extraction(
+        source_app=cast(SourceApp, source_app),
+        page_type=cast(PageType, page_type),
+        context=context,
+        items=items,
+    )
 
 
 # --------------------------------------------------------------------------- screenshots

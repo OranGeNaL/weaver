@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar
 
 import httpx
 from pydantic import BaseModel, Field, FiniteFloat
@@ -133,6 +133,9 @@ class Similarity:
     missing: set[str] = field(default_factory=set)
 
 
+TGeometry = TypeVar("TGeometry", GeometryProfile, GeometrySimilarity, CenteredVectors, GeometryProjection)
+
+
 class EmbedderClient:
     def __init__(self, client: httpx.AsyncClient | None = None):
         s = get_settings()
@@ -197,7 +200,9 @@ class EmbedderClient:
             return {}
         return dict((await self._post("/vectors", {"keys": keys[:MAX_ITEMS]})).get("vectors") or {})
 
-    async def _geometry(self, path: str, body: dict[str, Any], schema, *, space: GeometrySpace | None = None):
+    async def _geometry(
+        self, path: str, body: dict[str, Any], schema: type[TGeometry], *, space: GeometrySpace | None = None
+    ) -> TGeometry:
         try:
             response = await self._client.post(f"{self.base_url}{path}", json=body)
             if response.status_code == 409:

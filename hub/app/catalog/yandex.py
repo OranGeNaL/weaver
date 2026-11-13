@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import Any
+from typing import Any, cast
 
 from app.catalog.cache import cached
 from app.config import get_settings
@@ -96,7 +96,7 @@ def yandex_client(token: str | None = None) -> Any:
     from yandex_music import Client
     from yandex_music.utils.request import Request
 
-    Client._Client__notice_displayed = True  # silence the banner the library prints to stdout
+    cast(Any, Client)._Client__notice_displayed = True  # silence the library's stdout banner
     s = get_settings()
     proxy = s.outbound_proxy if s.outbound_proxy and YANDEX_API_HOST in s.proxy_hosts else None
     return Client(token, request=Request(proxy_url=proxy, timeout=YANDEX_TIMEOUT_S), language="ru")

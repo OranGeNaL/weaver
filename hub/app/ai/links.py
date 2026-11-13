@@ -15,7 +15,7 @@ import json
 import logging
 import re
 from collections import Counter
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 
 import yt_dlp
@@ -296,11 +296,11 @@ def youtube_info_extraction(info: dict) -> Extraction:
 
 def youtube_target(url: str, p: Any | None = None) -> tuple[str, str]:
     """Normalize a YouTube URL → ("playlist"|"video"|"album", url for yt-dlp). Raises UnsupportedLink."""
-    p = p or urlparse(url)
-    host = (p.hostname or "").lower()
-    qs = parse_qs(p.query)
+    parsed = urlparse(url) if p is None else p
+    host = (parsed.hostname or "").lower()
+    qs = parse_qs(parsed.query)
     lst = (qs.get("list") or [""])[0]
-    path = p.path.rstrip("/")
+    path = parsed.path.rstrip("/")
     if host.endswith("youtu.be"):
         vid = path.lstrip("/")
         if vid:
@@ -331,9 +331,9 @@ def _ytdlp_extract(url: str) -> dict:
     }
     if proxy := proxy_for_domains(*YOUTUBE_PROXY_DOMAINS):
         opts["proxy"] = proxy
-    with yt_dlp.YoutubeDL(opts) as ydl:
+    with yt_dlp.YoutubeDL(cast(Any, opts)) as ydl:
         info = ydl.extract_info(url, download=False)
-        return ydl.sanitize_info(info) or {}
+        return cast(dict[str, Any], ydl.sanitize_info(info) or {})
 
 
 async def _youtube(url: str, p: Any) -> Extraction:

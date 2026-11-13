@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
+from typing import Any, cast
 from urllib.parse import quote
 from uuid import UUID, uuid4
 
@@ -365,7 +366,8 @@ class SoulseekProvider:
     def _check_quality(self, source: Path, format: str) -> None:
         try:
             if format == "mp3":
-                ok = round(MP3(source).info.bitrate / 1000) >= self.cfg.min_mp3_bitrate_kbps
+                bitrate = cast(Any, MP3(source).info).bitrate  # mutagen always exposes it for MP3
+                ok = round(bitrate / 1000) >= self.cfg.min_mp3_bitrate_kbps
             else:
                 info = FLAC(source).info
                 ok = (

@@ -12,6 +12,7 @@ import shutil
 import uuid
 from datetime import date, datetime
 from pathlib import Path, PurePosixPath
+from typing import cast
 
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -20,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.library import tagger
 from app.library.layout import album_dirname, next_version_path, sanitize_component, track_filename, unique_path
+from app.library.tagger import ReleaseType
 from app.matching.normalize import fingerprint, normalize_artist, normalize_title
 from app.models import Album, Track, utcnow
 
@@ -137,7 +139,7 @@ def tagdata_for(
         genre=track.genre or album.genre,
         isrc=track.isrc,
         explicit=track.explicit,
-        release_type=album.release_type,
+        release_type=cast(ReleaseType, album.release_type),  # written only from catalog literals
         track_uid=track.uid,
         album_uid=album.uid,
         source=track.source,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import uuid
+from typing import cast
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
@@ -27,6 +28,7 @@ from app.auth import current_user, user_navidrome
 from app.catalog.models import split_ref
 from app.db import get_session
 from app.events import bus
+from app.favorites import TargetType
 from app.jobs.downloads import enqueue_scan
 from app.jobs.queue import notify
 from app.library import editor, tagger
@@ -320,7 +322,7 @@ async def starred(user: User = Depends(current_user), s: AsyncSession = Depends(
         for obj in body.get(field, []):
             if not obj.get("id"):
                 continue
-            target = FavoriteTarget(target_type=typ, **{ND_FIELDS[typ]: obj["id"]})
+            target = FavoriteTarget(target_type=cast(TargetType, typ), **{ND_FIELDS[typ]: obj["id"]})
             key = index.key(target)
             if key in imported and key not in states:
                 subjects.append(

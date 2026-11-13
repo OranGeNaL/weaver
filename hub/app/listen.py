@@ -41,7 +41,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import httpx
 from sqlalchemy import select
@@ -141,7 +141,7 @@ class Choice:
 
 @dataclass
 class _Job:
-    task: asyncio.Task[Choice]
+    task: asyncio.Task[Any]
     prio: Priority
 
 
@@ -916,8 +916,9 @@ async def _predownload(c: Choice) -> Path:
         job.task.add_done_callback(done)
     elif not in_background():
         job.prio.foreground()
-    c.local = await asyncio.shield(job.task)
-    return c.local
+    local = cast(Path, await asyncio.shield(job.task))
+    c.local = local
+    return local
 
 
 async def _fetch_local(ref: str, cand: Candidate) -> Path:
@@ -1035,7 +1036,7 @@ async def _download_copy(c: Choice, cp: _Copy) -> None:
         f = await asyncio.to_thread(open, cp.path, "wb", buffering=0)  # unbuffered: readers see every byte written
         drops = 0
         while not cp.done:
-            if not _same_file(c.candidate, cp.cand):
+            if c.candidate is not None and not _same_file(c.candidate, cp.cand):
                 if cp.have:
                     raise ListenError(502, "Файл трека сменился")
                 cp.cand = c.candidate  # the first file didn't open: the pick moved on to the next one

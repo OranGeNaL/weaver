@@ -25,7 +25,7 @@ from copy import deepcopy
 from datetime import date
 from http.cookiejar import LoadError, MozillaCookieJar
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qs, quote_plus, urlsplit
 
 import httpx
@@ -527,7 +527,7 @@ class YtdlpProvider:
     def _extract(self, url: str, **opts: Any) -> dict:
         with self._youtube_dl(opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            return ydl.sanitize_info(info) or {}
+            return cast(dict[str, Any], ydl.sanitize_info(info) or {})
 
     @contextmanager
     def _youtube_dl(self, opts: dict[str, Any]) -> Iterator[yt_dlp.YoutubeDL]:
@@ -544,7 +544,7 @@ class YtdlpProvider:
                 raise ProviderError(
                     "Не удалось прочитать cookies YouTube. Владельцу сервера нужно проверить файл cookies."
                 ) from None
-        with yt_dlp.YoutubeDL({**self._base_opts(), **opts}) as ydl:
+        with yt_dlp.YoutubeDL(cast(Any, {**self._base_opts(), **opts})) as ydl:
             for cookie in cookies:
                 if cookie.domain.lstrip(".") == "youtube.com" or cookie.domain.endswith(".youtube.com"):
                     # Netscape exports use 0 for session cookies; the stdlib treats it as already expired.
@@ -793,8 +793,8 @@ class YtdlpProvider:
                 info = ydl.extract_info(self.media_url(c), download=False, process=False)
                 # A direct TLS probe cannot tell whether a cache is reachable through the proxy.
                 if not self._proxy:
-                    info = on_answering_servers(info)
-                info = ydl.process_ie_result(info, download=True)
+                    info = on_answering_servers(cast(dict[str, Any], info))
+                info = ydl.process_ie_result(cast(Any, info), download=True)
             for rd in (info or {}).get("requested_downloads") or []:
                 if (fp := rd.get("filepath")) and Path(fp).is_file():
                     return Path(fp)

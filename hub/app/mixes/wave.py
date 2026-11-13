@@ -28,7 +28,7 @@ import math
 import random
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Collection, Iterable
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, cast
@@ -51,7 +51,6 @@ from app.mixes.taste_snapshot import TasteEvent
 from app.models import (
     DownloadBatch,
     DownloadItem,
-    FavoriteSubject,
     PlayEvent,
     Track,
     User,
@@ -545,7 +544,7 @@ def _session_weights(st: State, profile: V2Profile) -> None:
     subjects = [
         Subject(x.target_type, tuple(x.aliases), x.ref, x.nd_id, x.data or {}) for x in profile.favorite_states.values()
     ]
-    for state in fold(events, cast("Iterable[FavoriteSubject]", subjects)).values():
+    for state in fold(events, subjects).values():
         if not state.liked:
             continue
         key, _ = by_id[state.event.event_id]

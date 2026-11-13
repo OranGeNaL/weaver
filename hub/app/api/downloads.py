@@ -399,5 +399,6 @@ async def clear(user: User = Depends(current_user), s: AsyncSession = Depends(ge
         .where(DownloadItem.user_id == user.id, DownloadItem.status.in_(("done", "cancelled")))
         # Keep the anchors needed to put a reviewed song back in order. They can be cleared after it is resolved.
         .where(~DownloadItem.id.in_(select(PendingPlaylistAdd.download_item_id)))
+        .returning(DownloadItem.id)
     )
-    return {"removed": res.rowcount or 0}
+    return {"removed": len(res.all())}

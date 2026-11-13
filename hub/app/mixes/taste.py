@@ -193,13 +193,15 @@ async def _catalog_info(refs: list[str]) -> dict[str, CatalogTrack]:
         return {}
     sem = asyncio.Semaphore(4)
 
+    deezer = svc.deezer
+
     async def one(ref: str) -> tuple[str, CatalogTrack | None]:
         src, id_ = split_ref(ref)
-        if src != "dz":
+        if src != "dz" or deezer is None:
             return ref, None
         async with sem:
             try:
-                return ref, await svc.deezer.get_track(id_)
+                return ref, await deezer.get_track(id_)
             except Exception as e:
                 log.info("mix profile: catalog track %s: %r", ref, e)
                 return ref, None

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from typing import cast
 from urllib.parse import quote
 
 import httpx
@@ -66,7 +67,7 @@ async def songs_out(s: AsyncSession, songs: list[dict]) -> list[NdSongOut]:
     rows: dict[str, Track] = {}
     for i in range(0, len(ids), 500):
         q = select(Track).where(Track.nd_song_id.in_(ids[i : i + 500]))
-        rows.update((t.nd_song_id, t) for t in (await s.execute(q)).scalars())
+        rows.update((cast(str, t.nd_song_id), t) for t in (await s.execute(q)).scalars())
     out = []
     for x in songs:
         sid = x.get("id")

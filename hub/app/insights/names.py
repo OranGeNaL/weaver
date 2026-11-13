@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,7 +47,7 @@ def _chunks(values: list[str]) -> Iterable[list[str]]:
 def _metadata_name(data: dict[str, Any] | None) -> tuple[str, str] | None:
     data = data or {}
     title = data.get("title")
-    artists = [a.get("name") for a in data.get("artists") or () if isinstance(a, dict) and a.get("name")]
+    artists = [cast(str, a.get("name")) for a in data.get("artists") or () if isinstance(a, dict) and a.get("name")]
     artist = ", ".join(artists) or data.get("artist_credit") or data.get("artist")
     return (artist, title) if title and artist else None
 

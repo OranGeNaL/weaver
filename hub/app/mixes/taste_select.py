@@ -65,10 +65,11 @@ def facet_names(p: V2Profile) -> list[dict]:
         return [{"id": "fallback", "weight": 1.0, "artists": [], "members": sorted(p.positive_weights())}]
     result = []
     for facet in p.geometry.facets:
-        counts = Counter()
+        counts: dict[str, float] = {}
         for key in facet.members:
             if (t := p.tracks.get(key)) and t.artist:
-                counts[artist_key(t.artist)] += max(t.score, 0)
+                key_name = artist_key(t.artist)
+                counts[key_name] = counts.get(key_name, 0.0) + max(t.score, 0.0)
         names = [p.artist_names.get(key, key) for key, _ in sorted(counts.items(), key=lambda x: (-x[1], x[0]))[:2]]
         result.append({"id": facet.id, "weight": facet.weight, "artists": names, "members": facet.members})
     return result
