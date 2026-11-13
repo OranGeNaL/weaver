@@ -1,6 +1,8 @@
 # secrets and local config
 .env
 config.yaml
+# OpenSpec governance frame is versioned; runtime config.yaml above stays local
+!openspec/config.yaml
 .youtube-cookies.txt
 
 # python
