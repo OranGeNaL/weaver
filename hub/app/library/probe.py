@@ -50,7 +50,7 @@ def ffmpeg_bin() -> str:
     return os.environ.get("FFMPEG_BIN") or "ffmpeg"
 
 
-async def _run(*args: str, timeout: float) -> tuple[int, bytes, bytes]:
+async def _run(*args: str, timeout: float) -> tuple[int, bytes, bytes]:  # noqa: ASYNC109 - an API parameter
     try:
         proc = await asyncio.create_subprocess_exec(
             *args,
@@ -110,7 +110,7 @@ def parse_ffprobe_json(data: dict) -> ProbeInfo:
     )
 
 
-async def probe(path: Path | str, timeout: float = 60) -> ProbeInfo:
+async def probe(path: Path | str, timeout: float = 60) -> ProbeInfo:  # noqa: ASYNC109 - an API parameter
     """Run ffprobe on the file. Raises ProbeError if it can't be opened or has no audio stream."""
     path = Path(path)
     if not path.is_file():
@@ -147,7 +147,7 @@ def parse_silencedetect(stderr: str) -> list[tuple[float, float]]:
 
 
 async def detect_silences(
-    path: Path | str, min_s: float = 0.7, noise_db: float = -50, timeout: float = 300
+    path: Path | str, min_s: float = 0.7, noise_db: float = -50, timeout: float = 300  # noqa: ASYNC109
 ) -> list[tuple[float, float]]:
     """(start_s, end_s) of every silence at least `min_s` long and quieter than `noise_db`."""
     code, _, err = await _run(

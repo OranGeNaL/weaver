@@ -1,15 +1,16 @@
-"""Read-only local replay: python -m app.mixes.evaluate --help.
+"""Read-only replay over a Postgres copy: python -m app.mixes.evaluate --help.
 
 This evaluates the *history-score proxy*, not an unrecorded recommendation policy.
 No application lifecycle, migrations, catalog, embedder or Navidrome client is started.
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import math
+import os
 import random
-import sqlite3
 from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import replace
@@ -17,6 +18,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import create_engine, select
+
+from app.db import sync_database_url
 from app.mixes.taste_math import (
     EXPERIMENTS,
     V2Profile,
@@ -27,6 +31,7 @@ from app.mixes.taste_math import (
     visible_events,
 )
 from app.mixes.taste_snapshot import TasteEvent, TasteSnapshot, utc
+from app.models import PlayEvent
 
 
 def parse_time(value: str) -> datetime:
@@ -34,19 +39,23 @@ def parse_time(value: str) -> datetime:
 
 
 @contextmanager
-def readonly_db(path: Path):
-    """No init_engine: that path enables WAL and creates files/migrations."""
-    connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+def readonly_db(url: str):
+    """Read-only at the session level: no init_engine, no migrations, no writes.
+
+    A read-only role for the replay is the other half of the guarantee.
+    """
+    engine = create_engine(sync_database_url(url), connect_args={"options": "-c default_transaction_read_only=on"})
     try:
-        connection.execute("PRAGMA query_only=ON")
-        connection.row_factory = sqlite3.Row
-        yield connection
+        with engine.connect() as connection:
+            yield connection
+            connection.rollback()
     finally:
-        connection.close()
+        engine.dispose()
 
 
-def read_snapshot(connection, *, user_id: int, until: datetime,
-                  excluded_user_ids: frozenset[int] = frozenset()) -> TasteSnapshot:
+def read_snapshot(
+    connection, *, user_id: int, until: datetime, excluded_user_ids: frozenset[int] = frozenset()
+) -> TasteSnapshot:
     """Only immutable journal facts enter a historical cut.
 
     Current subjects, downloads, onboarding, disliked rows and local catalog metadata
@@ -54,26 +63,37 @@ def read_snapshot(connection, *, user_id: int, until: datetime,
     their contents/status may have changed after T. Event target_data remains available.
     """
     fields = TasteEvent.__dataclass_fields__
+    cutoff = utc(until)
     events = []
     missing_received = False
-    for row in connection.execute("SELECT * FROM play_events WHERE user_id = ?", (user_id,)):
-        data = {k: row[k] for k in row.keys() if k in fields}
-        data["ts"] = parse_time(data["ts"])
-        if data["ts"] > utc(until):
+    columns = (
+        PlayEvent.id, PlayEvent.user_id, PlayEvent.event_id, PlayEvent.ts, PlayEvent.kind, PlayEvent.ref,
+        PlayEvent.nd_song_id,
+        PlayEvent.target_type, PlayEvent.nd_album_id, PlayEvent.nd_artist_id, PlayEvent.target_data,
+        PlayEvent.reverts_event_id, PlayEvent.position_s, PlayEvent.duration_s, PlayEvent.context,
+        PlayEvent.client, PlayEvent.received_at,
+    )
+    rows = connection.execute(
+        select(*columns).where(PlayEvent.user_id == user_id).order_by(PlayEvent.id)
+    ).mappings()
+    for row in rows:
+        data = {k: row[k] for k in fields if k in row}
+        data["ts"] = utc(data["ts"])
+        if data["ts"] > cutoff:
             continue
         if data.get("received_at"):
-            data["received_at"] = parse_time(data["received_at"])
+            data["received_at"] = utc(data["received_at"])
         else:
             # Unknown availability cannot honestly be substituted by occurred-at time.
             missing_received = True
-            data["received_at"] = datetime.max
-        if isinstance(data.get("target_data"), str):
-            data["target_data"] = json.loads(data["target_data"])
+            data["received_at"] = datetime.max.replace(tzinfo=UTC)
         events.append(TasteEvent(**data))
-    limitations = ["Historical state before journal coverage is incomplete; unjournalled removals are unknown.",
+    limitations = [
+        "Historical state before journal coverage is incomplete; unjournalled removals are unknown.",
         "Current likes/dislikes, onboarding, downloads, aliases and metadata were not imported into the past.",
         "Historical vectors, facets, generator contributions and exposure propensities are not recorded.",
-        "v1 baseline uses corrected B ledger and local events only; phantom ND/network heuristics are not reproduced."]
+        "v1 baseline uses corrected B ledger and local events only; phantom ND/network heuristics are not reproduced.",
+    ]
     if missing_received:
         limitations.append("Events without received_at are unavailable in available-at mode.")
     return TasteSnapshot(user_id, tuple(events), excluded_user_ids=excluded_user_ids, limitations=tuple(limitations))
@@ -122,9 +142,15 @@ def bootstrap_days(rows: list[dict], *, seed: int, samples: int = 300) -> dict:
         if result is not None:
             values.append(result)
     values.sort()
-    interval = [values[int((len(values) - 1) * .025)], values[int((len(values) - 1) * .975)]] if values else None
-    return {"auc": value, "reason": None if values else "bootstrap_no_two_class_samples", "n": len(rows),
-            "days": len(days), "ci95": interval, "bootstrap_samples": len(values)}
+    interval = [values[int((len(values) - 1) * 0.025)], values[int((len(values) - 1) * 0.975)]] if values else None
+    return {
+        "auc": value,
+        "reason": None if values else "bootstrap_no_two_class_samples",
+        "n": len(rows),
+        "days": len(days),
+        "ci95": interval,
+        "bootstrap_samples": len(values),
+    }
 
 
 def outcomes(snapshot, *, until, timezone, model, mode):
@@ -140,9 +166,14 @@ def outcomes(snapshot, *, until, timezone, model, mode):
         past = replace(snapshot, subjects=(), metadata=(), downloads=(), dislikes=(), picked_artists=())
         p = profile_for(past, until=at, timezone=timezone, model=model, mode=mode)
         t = p.find(ref=e.ref, nd_song_id=e.nd_song_id)
-        rows.append({"event_id": e.event_id, "label": int(e.kind == "finish"),
-                     "score": t.score if t else 0.0,
-                     "day": e.ts.replace(tzinfo=UTC).astimezone(zone).date().isoformat()})
+        rows.append(
+            {
+                "event_id": e.event_id,
+                "label": int(e.kind == "finish"),
+                "score": t.score if t else 0.0,
+                "day": e.ts.replace(tzinfo=UTC).astimezone(zone).date().isoformat(),
+            }
+        )
     return rows
 
 
@@ -155,16 +186,31 @@ def _summary(profile):
         seeds = [t.key for t in profile.active_seed_pool()]
     else:
         seeds = [t.key for t in profile.seeds(8)]
-    return {"top20": _ranking(profile), "seed_pool": seeds,
-        "seed_pool_semantics": "eligible v2 pool; final facet-weighted rotation belongs to F" if isinstance(
-            profile, V2Profile) else "local v1 seeds; metadata may be missing",
-        "artists": [{"key": k, "name": profile.artist_names.get(k), "score": v}
-                    for k, v in sorted(profile.artists.items(), key=lambda x: (-x[1], x[0]))[:20]],
-        "evidence": getattr(profile, "evidence", None), "maturity": getattr(profile, "maturity", None),
-        "tracks": {key: {"score": t.score, "P": t.positive_raw, "N": t.negative, "liked": t.liked,
-                         "heard30": t.heard30, "familiar": t.familiar,
-                         "last_positive": t.last_positive.isoformat() if t.last_positive else None}
-                   for key, t in sorted(profile.tracks.items())}}
+    return {
+        "top20": _ranking(profile),
+        "seed_pool": seeds,
+        "seed_pool_semantics": "eligible v2 pool; final facet-weighted rotation belongs to F"
+        if isinstance(profile, V2Profile)
+        else "local v1 seeds; metadata may be missing",
+        "artists": [
+            {"key": k, "name": profile.artist_names.get(k), "score": v}
+            for k, v in sorted(profile.artists.items(), key=lambda x: (-x[1], x[0]))[:20]
+        ],
+        "evidence": getattr(profile, "evidence", None),
+        "maturity": getattr(profile, "maturity", None),
+        "tracks": {
+            key: {
+                "score": t.score,
+                "P": t.positive_raw,
+                "N": t.negative,
+                "liked": t.liked,
+                "heard30": t.heard30,
+                "familiar": t.familiar,
+                "last_positive": t.last_positive.isoformat() if t.last_positive else None,
+            }
+            for key, t in sorted(profile.tracks.items())
+        },
+    }
 
 
 def _spearman(left: dict, right: dict):
@@ -190,35 +236,58 @@ def _spearman(left: dict, right: dict):
     return sum((a - mx) * (b - my) for a, b in zip(x, y, strict=True)) / denom if denom else None
 
 
-def evaluate(snapshot: TasteSnapshot, *, until: datetime, timezone: str, model: str, seed: int,
-             mode: str = "available-at") -> dict:
+def evaluate(
+    snapshot: TasteSnapshot, *, until: datetime, timezone: str, model: str, seed: int, mode: str = "available-at"
+) -> dict:
     if model not in ("v1", "v2", *EXPERIMENTS):
         raise ValueError("unknown replay model")
     p = profile_for(snapshot, until=until, timezone=timezone, model=model, mode=mode)
     baseline = profile_for(snapshot, until=until, timezone=timezone, model="v1", mode=mode)
     selected, previous = _summary(p), _summary(baseline)
     left, right = set(selected["top20"]), set(previous["top20"])
-    return {"schema": 1, "user_id": snapshot.user_id, "until": utc(until).isoformat(), "timezone": timezone,
-        "mode": mode, "model": model, "seed": seed, "profile": selected, "v1_baseline": previous,
-        "diff": {"top20_jaccard": len(left & right) / len(left | right) if left | right else None,
-                 "seeds_added": sorted(set(selected["seed_pool"]) - set(previous["seed_pool"])),
-                 "seeds_removed": sorted(set(previous["seed_pool"]) - set(selected["seed_pool"])),
-                 "score_spearman": _spearman(p.tracks, baseline.tracks)},
-        "facets": None, "vectors": {"status": "missing_historical_snapshot", "missing": sorted(p.tracks)},
+    return {
+        "schema": 1,
+        "user_id": snapshot.user_id,
+        "until": utc(until).isoformat(),
+        "timezone": timezone,
+        "mode": mode,
+        "model": model,
+        "seed": seed,
+        "profile": selected,
+        "v1_baseline": previous,
+        "diff": {
+            "top20_jaccard": len(left & right) / len(left | right) if left | right else None,
+            "seeds_added": sorted(set(selected["seed_pool"]) - set(previous["seed_pool"])),
+            "seeds_removed": sorted(set(previous["seed_pool"]) - set(selected["seed_pool"])),
+            "score_spearman": _spearman(p.tracks, baseline.tracks),
+        },
+        "facets": None,
+        "vectors": {"status": "missing_historical_snapshot", "missing": sorted(p.tracks)},
         "similarity_distribution": None,
-        "score_contributions": {"history": {k: t.score for k, t in sorted(p.tracks.items())},
-                                "generators": None, "sound": None, "popularity": None},
-        "quality": {"metric": "pre_outcome_history_score_proxy_auc; not full recommendation-policy quality",
-                    "selected": bootstrap_days(outcomes(snapshot, until=until, timezone=timezone, model=model,
-                                                         mode=mode), seed=seed),
-                    "v1": bootstrap_days(outcomes(snapshot, until=until, timezone=timezone, model="v1",
-                                                   mode=mode), seed=seed)},
-        "limitations": list(snapshot.limitations)}
+        "score_contributions": {
+            "history": {k: t.score for k, t in sorted(p.tracks.items())},
+            "generators": None,
+            "sound": None,
+            "popularity": None,
+        },
+        "quality": {
+            "metric": "pre_outcome_history_score_proxy_auc; not full recommendation-policy quality",
+            "selected": bootstrap_days(
+                outcomes(snapshot, until=until, timezone=timezone, model=model, mode=mode), seed=seed
+            ),
+            "v1": bootstrap_days(outcomes(snapshot, until=until, timezone=timezone, model="v1", mode=mode), seed=seed),
+        },
+        "limitations": list(snapshot.limitations),
+    }
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", type=Path, required=True)
+    parser.add_argument(
+        "--url",
+        default=(os.environ.get("DATABASE_URL") or "").strip(),
+        help="Postgres URL of a copy; defaults to DATABASE_URL",
+    )
     parser.add_argument("--until", type=parse_time, required=True, help="UTC ISO timestamp")
     parser.add_argument("--user-id", type=int, required=True)
     parser.add_argument("--model", choices=("v1", "v2", *EXPERIMENTS), required=True)
@@ -228,19 +297,18 @@ def main(argv=None) -> int:
     parser.add_argument("--mode", choices=("occurred-at", "available-at"), default="available-at")
     parser.add_argument("--exclude-user-id", type=int, action="append", default=[], help="explicit known QA ids")
     args = parser.parse_args(argv)
-    database = args.db.resolve()
-    output = args.output.resolve()
-    if (output in {database, Path(str(database) + "-wal"), Path(str(database) + "-shm"),
-                   Path(str(database) + "-journal")} or
-            (output.exists() and database.exists() and output.samefile(database))):
-        parser.error("output must not overwrite the source database")
-    with readonly_db(args.db) as connection:
-        snapshot = read_snapshot(connection, user_id=args.user_id, until=args.until,
-                                 excluded_user_ids=frozenset(args.exclude_user_id))
-    result = evaluate(snapshot, until=args.until, timezone=args.timezone, model=args.model, seed=args.seed,
-                      mode=args.mode)
-    args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False) + "\n",
-                           encoding="utf-8")
+    if not args.url:
+        parser.error("--url (or DATABASE_URL) with a Postgres copy is required")
+    with readonly_db(args.url) as connection:
+        snapshot = read_snapshot(
+            connection, user_id=args.user_id, until=args.until, excluded_user_ids=frozenset(args.exclude_user_id)
+        )
+    result = evaluate(
+        snapshot, until=args.until, timezone=args.timezone, model=args.model, seed=args.seed, mode=args.mode
+    )
+    args.output.write_text(
+        json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
+    )
     return 0
 
 

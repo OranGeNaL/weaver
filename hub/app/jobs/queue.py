@@ -1,7 +1,8 @@
-"""SQLite-backed job queue with an in-process asyncio worker pool.
+"""Postgres-backed job queue with an in-process asyncio worker pool.
 
 - Jobs survive restarts: on startup every `running` job is put back to `queued`.
-- Claiming is atomic (single UPDATE ... RETURNING), so several workers never take the same job.
+- Claiming is atomic: `SELECT ... FOR UPDATE SKIP LOCKED` picks a job, and the `UPDATE` repeats the predicate,
+  so several workers never take the same job.
 - Failures retry with exponential backoff up to `max_attempts`; `PermanentError` fails at once.
 - Higher `priority` goes first. Background work (imports: `PRIORITY_IMPORT`) is below 0: it never takes the last
   worker (`background_slots`), so a tap or a manual download starts at once, and it runs with the background network
@@ -15,10 +16,10 @@ import logging
 import os
 import traceback
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import text, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -85,9 +86,12 @@ async def recover_stale() -> int:
     """Called at startup: jobs left `running` by a crashed/stopped process go back to the queue."""
     async with session_scope() as s:
         res = await s.execute(
-            update(Job).where(Job.status == "running").values(status="queued", locked_by=None, locked_at=None)
+            update(Job)
+            .where(Job.status == "running")
+            .values(status="queued", locked_by=None, locked_at=None)
+            .returning(Job.id)
         )
-        return res.rowcount or 0
+        return len(res.all())
 
 
 def background_slots() -> int:
@@ -95,29 +99,41 @@ def background_slots() -> int:
     return max(1, get_settings().cfg.jobs.workers - 1)
 
 
-# a queued job a worker may take now: urgent, or background while a background slot is free
-_CLAIMABLE = (
-    "status='queued' AND (priority >= 0 OR "
-    "(SELECT COUNT(*) FROM jobs WHERE status='running' AND priority < 0) < :bg)"
-)
+def _claimable(bg: int):
+    """A queued job a worker may take now: urgent, or background while a background slot is free."""
+    running_background = (
+        select(func.count()).select_from(Job).where(Job.status == "running", Job.priority < 0).scalar_subquery()
+    )
+    return and_(Job.status == "queued", or_(Job.priority >= 0, running_background < bg))
 
 
 async def _claim(worker_id: str) -> Job | None:
     now = utcnow()
-    async with session_scope() as s:
+    bg = background_slots()
+    async with session_scope() as session:
+        # SKIP LOCKED: a worker never waits for a job another worker already holds
+        candidate = (
+            select(Job.id)
+            .where(_claimable(bg), Job.run_after <= now)
+            .order_by(Job.priority.desc(), Job.run_after, Job.id)
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+        job_id = (await session.execute(candidate)).scalar_one_or_none()
+        if job_id is None:
+            return None
+        # the predicate is repeated: a job claimed by another transaction in between is not taken twice
         row = (
-            await s.execute(
-                text(
-                    "UPDATE jobs SET status='running', locked_by=:w, locked_at=:now, attempts=attempts+1, updated_at=:now "
-                    f"WHERE id = (SELECT id FROM jobs WHERE {_CLAIMABLE} AND run_after <= :now "
-                    "ORDER BY priority DESC, run_after, id LIMIT 1) RETURNING id"
-                ),
-                {"w": worker_id, "now": now, "bg": background_slots()},
+            await session.execute(
+                update(Job)
+                .where(Job.id == job_id, _claimable(bg), Job.run_after <= now)
+                .values(status="running", locked_by=worker_id, locked_at=now, attempts=Job.attempts + 1, updated_at=now)
+                .returning(Job.id)
             )
         ).first()
         if row is None:
             return None
-        return await s.get(Job, row[0])
+        return await session.get(Job, row[0], populate_existing=True)
 
 
 async def _finish(job_id: int, *, ok: bool, error: str | None = None, retry_in: float | None = None) -> None:
@@ -140,13 +156,12 @@ async def _finish(job_id: int, *, ok: bool, error: str | None = None, retry_in: 
 
 
 async def _next_wakeup_in() -> float:
-    async with session_scope() as s:
-        row = (
-            await s.execute(text(f"SELECT MIN(run_after) FROM jobs WHERE {_CLAIMABLE}"), {"bg": background_slots()})
-        ).first()
-    if not row or row[0] is None:
+    async with session_scope() as session:
+        nxt = (
+            await session.execute(select(func.min(Job.run_after)).where(_claimable(background_slots())))
+        ).scalar_one_or_none()
+    if nxt is None:
         return 30.0
-    nxt = row[0] if isinstance(row[0], datetime) else datetime.fromisoformat(str(row[0]))
     return max(0.05, min(30.0, (nxt - utcnow()).total_seconds()))
 
 
@@ -170,12 +185,20 @@ async def run_job(job: Job) -> None:
         tb = traceback.format_exc(limit=8)
         if job.attempts < job.max_attempts:
             delay = min(600.0, 5 * 2 ** (job.attempts - 1))
-            log.warning("job %s (%s) attempt %s failed: %r, retry in %ss", job.id, job.kind, job.attempts, e, delay,
-                        extra={"job_id": job.id})
+            log.warning(
+                "job %s (%s) attempt %s failed: %r, retry in %ss",
+                job.id,
+                job.kind,
+                job.attempts,
+                e,
+                delay,
+                extra={"job_id": job.id},
+            )
             await _finish(job.id, ok=False, error=f"{e!r}\n{tb}", retry_in=delay)
         else:
-            log.error("job %s (%s) failed after %s attempts: %r", job.id, job.kind, job.attempts, e,
-                      extra={"job_id": job.id})
+            log.error(
+                "job %s (%s) failed after %s attempts: %r", job.id, job.kind, job.attempts, e, extra={"job_id": job.id}
+            )
             await _finish(job.id, ok=False, error=f"{e!r}\n{tb}")
             on_fail = _failure_hooks.get(job.kind)
             if on_fail:

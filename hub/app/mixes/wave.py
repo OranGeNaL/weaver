@@ -28,13 +28,13 @@ import math
 import random
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import func, or_, select, update
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.catalog.models import CatalogTrack, split_ref
@@ -48,7 +48,17 @@ from app.mixes.resolve import catalog_track, library_track
 from app.mixes.taste import EARLY_SKIP_S, Profile, TasteTrack, artist_key, build_profile, skip_weight
 from app.mixes.taste_math import V2Profile, saturation
 from app.mixes.taste_snapshot import TasteEvent
-from app.models import DownloadBatch, DownloadItem, PlayEvent, Track, User, WaveItem, WaveSession, utcnow
+from app.models import (
+    DownloadBatch,
+    DownloadItem,
+    FavoriteSubject,
+    PlayEvent,
+    Track,
+    User,
+    WaveItem,
+    WaveSession,
+    utcnow,
+)
 from app.services import svc
 
 log = logging.getLogger(__name__)
@@ -69,8 +79,7 @@ ARTIST_SONGS = "artist_songs"
 ARTIST_SONGS_MAX = 60  # the seed artist's library songs put in the pool
 ARTIST_ALBUMS_MAX = 30  # ... read from this many of their albums
 SESSION_WEIGHTS = {"seed": 10.0, SESSION_RADIO: 1.2, ARTIST_SONGS: 1.2}
-TITLES = {"seed": "С чего началась волна", SESSION_RADIO: "Похоже на понравившееся",
-          ARTIST_SONGS: "Песни исполнителя"}
+TITLES = {"seed": "С чего началась волна", SESSION_RADIO: "Похоже на понравившееся", ARTIST_SONGS: "Песни исполнителя"}
 IDLE = timedelta(hours=24)  # a session not asked for this long is over
 KEEP = timedelta(days=7)  # ... and this long: its state is cleared to a summary (`CLEARED_KEYS`), the row stays
 CLEARED_KEYS = ("version", "taste_model", "gens", "started", "started_familiar", "skips", "seeds_used", "downloads")
@@ -90,14 +99,25 @@ class WaveError(Exception):
 
 
 def cand_json(c: build.Cand) -> dict[str, Any]:
-    return {"track": c.track.model_dump(mode="json"), "gens": c.gens, "familiar": c.familiar,
-            "nd_song_id": c.nd_song_id, "library_track_id": c.library_track_id, "sim": c.sim}
+    return {
+        "track": c.track.model_dump(mode="json"),
+        "gens": c.gens,
+        "familiar": c.familiar,
+        "nd_song_id": c.nd_song_id,
+        "library_track_id": c.library_track_id,
+        "sim": c.sim,
+    }
 
 
 def cand_of(d: dict[str, Any]) -> build.Cand:
-    return build.Cand(track=CatalogTrack.model_validate(d["track"]), gens=dict(d.get("gens") or {}),
-                      familiar=bool(d.get("familiar")), nd_song_id=d.get("nd_song_id"),
-                      library_track_id=d.get("library_track_id"), sim=d.get("sim"))
+    return build.Cand(
+        track=CatalogTrack.model_validate(d["track"]),
+        gens=dict(d.get("gens") or {}),
+        familiar=bool(d.get("familiar")),
+        nd_song_id=d.get("nd_song_id"),
+        library_track_id=d.get("library_track_id"),
+        sim=d.get("sim"),
+    )
 
 
 def fp_of(c: build.Cand) -> str:
@@ -142,25 +162,50 @@ class State:
     seed_artist: str | None = None  # artist key of a wave by an artist: it plays more often (`SEED_ARTIST_GAP`)
 
     def dump(self) -> dict[str, Any]:
-        return {"version": self.version, "taste_model": self.taste_model, "seen": sorted(self.seen),
-                "signals": self.signals, "positive_weights": self.positive_weights, "space": self.space,
-                "pool": [cand_json(c) for c in self.pool.values()], "out": [cand_json(c) for c in self.out.values()],
-                "played": [p.__dict__ for p in self.played], "heard": sorted(self.heard), "skips": self.skips,
-                "pos": self.pos, "neg": self.neg, "radios": self.radios, "seeds_used": self.seeds_used,
-                "started": self.started, "started_familiar": self.started_familiar, "downloads": self.downloads,
-                "gens": self.gens, "seed_artist": self.seed_artist}
+        return {
+            "version": self.version,
+            "taste_model": self.taste_model,
+            "seen": sorted(self.seen),
+            "signals": self.signals,
+            "positive_weights": self.positive_weights,
+            "space": self.space,
+            "pool": [cand_json(c) for c in self.pool.values()],
+            "out": [cand_json(c) for c in self.out.values()],
+            "played": [p.__dict__ for p in self.played],
+            "heard": sorted(self.heard),
+            "skips": self.skips,
+            "pos": self.pos,
+            "neg": self.neg,
+            "radios": self.radios,
+            "seeds_used": self.seeds_used,
+            "started": self.started,
+            "started_familiar": self.started_familiar,
+            "downloads": self.downloads,
+            "gens": self.gens,
+            "seed_artist": self.seed_artist,
+        }
 
     @classmethod
     def load(cls, d: dict[str, Any]) -> State:
-        st = cls(version=int(d.get("version") or 1), taste_model="v2" if d.get("version") and
-                 d.get("taste_model") == "v2" else "v1", seen=set(d.get("seen") or []),
-                 signals=dict(d.get("signals") or {}), positive_weights=dict(d.get("positive_weights") or {}),
-                 space=d.get("space"), skips=dict(d.get("skips") or {}),
-                 pos=list(d.get("pos") or []), neg=list(d.get("neg") or []),
-                 radios=list(d.get("radios") or []), seeds_used=list(d.get("seeds_used") or []),
-                 started=int(d.get("started") or 0), started_familiar=int(d.get("started_familiar") or 0),
-                 downloads=list(d.get("downloads") or []), gens=dict(d.get("gens") or {}),
-                 heard=set(d.get("heard") or []), seed_artist=d.get("seed_artist"))
+        st = cls(
+            version=int(d.get("version") or 1),
+            taste_model="v2" if d.get("version") and d.get("taste_model") == "v2" else "v1",
+            seen=set(d.get("seen") or []),
+            signals=dict(d.get("signals") or {}),
+            positive_weights=dict(d.get("positive_weights") or {}),
+            space=d.get("space"),
+            skips=dict(d.get("skips") or {}),
+            pos=list(d.get("pos") or []),
+            neg=list(d.get("neg") or []),
+            radios=list(d.get("radios") or []),
+            seeds_used=list(d.get("seeds_used") or []),
+            started=int(d.get("started") or 0),
+            started_familiar=int(d.get("started_familiar") or 0),
+            downloads=list(d.get("downloads") or []),
+            gens=dict(d.get("gens") or {}),
+            heard=set(d.get("heard") or []),
+            seed_artist=d.get("seed_artist"),
+        )
         st.pool = {c.track.ref: c for c in map(cand_of, d.get("pool") or [])}
         st.out = {c.track.ref: c for c in map(cand_of, d.get("out") or [])}
         st.played = [Played(**p) for p in d.get("played") or []]
@@ -211,9 +256,17 @@ async def _runtime(sid: str, user: User) -> Runtime:
             if "seen" not in (row.state_json or {}):
                 # Legacy state has no event ledger. Preserve its already-saved learning
                 # rather than applying the old journal again when an offline client retries.
-                rt.state.seen.update((await s.execute(select(PlayEvent.event_id).where(
-                    PlayEvent.user_id == user.id, PlayEvent.context == f"wave:{sid}",
-                    PlayEvent.received_at <= row.updated_at))).scalars())
+                rt.state.seen.update(
+                    (
+                        await s.execute(
+                            select(PlayEvent.event_id).where(
+                                PlayEvent.user_id == user.id,
+                                PlayEvent.context == f"wave:{sid}",
+                                PlayEvent.received_at <= row.updated_at,
+                            )
+                        )
+                    ).scalars()
+                )
         rt = _rt.setdefault(sid, rt)
     elif rt.user_id != user.id:
         raise WaveError(404, "Волна закончилась: запустите новую")
@@ -225,6 +278,7 @@ async def _profile(rt: Runtime, user: User) -> Profile:
         rt.profile = await build_profile(s, user, model=rt.state.taste_model)
     if isinstance(rt.profile, V2Profile):
         from app.mixes.taste_select import prepare
+
         await prepare(rt.profile)
     return rt.profile
 
@@ -247,8 +301,9 @@ async def radio_of(t: CatalogTrack) -> list[CatalogTrack]:
     return await build._by_seeds([taste_of(t)], lambda x: sources.ytm_radio(x.artist, x.title), "ytm")
 
 
-def generators(p: Profile, seed: CatalogTrack | None, seed_artist: dict[str, Any] | None,
-               seeds: list[TasteTrack]) -> dict[str, build.Gen]:
+def generators(
+    p: Profile, seed: CatalogTrack | None, seed_artist: dict[str, Any] | None, seeds: list[TasteTrack]
+) -> dict[str, build.Gen]:
     """The sources of a new session's pool: the seed's radios, or the mix's generators for the profile."""
     if seed is not None:
         gens = build.generators(p, [taste_of(seed)])
@@ -261,7 +316,7 @@ def generators(p: Profile, seed: CatalogTrack | None, seed_artist: dict[str, Any
         songs: list[CatalogTrack] = list(seed_artist.get("songs") or [])
 
         async def top() -> list[CatalogTrack]:
-            if svc.deezer is None:
+            if svc.deezer is None or not isinstance(ref, str):
                 raise build.Off("Deezer")
             return await svc.deezer.get_artist_top(split_ref(ref)[1], limit=10)
 
@@ -270,8 +325,9 @@ def generators(p: Profile, seed: CatalogTrack | None, seed_artist: dict[str, Any
 
         async def radios() -> list[CatalogTrack]:
             tracks = (await top())[:2] if ref else random.sample(songs, min(2, len(songs)))
-            return await build._by_seeds([taste_of(t) for t in tracks],
-                                         lambda x: sources.ytm_radio(x.artist, x.title), "ytm")
+            return await build._by_seeds(
+                [taste_of(t) for t in tracks], lambda x: sources.ytm_radio(x.artist, x.title), "ytm"
+            )
 
         out = {"deezer_radio": lambda: artist_radio(ref), "favorites": top} if ref else {}
         if songs:
@@ -349,8 +405,10 @@ async def _sound(p: Profile, cands: list[build.Cand]) -> None:
             sim = await e.similarity([c.key for c in cands], p.vector_profile())
             for c in cands:
                 c.sim = sim.scores.get(c.key)
-            todo = sorted((c for c in cands if c.key in sim.missing and c.track.source == "dz"),
-                          key=lambda c: -build.score(c, weights(), p))[:EMBED_NEW]
+            todo = sorted(
+                (c for c in cands if c.key in sim.missing and c.track.source == "dz"),
+                key=lambda c: -build.score(c, weights(), p),
+            )[:EMBED_NEW]
             urls = await asyncio.gather(*(build._preview(c.track) for c in todo))
             items = [{"key": c.key, "url": u} for c, u in zip(todo, urls, strict=True) if u]
             if items:
@@ -369,8 +427,9 @@ async def _gather(sid: str, rt: Runtime, gens: list[tuple[str, build.Gen]], enou
     deadline = time.monotonic() + get_settings().wave_wait_s
     pending = tasks
     while pending:
-        done, pending = await asyncio.wait(pending, timeout=max(0.0, deadline - time.monotonic()),
-                                           return_when=asyncio.FIRST_COMPLETED)
+        done, pending = await asyncio.wait(
+            pending, timeout=max(0.0, deadline - time.monotonic()), return_when=asyncio.FIRST_COMPLETED
+        )
         if not done:
             break
         await absorb(rt, [r for t in done for r in t.result()])
@@ -420,7 +479,8 @@ def _refill(sid: str, rt: Runtime) -> None:
             current = gens
             if v2:
                 from app.mixes.taste_select import enrich_selected
-                enriched = await enrich_selected(profile, chosen)
+
+                enriched = await enrich_selected(cast(V2Profile, profile), chosen)
                 all_gens = build.generators(profile, enriched) if enriched else {}
                 current = {k: all_gens[k] for k in ("ytm_radio", "lastfm_similar") if k in all_gens}
             results = await build.run_generators(current)
@@ -482,17 +542,20 @@ def _session_weights(st: State, profile: V2Profile) -> None:
                 skips[data["artist"]] = skips.get(data["artist"], 0) + 1
             else:
                 positives[key] = positives.get(key, 0) + skip_weight(e.position_s, e.duration_s or data.get("length"))
-    subjects = [Subject(x.target_type, tuple(x.aliases), x.ref, x.nd_id, x.data or {})
-                for x in profile.favorite_states.values()]
-    for state in fold(events, subjects).values():
+    subjects = [
+        Subject(x.target_type, tuple(x.aliases), x.ref, x.nd_id, x.data or {}) for x in profile.favorite_states.values()
+    ]
+    for state in fold(events, cast("Iterable[FavoriteSubject]", subjects)).values():
         if not state.liked:
             continue
         key, _ = by_id[state.event.event_id]
         current = profile.find(ref=state.ref, nd_song_id=state.nd_id)
         # A fresh global unlike removes only the session like, never finish/late-skip evidence.
-        journalled = any(x.target_type == "track" and
-                         ((state.ref and x.ref == state.ref) or (state.nd_id and x.nd_id == state.nd_id))
-                         for x in profile.favorite_states.values())
+        journalled = any(
+            x.target_type == "track"
+            and ((state.ref and x.ref == state.ref) or (state.nd_id and x.nd_id == state.nd_id))
+            for x in profile.favorite_states.values()
+        )
         if not journalled or (current and current.liked):
             positives[key] = positives.get(key, 0) + 1
     explicit = {}
@@ -525,13 +588,27 @@ async def _learn_v2(sid: str, rt: Runtime, events: list[PlayEvent]) -> None:
             continue
         matched = _match(st, e.ref, e.nd_song_id)
         if matched is None:
-            old = next((d for d in reversed(list(st.signals.values())) if
-                        (e.ref and d.get("ref") == e.ref) or
-                        (e.nd_song_id and d.get("nd_song_id") == e.nd_song_id)), None)
+            old = next(
+                (
+                    d
+                    for d in reversed(list(st.signals.values()))
+                    if (e.ref and d.get("ref") == e.ref) or (e.nd_song_id and d.get("nd_song_id") == e.nd_song_id)
+                ),
+                None,
+            )
             if old is None:
                 continue
-            matched = "signal", Played(old["ref"], old.get("nd_song_id"), old["key"], old["artist"],
-                                        bool(old.get("familiar")), track=old.get("track"))
+            matched = (
+                "signal",
+                Played(
+                    old["ref"],
+                    old.get("nd_song_id"),
+                    old["key"],
+                    old["artist"],
+                    bool(old.get("familiar")),
+                    track=old.get("track"),
+                ),
+            )
         x = matched[1]
         if isinstance(x, build.Cand):
             x = _start(st, x) if e.kind in PLAY_KINDS else _as_played(x)
@@ -539,9 +616,14 @@ async def _learn_v2(sid: str, rt: Runtime, events: list[PlayEvent]) -> None:
             x.kind, x.position_s = e.kind, e.position_s
         values = {k: getattr(e, k) for k in TasteEvent.__dataclass_fields__}
         values["ts"], values["received_at"] = e.ts.isoformat(), e.received_at.isoformat()
-        st.signals[e.event_id] = {**values, "key": x.key, "artist": x.artist,
-                                  "length": (x.track or {}).get("duration_s"), "track": x.track,
-                                  "familiar": x.familiar}
+        st.signals[e.event_id] = {
+            **values,
+            "key": x.key,
+            "artist": x.artist,
+            "length": (x.track or {}).get("duration_s"),
+            "track": x.track,
+            "familiar": x.familiar,
+        }
         if e.kind in ("finish", "like") and not e.reverts_event_id:
             liked.append(x)
             if e.kind == "finish":
@@ -556,8 +638,14 @@ async def _learn_v2(sid: str, rt: Runtime, events: list[PlayEvent]) -> None:
     await _gather(sid, rt, radios, lambda: False)
 
 
-def value(c: build.Cand, st: State, vectors: dict[str, list[float]], pos: list[float] | None,
-          neg: list[float] | None, queued: bool = False) -> float:
+def value(
+    c: build.Cand,
+    st: State,
+    vectors: dict[str, list[float]],
+    pos: list[float] | None,
+    neg: list[float] | None,
+    queued: bool = False,
+) -> float:
     """The mix's score, minus the session's early skips of the artist, plus closeness by sound to what the session
     liked minus to what it skipped."""
     v = c.score - SKIP_ARTIST_PENALTY * st.skips.get(c.artist, 0) + (QUEUED_BONUS if queued else 0.0)
@@ -565,15 +653,22 @@ def value(c: build.Cand, st: State, vectors: dict[str, list[float]], pos: list[f
     if vec is not None:
         if st.taste_model == "v2":
             nearest = max((max(0.0, build._cos(vec, vectors.get(key))) for key in st.neg), default=0.0)
-            v += SOUND_WEIGHT * (build._cos(vec, pos) - .5 * nearest)
+            v += SOUND_WEIGHT * (build._cos(vec, pos) - 0.5 * nearest)
         else:
             v += SOUND_WEIGHT * (build._cos(vec, pos) - build._cos(vec, neg))
     return v
 
 
-def pick(st: State, p: Profile, mode: str, vectors: dict[str, list[float]], n: int = BATCH,
-         queued: set[str] = frozenset(), first: build.Cand | None = None,
-         values: dict[str, float] | None = None) -> list[build.Cand]:
+def pick(
+    st: State,
+    p: Profile,
+    mode: str,
+    vectors: dict[str, list[float]],
+    n: int = BATCH,
+    queued: Collection[str] = frozenset(),
+    first: build.Cand | None = None,
+    values: dict[str, float] | None = None,
+) -> list[build.Cand]:
     """The next `n`: the best by `value` keeping the mode's familiar share, an artist at most once in `ARTIST_GAP`
     tracks (counting the played ones; the artist of a wave by an artist — once in `SEED_ARTIST_GAP`); with nothing else left, the gap gives way (never the same artist twice in a
     row). «Не нравится» set since the candidate came in drops it. `queued` — refs the client has ahead already.
@@ -590,13 +685,16 @@ def pick(st: State, p: Profile, mode: str, vectors: dict[str, list[float]], n: i
     recent = [x.artist for x in st.played]
     while len(out) < n and ranked:
         seq = recent + [c.artist for c in out]
-        gap = set(seq[-(ARTIST_GAP - 1):])
-        seed_gap = set(seq[-(SEED_ARTIST_GAP - 1):])
+        gap = set(seq[-(ARTIST_GAP - 1) :])
+        seed_gap = set(seq[-(SEED_ARTIST_GAP - 1) :])
         total, fam = st.started + len(out), st.started_familiar + sum(c.familiar for c in out)
         want_fam = fam + 1 <= share * (total + 1) + 0.5
         ok = [c for c in ranked if c.artist not in (seed_gap if c.artist == st.seed_artist else gap)]
-        best = (next((c for c in ok if c.familiar == want_fam), None) or (ok[0] if ok else None)
-                or next((c for c in ranked if not seq or c.artist != seq[-1]), None))
+        best = (
+            next((c for c in ok if c.familiar == want_fam), None)
+            or (ok[0] if ok else None)
+            or next((c for c in ranked if not seq or c.artist != seq[-1]), None)
+        )
         if best is None:
             break
         ranked.remove(best)
@@ -606,8 +704,12 @@ def pick(st: State, p: Profile, mode: str, vectors: dict[str, list[float]], n: i
 
 def _disliked(c: build.Cand, p: Profile) -> bool:
     t = c.track
-    return p.disliked(ref=t.ref if t.source in ("dz", "file") else None, nd_song_id=c.nd_song_id, artist=t.artist,
-                      artist_ref=t.artist_ref)
+    return p.disliked(
+        ref=t.ref if t.source in ("dz", "file") else None,
+        nd_song_id=c.nd_song_id,
+        artist=t.artist,
+        artist_ref=t.artist_ref,
+    )
 
 
 async def _vectors(rt: Runtime) -> dict[str, list[float]]:
@@ -616,17 +718,20 @@ async def _vectors(rt: Runtime) -> dict[str, list[float]]:
     st = rt.state
     if st.taste_model == "v2":
         from app.mixes.taste_select import geometry_scores
+
         p = rt.profile
         assert isinstance(p, V2Profile)
         candidates = [*st.out.values(), *st.pool.values()]
         rt.vectors = await geometry_scores(p, candidates, [*st.pos, *st.neg])
-        st.space = {"model": p.geometry.model, "space_id": p.geometry.space_id,
-                    "dim": p.geometry.dim} if p.geometry else None
+        st.space = (
+            {"model": p.geometry.model, "space_id": p.geometry.space_id, "dim": p.geometry.dim} if p.geometry else None
+        )
         for c in candidates:
             c.score = build.score(c, weights(), p)
         if p.geometry:
-            todo = sorted((c for c in candidates if c.sim is None and c.track.source == "dz"),
-                          key=lambda c: -c.score)[:EMBED_NEW]
+            todo = sorted((c for c in candidates if c.sim is None and c.track.source == "dz"), key=lambda c: -c.score)[
+                :EMBED_NEW
+            ]
             urls = await asyncio.gather(*(build._preview(c.track) for c in todo))
             items = [{"key": c.key, "url": url} for c, url in zip(todo, urls, strict=True) if url]
             if items:
@@ -640,8 +745,11 @@ async def _vectors(rt: Runtime) -> dict[str, list[float]]:
         return rt.vectors
     best = sorted([*st.out.values(), *st.pool.values()], key=lambda c: -c.score)[:VECTORS_TOP]
     now = time.monotonic()
-    keys = [k for k in dict.fromkeys([*st.pos, *st.neg, *(c.key for c in best)])
-            if k not in rt.vectors and rt.asked.get(k, 0) < now - ASK_AGAIN_S]
+    keys = [
+        k
+        for k in dict.fromkeys([*st.pos, *st.neg, *(c.key for c in best)])
+        if k not in rt.vectors and rt.asked.get(k, 0) < now - ASK_AGAIN_S
+    ]
     if keys:
         try:
             async with embedder.EmbedderClient() as e:
@@ -688,8 +796,14 @@ def _signal(keys: list[str], key: str) -> None:
 
 
 def _as_played(c: build.Cand) -> Played:
-    return Played(ref=c.track.ref, nd_song_id=c.nd_song_id, key=c.key, artist=c.artist, familiar=c.familiar,
-                  track=c.track.model_dump(mode="json"))
+    return Played(
+        ref=c.track.ref,
+        nd_song_id=c.nd_song_id,
+        key=c.key,
+        artist=c.artist,
+        familiar=c.familiar,
+        track=c.track.model_dump(mode="json"),
+    )
 
 
 async def learn(sid: str, rt: Runtime, events: list[PlayEvent]) -> None:
@@ -747,15 +861,26 @@ async def _download(sid: str, rt: Runtime, x: Played) -> None:
     st.downloads.append(x.ref)
     t = CatalogTrack.model_validate(x.track)
     async with session_scope() as s:
-        active = (await s.execute(select(DownloadItem.id).where(
-            DownloadItem.status.in_(ACTIVE_STATUSES),
-            func.json_extract(DownloadItem.query_json, "$.meta.track_ref") == x.ref).limit(1))).scalar_one_or_none()
+        active = (
+            await s.execute(
+                select(DownloadItem.id)
+                .where(
+                    DownloadItem.status.in_(ACTIVE_STATUSES),
+                    DownloadItem.query_json["meta"]["track_ref"].astext == x.ref,
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
         if active is not None:
             return
         from app.library.owned import find_existing
 
-        if await find_existing(s, artist=t.artist, title=t.title, duration_s=t.duration_s, isrc=t.isrc,
-                               deezer_track_id=t.id) is not None:
+        if (
+            await find_existing(
+                s, artist=t.artist, title=t.title, duration_s=t.duration_s, isrc=t.isrc, deezer_track_id=t.id
+            )
+            is not None
+        ):
             return
         row = await s.get(WaveSession, sid)
         if row is None:
@@ -765,10 +890,15 @@ async def _download(sid: str, rt: Runtime, x: Played) -> None:
             s.add(batch)
             await s.flush()
             row.batch_id = batch.id
-        item = DownloadItem(batch_id=row.batch_id, user_id=rt.user_id, query_json={
-            "query": query_from_track(t).model_dump(),
-            "meta": {"track_ref": x.ref, "deezer_track_id": t.id, "artists": t.artists or [t.artist]},
-            "wave": {"session": sid}})
+        item = DownloadItem(
+            batch_id=row.batch_id,
+            user_id=rt.user_id,
+            query_json={
+                "query": query_from_track(t).model_dump(),
+                "meta": {"track_ref": x.ref, "deezer_track_id": t.id, "artists": t.artists or [t.artist]},
+                "wave": {"session": sid},
+            },
+        )
         s.add(item)
         await s.flush()
         await enqueue(s, "download_item", {"item_id": item.id})
@@ -787,12 +917,24 @@ async def record(s: AsyncSession, sid: str, user_id: int, raw: list[Any]):
     ids = [x["event_id"] for x in events if isinstance(x, dict) and isinstance(x.get("event_id"), str)]
     rows: list[PlayEvent] = []
     if ids:
-        await s.execute(update(PlayEvent).where(PlayEvent.user_id == user_id, PlayEvent.event_id.in_(ids),
-                        or_(PlayEvent.context.is_(None), ~PlayEvent.context.like("wave:%"), PlayEvent.context == context))
-                        .values(context=context))
-        rows = list((await s.execute(select(PlayEvent).where(PlayEvent.user_id == user_id,
-                                                             PlayEvent.event_id.in_(ids), PlayEvent.context == context)
-                                     .order_by(PlayEvent.ts, PlayEvent.id))).scalars())
+        await s.execute(
+            update(PlayEvent)
+            .where(
+                PlayEvent.user_id == user_id,
+                PlayEvent.event_id.in_(ids),
+                or_(PlayEvent.context.is_(None), ~PlayEvent.context.like("wave:%"), PlayEvent.context == context),
+            )
+            .values(context=context)
+        )
+        rows = list(
+            (
+                await s.execute(
+                    select(PlayEvent)
+                    .where(PlayEvent.user_id == user_id, PlayEvent.event_id.in_(ids), PlayEvent.context == context)
+                    .order_by(PlayEvent.ts, PlayEvent.id)
+                )
+            ).scalars()
+        )
     return out, rows
 
 
@@ -839,9 +981,18 @@ async def _artist_songs(nd, artist_id: str, name: str) -> list[CatalogTrack]:
             out.append(library_track(t))
         else:
             x = songs[sid]
-            out.append(CatalogTrack(ref=f"nd:{sid}", source="nd", id=sid, title=x.get("title") or "",
-                                    artist=x.get("artist") or name, artists=[x.get("artist") or name],
-                                    album_title=x.get("album"), duration_s=x.get("duration")))
+            out.append(
+                CatalogTrack(
+                    ref=f"nd:{sid}",
+                    source="nd",
+                    id=sid,
+                    title=x.get("title") or "",
+                    artist=x.get("artist") or name,
+                    artists=[x.get("artist") or name],
+                    album_title=x.get("album"),
+                    duration_s=x.get("duration"),
+                )
+            )
     return out
 
 
@@ -851,7 +1002,12 @@ async def _catalog_artist(name: str, songs: list[CatalogTrack]) -> str | None:
         return None
     key = artist_key(name)
     for t in songs:
-        if t.source == "dz" and (full := await catalog_track(t.ref)) is not None and full.artist_ref                 and artist_key(full.artist) == key:
+        if (
+            t.source == "dz"
+            and (full := await catalog_track(t.ref)) is not None
+            and full.artist_ref
+            and artist_key(full.artist) == key
+        ):
             return full.artist_ref
     try:
         found = await svc.deezer.search(name, kinds=("artist",), limit=5)
@@ -903,9 +1059,19 @@ async def _seed(seed: dict[str, Any], user: User | None = None) -> tuple[Catalog
             c = await listen.file_candidate(ref)
             if c is None or not c.artist.strip() or not c.title.strip():
                 raise WaveError(404, "Файл не найден: повторите поиск")
-            return CatalogTrack(ref=ref, source="file", id=c.provider_id, title=c.title, artist=c.artist,
-                                artists=[c.artist], album_title=c.album, duration_s=c.duration_s,
-                                explicit=c.explicit, cover_url=c.cover_url, cover_small_url=c.cover_url), None
+            return CatalogTrack(
+                ref=ref,
+                source="file",
+                id=c.provider_id,
+                title=c.title,
+                artist=c.artist,
+                artists=[c.artist],
+                album_title=c.album,
+                duration_s=c.duration_s,
+                explicit=c.explicit,
+                cover_url=c.cover_url,
+                cover_small_url=c.cover_url,
+            ), None
         if not ref.startswith("dz:") or (t := await catalog_track(ref)) is None:
             raise WaveError(404, "Трек не найден в каталоге")
         return t, None
@@ -939,8 +1105,13 @@ async def clear_old(s: AsyncSession, now: datetime | None = None) -> int:
     played tracks are heavy and no longer needed), the row and its `wave_items` stay for the history. Over already
     (`IDLE`): such a session answers 404 as before. Returns how many were cleared."""
     now = now or utcnow()
-    rows = list((await s.execute(select(WaveSession).where(WaveSession.updated_at < now - KEEP,
-                                                           WaveSession.cleared_at.is_(None)))).scalars())
+    rows = list(
+        (
+            await s.execute(
+                select(WaveSession).where(WaveSession.updated_at < now - KEEP, WaveSession.cleared_at.is_(None))
+            )
+        ).scalars()
+    )
     for row in rows:
         old = row.state_json or {}
         row.state_json = {"cleared": True, **{k: old[k] for k in CLEARED_KEYS if k in old}}
@@ -951,9 +1122,16 @@ async def clear_old(s: AsyncSession, now: datetime | None = None) -> int:
     return len(rows)
 
 
-async def start(user: User, seed: dict[str, Any] | None, mode: str | None, *, origin: str | None = None,
-                client: str | None = None, restart_of: str | None = None,
-                request: dict[str, Any] | None = None) -> Batch:
+async def start(
+    user: User,
+    seed: dict[str, Any] | None,
+    mode: str | None,
+    *,
+    origin: str | None = None,
+    client: str | None = None,
+    restart_of: str | None = None,
+    request: dict[str, Any] | None = None,
+) -> Batch:
     """A new session. `origin`, `client`, `restart_of` and `request` (the start's body as it came) are kept for the
     analytics only."""
     from app.mixes.core import settings_of
@@ -967,11 +1145,13 @@ async def start(user: User, seed: dict[str, Any] | None, mode: str | None, *, or
         profile = await build_profile(s, user, model=cfg.taste_model)
     if isinstance(profile, V2Profile):
         from app.mixes.taste_select import prepare
+
         await prepare(profile)
     seeds: list[TasteTrack] = []
     if seed_track is None and seed_artist is None:
         if isinstance(profile, V2Profile):
             from app.mixes.taste_select import seeds as select_seeds
+
             seeds = await select_seeds(profile, cfg.seeds)
         else:
             seeds = profile.seeds(cfg.seeds) or await build.cold_seeds(profile, cfg.seeds)
@@ -981,13 +1161,36 @@ async def start(user: User, seed: dict[str, Any] | None, mode: str | None, *, or
     rt = Runtime(user_id=user.id, mode=mode, state=State(taste_model=cfg.taste_model), profile=profile)
     rt.state.seeds_used = [t.key for t in seeds]
     rt.state.seed_artist = artist_key(seed_artist["name"]) if seed_artist else None
-    seed_json = ({"ref": seed_track.ref, "artist": seed_track.artist, "title": seed_track.title} if seed_track
-                 else {k: v for k, v in (("artist_ref", seed_artist.get("ref")), ("artist", seed_artist["name"]),
-                                         ("nd_artist_id", seed_artist.get("nd_artist_id"))) if v}
-                 if seed_artist else None)
+    seed_json = (
+        {"ref": seed_track.ref, "artist": seed_track.artist, "title": seed_track.title}
+        if seed_track
+        else {
+            k: v
+            for k, v in (
+                ("artist_ref", seed_artist.get("ref")),
+                ("artist", seed_artist["name"]),
+                ("nd_artist_id", seed_artist.get("nd_artist_id")),
+            )
+            if v
+        }
+        if seed_artist
+        else None
+    )
     async with session_scope() as s:
-        s.add(WaveSession(id=sid, user_id=user.id, mode=mode, seed_json=seed_json, state_json={}, origin=origin,
-                          client=client, restart_of=restart_of, taste_model=cfg.taste_model, request_json=request))
+        s.add(
+            WaveSession(
+                id=sid,
+                user_id=user.id,
+                mode=mode,
+                seed_json=seed_json,
+                state_json={},
+                origin=origin,
+                client=client,
+                restart_of=restart_of,
+                taste_model=cfg.taste_model,
+                request_json=request,
+            )
+        )
     _rt[sid] = rt
     async with rt.lock:
         first = None
@@ -1001,8 +1204,12 @@ async def start(user: User, seed: dict[str, Any] | None, mode: str | None, *, or
                 first.score = build.score(first, weights(), profile)
         if first is not None:
             rt.state.heard.add(fp_of(first))  # the radios' copies of the seed stay out
-        await _gather(sid, rt, list(generators(profile, seed_track, seed_artist, seeds).items()),
-                      lambda: len(rt.state.pool) >= 4 * BATCH)
+        await _gather(
+            sid,
+            rt,
+            list(generators(profile, seed_track, seed_artist, seeds).items()),
+            lambda: len(rt.state.pool) >= 4 * BATCH,
+        )
         tracks = await _hand_out(sid, rt, set(), first)
         pending = bool(rt.tasks)
     return Batch(sid, title_of(seed_json), mode, seed_json, tracks, pending)
@@ -1016,9 +1223,19 @@ async def next_batch(user: User, sid: str, played: list[Any], queued: list[str])
         async with session_scope() as s:
             recorded, events = await record(s, sid, user.id, played)
             if rt.state.taste_model == "v2":
-                events = list((await s.execute(select(PlayEvent).where(PlayEvent.user_id == user.id,
-                    PlayEvent.context == f"wave:{sid}", PlayEvent.ts <= utcnow())
-                    .order_by(PlayEvent.ts, PlayEvent.id))).scalars())
+                events = list(
+                    (
+                        await s.execute(
+                            select(PlayEvent)
+                            .where(
+                                PlayEvent.user_id == user.id,
+                                PlayEvent.context == f"wave:{sid}",
+                                PlayEvent.ts <= utcnow(),
+                            )
+                            .order_by(PlayEvent.ts, PlayEvent.id)
+                        )
+                    ).scalars()
+                )
             row = await s.get(WaveSession, sid)
             seed_json = row.seed_json if row else None
             if row is not None:
@@ -1064,13 +1281,24 @@ async def _hand_out(sid: str, rt: Runtime, queued: set[str], first: build.Cand |
     if stream:
         listen.prefetch(rt.user_id, stream)
     # the light copies for a metered network (app.light): library songs plain, the others after their files load
-    listen.warm_light([f"nd:{c.nd_song_id}" if c.nd_song_id else c.track.ref for c in tracks
-                       if c.nd_song_id or c.track.source != "nd"])
+    listen.warm_light(
+        [
+            f"nd:{c.nd_song_id}" if c.nd_song_id else c.track.ref
+            for c in tracks
+            if c.nd_song_id or c.track.source != "nd"
+        ]
+    )
     return tracks
 
 
-async def save_items(s: AsyncSession, sid: str, user_id: int, tracks: list[build.Cand],
-                     values: dict[str, float], now: datetime | None = None) -> None:
+async def save_items(
+    session: AsyncSession,
+    sid: str,
+    user_id: int,
+    tracks: list[build.Cand],
+    values: dict[str, float],
+    now: datetime | None = None,
+) -> None:
     """What the wave handed out into `wave_items` (INSIGHTS.md 6.4): a track new to the session gets the next
     position; one handed out again (it went back to the pool, or the client still has it queued) counts once more,
     with its latest score, closeness and value."""
@@ -1078,25 +1306,56 @@ async def save_items(s: AsyncSession, sid: str, user_id: int, tracks: list[build
         return
     now = now or utcnow()
     refs = [c.track.ref for c in tracks]
-    have = set((await s.execute(select(WaveItem.ref).where(WaveItem.session_id == sid,
-                                                          WaveItem.ref.in_(refs)))).scalars())
-    nxt = (await s.execute(select(func.coalesce(func.max(WaveItem.position) + 1, 0))
-                           .where(WaveItem.session_id == sid))).scalar_one()
+    have = set(
+        (
+            await session.execute(select(WaveItem.ref).where(WaveItem.session_id == sid, WaveItem.ref.in_(refs)))
+        ).scalars()
+    )
+    nxt = (
+        await session.execute(
+            select(func.coalesce(func.max(WaveItem.position) + 1, 0)).where(WaveItem.session_id == sid)
+        )
+    ).scalar_one()
     rows = []
     for c in tracks:
         ref = c.track.ref
-        rows.append(dict(session_id=sid, user_id=user_id, first_handed_at=now, last_handed_at=now, handed_count=1,
-                         position=-1 if ref in have else nxt, ref=ref, nd_song_id=c.nd_song_id, key=c.key,
-                         artist=(c.track.artist or "")[:256], title=(c.track.title or "")[:256],
-                         generator=top_generator(c)[:32], gens=dict(c.gens), familiar=c.familiar,
-                         score=c.score, sim=c.sim, value=values.get(ref)))
+        rows.append(
+            dict(
+                session_id=sid,
+                user_id=user_id,
+                first_handed_at=now,
+                last_handed_at=now,
+                handed_count=1,
+                position=-1 if ref in have else nxt,
+                ref=ref,
+                nd_song_id=c.nd_song_id,
+                key=c.key,
+                artist=(c.track.artist or "")[:256],
+                title=(c.track.title or "")[:256],
+                generator=top_generator(c)[:32],
+                gens=dict(c.gens),
+                familiar=c.familiar,
+                score=c.score,
+                sim=c.sim,
+                value=values.get(ref),
+            )
+        )
         if ref not in have:
             have.add(ref)
             nxt += 1
-    q = sqlite_insert(WaveItem).values(rows)
-    await s.execute(q.on_conflict_do_update(index_elements=["session_id", "ref"], set_={
-        "handed_count": WaveItem.handed_count + 1, "last_handed_at": q.excluded.last_handed_at,
-        "score": q.excluded.score, "sim": q.excluded.sim, "value": q.excluded.value}))
+    q = pg_insert(WaveItem).values(rows)
+    await session.execute(
+        q.on_conflict_do_update(
+            index_elements=["session_id", "ref"],
+            set_={
+                "handed_count": WaveItem.handed_count + 1,
+                "last_handed_at": q.excluded.last_handed_at,
+                "score": q.excluded.score,
+                "sim": q.excluded.sim,
+                "value": q.excluded.value,
+            },
+        )
+    )
 
 
 async def settle(sid: str) -> None:

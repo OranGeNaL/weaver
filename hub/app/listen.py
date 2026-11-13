@@ -61,8 +61,8 @@ from app.jobs.downloads import (
     search_provider,
 )
 from app.library.owned import find_existing
-from app.models import Track
 from app.matching.select import rank_candidates
+from app.models import Track
 from app.net import Priority, in_background, make_client, priority_context
 from app.providers.base import FILE_REF, Candidate, StreamSource, TrackQuery, file_ref
 from app.services import svc
@@ -613,7 +613,7 @@ async def _resolve(ref: str, *, probe: bool, remembered: bool, full_only: bool =
         return await _resolve_file(ref, probe=probe, remembered=remembered)
     if src == "nd":
         return await _resolve_song(ref, id_)
-    if not (src == "dz" and svc.deezer is not None or src == "hm" and "hitmoz" in svc.providers):
+    if not ((src == "dz" and svc.deezer is not None) or (src == "hm" and "hitmoz" in svc.providers)):
         raise ListenError(400, "Этот трек нельзя послушать")
     choice = await _remembered(ref) if remembered else None
     if choice is not None and full_only and choice.kind == "preview":

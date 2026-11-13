@@ -2,6 +2,7 @@
 
 import asyncio
 import uuid
+from typing import Any
 
 import httpx
 import pytest
@@ -15,21 +16,21 @@ from app.security import encrypt
 
 
 @pytest.fixture
-async def playlist_env(hub_env):
-    db.init_engine()
+async def playlist_env(hub_env, db_url: str):
+    db.init_engine(db_url)
     async with db.session_scope() as s:
         user = User(nd_username="qa", nd_password_enc=encrypt("qa-password"))
         s.add(user)
         await s.flush()
         user_id = user.id
-    state = {"songs": ["existing"], "fail": False, "writes": 0}
+    state: dict[str, Any] = {"songs": ["existing"], "fail": False, "writes": 0}
 
     def respond(request):
         if state["fail"]:
             return httpx.Response(503)
         ep = request.url.path.rsplit("/", 1)[-1]
         p = httpx.QueryParams(request.content.decode()) if request.method == "POST" else request.url.params
-        body = {"status": "ok", "version": "1.16.1"}
+        body: dict[str, Any] = {"status": "ok", "version": "1.16.1"}
         if ep == "getPlaylist":
             body["playlist"] = {"id": "pl", "entry": [{"id": x} for x in state["songs"]]}
         elif ep == "updatePlaylist":
@@ -60,8 +61,12 @@ async def seed(user_id, statuses):
         await s.flush()
         ids = []
         for pos, status in enumerate(statuses):
-            item = DownloadItem(batch_id=batch.id, user_id=user_id, status=status,
-                                query_json={"query": {"artist": "Artist", "title": f"Song {pos}"}})
+            item = DownloadItem(
+                batch_id=batch.id,
+                user_id=user_id,
+                status=status,
+                query_json={"query": {"artist": "Artist", "title": f"Song {pos}"}},
+            )
             s.add(item)
             await s.flush()
             ids.append(item.id)
@@ -72,8 +77,14 @@ async def seed(user_id, statuses):
 
 
 async def finish(s, item):
-    track = Track(uid=str(uuid.uuid4()), path=f"{item.id}.mp3", artist="Artist", title=f"Song {item.id}",
-                  fingerprint=str(item.id), nd_song_id=f"song{item.id}")
+    track = Track(
+        uid=str(uuid.uuid4()),
+        path=f"{item.id}.mp3",
+        artist="Artist",
+        title=f"Song {item.id}",
+        fingerprint=str(item.id),
+        nd_song_id=f"song{item.id}",
+    )
     s.add(track)
     await s.flush()
     item.track_id, item.status = track.id, "done"
@@ -89,7 +100,7 @@ async def pending():
         return list((await s.execute(select(PendingPlaylistAdd).order_by(PendingPlaylistAdd.id))).scalars())
 
 
-async def test_review_releases_ready_songs_and_retry_inserts_in_requested_order(playlist_env):
+async def test_review_releases_ready_songs_and_retry_inserts_in_requested_order(playlist_env, db_url: str):
     user_id, state = playlist_env
     ids = await seed(user_id, ["done", "needs_review", "done", "done"])
     await sync()
@@ -98,7 +109,7 @@ async def test_review_releases_ready_songs_and_retry_inserts_in_requested_order(
 
     # Persisted anchors survive a restart; unrelated playlist edits survive the delayed insertion.
     await db.dispose()
-    db.init_engine()
+    db.init_engine(db_url)
     state["songs"].append("manual")
     async with db.session_scope() as s:
         await finish(s, await s.get(DownloadItem, ids[1]))
@@ -116,7 +127,9 @@ async def test_active_download_still_preserves_order(playlist_env):
     await sync()
     assert state["songs"] == ["existing", f"song{ids[0]}"]
     async with db.session_scope() as s:
-        (await s.get(DownloadItem, ids[1])).status = "needs_review"
+        item = await s.get(DownloadItem, ids[1])
+        assert item is not None
+        item.status = "needs_review"
     await sync()
     assert state["songs"] == ["existing", f"song{ids[0]}", f"song{ids[2]}"]
 
@@ -128,7 +141,9 @@ async def test_batches_keep_submission_order_and_cancel_releases_anchors(playlis
     await sync()
     assert state["songs"] == ["existing", *(f"song{i}" for i in first[1:] + second)]
     async with db.session_scope() as s:
-        (await s.get(DownloadItem, first[0])).status = "cancelled"
+        item = await s.get(DownloadItem, first[0])
+        assert item is not None
+        item.status = "cancelled"
     await sync()
     assert await pending() == []
     assert state["writes"] == 1
@@ -155,12 +170,14 @@ async def test_concurrent_completions_do_not_duplicate_playlist_songs(playlist_e
     assert state["writes"] == 1
 
 
-@pytest.mark.parametrize("current,entries,expected", [
-    (["same", "other", "same"], [(None, "new"), ("same", "same")],
-     ["same", "other", "new", "same"]),
-    (["manual"], [(None, "new"), ("removed", "removed")], ["manual", "new"]),
-    (["a", "manual", "c"], [("a", "a"), (None, "b"), ("c", "c")], ["a", "manual", "b", "c"]),
-])
+@pytest.mark.parametrize(
+    "current,entries,expected",
+    [
+        (["same", "other", "same"], [(None, "new"), ("same", "same")], ["same", "other", "new", "same"]),
+        (["manual"], [(None, "new"), ("removed", "removed")], ["manual", "new"]),
+        (["a", "manual", "c"], [("a", "a"), (None, "b"), ("c", "c")], ["a", "manual", "b", "c"]),
+    ],
+)
 def test_insert_preserves_duplicate_and_manually_edited_entries(current, entries, expected):
     from app.jobs.downloads import insert_playlist_songs
 

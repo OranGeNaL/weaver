@@ -6,7 +6,7 @@ has these as native screens (Tempus); the PWA in a plain browser shows them from
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from urllib.parse import quote
 
 import httpx
@@ -211,7 +211,7 @@ async def liked(user: User = Depends(current_user), s: AsyncSession = Depends(ge
         st = state(typ, nd_id=obj.get("id"))
         return st is None or st.liked
 
-    ranked.sort(key=lambda pair: pair[0] or datetime.min, reverse=True)
+    ranked.sort(key=lambda pair: pair[0] or datetime.min.replace(tzinfo=UTC), reverse=True)
     return NdLikedOut(songs=[song for _, song in ranked],
                       albums=[album_out(a) for a in sorted(body.get("album") or [], key=lambda x: x.get("starred") or "", reverse=True)
                               if visible("album", a)],

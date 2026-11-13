@@ -20,7 +20,7 @@ import shutil
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import case, delete, func, select
+from sqlalchemy import Integer, case, cast, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import (
@@ -104,7 +104,7 @@ async def stats(s: AsyncSession, imp: Import, colls: list[ImportCollection]) -> 
             out.not_found += 1
     for status, n in (await s.execute(
         select(DownloadItem.status, func.count(DownloadItem.id))
-        .where(func.json_extract(DownloadItem.query_json, "$.import.id") == imp.id)
+        .where(cast(DownloadItem.query_json["import"]["id"].astext, Integer) == imp.id)
         .group_by(DownloadItem.status))).all():
         if status == "done":
             out.done += n
@@ -173,7 +173,7 @@ async def enqueue_once(s: AsyncSession, kind: str, import_id: int, *, delay_s: f
     """One queued job of this kind per import (a batch of downloads coming in asks for one rewrite)."""
     pending = (await s.execute(
         select(Job.id).where(Job.kind == kind, Job.status == "queued",
-                             func.json_extract(Job.payload_json, "$.import_id") == import_id).limit(1)
+                             cast(Job.payload_json["import_id"].astext, Integer) == import_id).limit(1)
     )).scalar_one_or_none()
     if pending is None:
         await enqueue(s, kind, {"import_id": import_id}, delay_s=delay_s, priority=PRIORITY_IMPORT)

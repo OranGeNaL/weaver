@@ -186,8 +186,11 @@ async def _encode(src: Path, key: str) -> Path:
                 _failed[key] = time.monotonic()
                 log.warning("light %s: not encoded: %r", src.name, e)
             raise
-        log.info("light %s: %d → %d KB (%.1f s)", src.name, src.stat().st_size // 1024, dest.stat().st_size // 1024,
-                 time.monotonic() - t0)
+        src_kb, dest_kb = await asyncio.gather(
+            asyncio.to_thread(lambda: src.stat().st_size // 1024),
+            asyncio.to_thread(lambda: dest.stat().st_size // 1024),
+        )
+        log.info("light %s: %d → %d KB (%.1f s)", src.name, src_kb, dest_kb, time.monotonic() - t0)
     await asyncio.to_thread(prune, root(), MAX_BYTES, {k + SUFFIX for k in _jobs} | {dest.name})
     return dest
 

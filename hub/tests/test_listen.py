@@ -596,10 +596,11 @@ async def test_nothing_to_play(env):
 
 async def test_owned_track_plays_the_library_file(env, monkeypatch):
     from unittest.mock import AsyncMock
-    from app.services import svc
+
     from app.db import session_scope
     from app.matching.normalize import fingerprint
     from app.models import Track
+    from app.services import svc
 
     rel = "Кино/1988 - Группа крови/1-01 - Группа крови.mp3"
     f = env["music"] / "library" / rel

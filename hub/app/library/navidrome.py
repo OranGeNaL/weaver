@@ -212,13 +212,13 @@ class NavidromeClient:
 
     # --- media ---------------------------------------------------------------------
     def cover_art_url_params(self, cover_id: str, size: int | None = None) -> tuple[str, list[tuple[str, Any]]]:
-        params = list(self._auth_params().items()) + [("id", cover_id)]
+        params = [*self._auth_params().items(), ("id", cover_id)]
         if size:
             params.append(("size", size))
         return f"{self.base_url}/rest/getCoverArt", params
 
     def stream_url_params(self, song_id: str, max_bitrate: int | None = None) -> tuple[str, list[tuple[str, Any]]]:
-        params = list(self._auth_params().items()) + [("id", song_id)]
+        params = [*self._auth_params().items(), ("id", song_id)]
         if max_bitrate:
             params.append(("maxBitRate", max_bitrate))
         return f"{self.base_url}/rest/stream", params

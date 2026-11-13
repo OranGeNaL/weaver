@@ -4,42 +4,111 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sqlite3
-from datetime import datetime, timedelta
+import os
+import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from app.config import get_settings
+from app.db import sync_database_url
 
 log = logging.getLogger(__name__)
 
 KEEP_BACKUPS = 7
+SCRATCH_DB = "homemusic_restore_check"
+
+
+def libpq_url(url: str | None = None) -> str:
+    """The Postgres URL as libpq (pg_dump/pg_restore) expects it: no SQLAlchemy driver suffix."""
+    value = sync_database_url(url)
+    return value.replace("postgresql+psycopg://", "postgresql://", 1)
+
+
+def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
+    # never put the URL on the command line: it holds the password, and logs must not see it
+    return subprocess.run(args, check=True, capture_output=True, text=True, env=os.environ.copy())
 
 
 def backup_hub_db() -> Path | None:
+    """pg_dump --format=custom into backups/hub; rotation happens only after a successful dump."""
     s = get_settings()
-    if not s.db_path.is_file():
-        return None
     dest_dir = s.backups_dir / "hub"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"hub-{datetime.now():%Y%m%d}.sqlite3"
-    tmp = dest_dir / ".hub-backup.part"
-    # backup into the local data volume first, then copy: SQLite file locking on the target mount may be unreliable
-    local_tmp = s.data_dir / "backup.tmp.sqlite3"
-    src = sqlite3.connect(s.db_path)
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    dest = dest_dir / f"hub-{stamp}.dump"
+    tmp = dest_dir / f".hub-{stamp}.part"
+    url = libpq_url()
+    env = os.environ.copy()
+    env["PGPASSWORD"] = os.environ.get("PGPASSWORD", "")
     try:
-        dst = sqlite3.connect(local_tmp)
-        try:
-            src.backup(dst)
-        finally:
-            dst.close()
-    finally:
-        src.close()
-    tmp.write_bytes(local_tmp.read_bytes())
-    tmp.replace(dest)
-    local_tmp.unlink(missing_ok=True)
-    for old in sorted(dest_dir.glob("hub-*.sqlite3"))[:-KEEP_BACKUPS]:
+        subprocess.run(
+            ["pg_dump", "--format=custom", "--no-owner", "--no-privileges", "--file", str(tmp), "--dbname", url],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        tmp.replace(dest)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        # keep the previous copies: a broken dump must not shrink the history
+        log.exception("hub db backup failed")
+        raise
+    for old in sorted(dest_dir.glob("hub-*.dump"))[:-KEEP_BACKUPS]:
         old.unlink(missing_ok=True)
     return dest
+
+
+def _psql_admin_url() -> str:
+    """The same server, but the maintenance database: CREATE/DROP DATABASE cannot run inside the target."""
+    url = libpq_url()
+    head, _, _tail = url.rpartition("/")
+    return f"{head}/postgres"
+
+
+def _counts(connection) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for table in ("users", "albums", "tracks", "play_events"):
+        with connection.cursor() as cur:
+            cur.execute(f"SELECT count(*) FROM {table}")
+            out[table] = int(cur.fetchone()[0])
+    return out
+
+
+def verify_backup(dump: Path) -> bool:
+    """pg_restore the dump into a scratch database and compare the schema and row counts."""
+    import psycopg
+
+    scratch = SCRATCH_DB
+    source_url = libpq_url()
+    with psycopg.connect(_psql_admin_url(), autocommit=True) as admin:
+        with admin.cursor() as cur:
+            cur.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = %s", (scratch,))
+            cur.execute(f'DROP DATABASE IF EXISTS "{scratch}"')
+            cur.execute(f'CREATE DATABASE "{scratch}"')
+    try:
+        _run(
+            [
+                "pg_restore",
+                "--no-owner",
+                "--no-privileges",
+                "--dbname",
+                libpq_url().replace(f"/{libpq_url().rsplit('/', 1)[-1]}", f"/{scratch}"),
+                str(dump),
+            ]
+        )
+        with (
+            psycopg.connect(source_url) as source,
+            psycopg.connect(libpq_url().replace(f"/{libpq_url().rsplit('/', 1)[-1]}", f"/{scratch}")) as restored,
+        ):
+            before, after = _counts(source), _counts(restored)
+        same = before == after
+        (log.info if same else log.warning)("restore check: %s (%s)", "ok" if same else "MISMATCH", after)
+        return same
+    finally:
+        with psycopg.connect(_psql_admin_url(), autocommit=True) as admin, admin.cursor() as cur:
+            cur.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = %s", (scratch,))
+            cur.execute(f'DROP DATABASE IF EXISTS "{scratch}"')
 
 
 async def smoke_test_providers() -> dict[str, str]:
@@ -70,6 +139,8 @@ async def run_daily() -> None:
     try:
         path = await asyncio.to_thread(backup_hub_db)
         log.info("hub db backup: %s", path)
+        if path is not None:
+            await asyncio.to_thread(verify_backup, path)
     except Exception:
         log.exception("hub db backup failed")
     try:

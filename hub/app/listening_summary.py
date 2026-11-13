@@ -1,4 +1,5 @@
 """Read listening evidence without interpreting a playback position as measured time."""
+
 from collections import defaultdict
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -16,11 +17,22 @@ def listened_threshold_ms(duration_s: float | None) -> int:
 
 async def summary(s: AsyncSession, user_id: int, start: date, end: date, timezone: str) -> dict:
     zone = ZoneInfo(timezone)
-    begin = datetime.combine(start, time.min, zone).astimezone(UTC).replace(tzinfo=None)
-    stop = datetime.combine(end + timedelta(days=1), time.min, zone).astimezone(UTC).replace(tzinfo=None)
-    rows = list((await s.execute(select(PlayEvent).where(
-        PlayEvent.user_id == user_id, PlayEvent.ts <= utcnow(), PlayEvent.kind.in_(("start", "progress", "interrupted", "error", "skip", "finish")),
-        PlayEvent.superseded_scrobble.is_(False)).order_by(PlayEvent.ts, PlayEvent.id))).scalars())
+    begin = datetime.combine(start, time.min, zone).astimezone(UTC)
+    stop = datetime.combine(end + timedelta(days=1), time.min, zone).astimezone(UTC)
+    rows = list(
+        (
+            await s.execute(
+                select(PlayEvent)
+                .where(
+                    PlayEvent.user_id == user_id,
+                    PlayEvent.ts <= utcnow(),
+                    PlayEvent.kind.in_(("start", "progress", "interrupted", "error", "skip", "finish")),
+                    PlayEvent.superseded_scrobble.is_(False),
+                )
+                .order_by(PlayEvent.ts, PlayEvent.id)
+            )
+        ).scalars()
+    )
     aliases = defaultdict(set)
     for row in rows:
         if row.ref and row.nd_song_id:
@@ -47,8 +59,10 @@ async def summary(s: AsyncSession, user_id: int, start: date, end: date, timezon
                     name = artist.get("name")
                     if name and incoming_names.count(name) == 1 and existing_names.count(name) == 1:
                         match = existing[existing_names.index(name)]
-                        conflict = any(match.get(key) and artist.get(key) and match[key] != artist[key]
-                                       for key in ("ref", "nd_artist_id"))
+                        conflict = any(
+                            match.get(key) and artist.get(key) and match[key] != artist[key]
+                            for key in ("ref", "nd_artist_id")
+                        )
                         if not conflict:
                             for key in ("ref", "nd_artist_id"):
                                 if artist.get(key) and not match.get(key):
@@ -108,7 +122,9 @@ async def summary(s: AsyncSession, user_id: int, start: date, end: date, timezon
         key = canonical(ref, nd)
         if key:
             resolved_nd = nd or (next(iter(aliases[ref])) if ref and len(aliases.get(ref, ())) == 1 else None)
-            track = tracks.setdefault(key, {"ref": ref, "nd_song_id": resolved_nd, "measured_ms": 0, "listens": 0, "metadata": {}})
+            track = tracks.setdefault(
+                key, {"ref": ref, "nd_song_id": resolved_nd, "measured_ms": 0, "listens": 0, "metadata": {}}
+            )
             track["ref"] = track["ref"] or ref
             track["nd_song_id"] = track["nd_song_id"] or resolved_nd
             track["measured_ms"] += elapsed
@@ -120,22 +136,34 @@ async def summary(s: AsyncSession, user_id: int, start: date, end: date, timezon
         key = canonical(row.ref, row.nd_song_id)
         if not key:
             continue
-        track = tracks.setdefault(key, {"ref": row.ref, "nd_song_id": row.nd_song_id, "measured_ms": 0,
-                                        "listens": 0, "metadata": {}})
+        track = tracks.setdefault(
+            key, {"ref": row.ref, "nd_song_id": row.nd_song_id, "measured_ms": 0, "listens": 0, "metadata": {}}
+        )
         if row.client == "navidrome":
             track["listens"] += 1
         track["ref"] = track["ref"] or row.ref
         track["nd_song_id"] = track["nd_song_id"] or row.nd_song_id
         merge_metadata(track["metadata"], row.track_metadata or {})
     observed = min((row.ts for row in rows), default=None)
-    return {"start": start.isoformat(), "end": end.isoformat(), "timezone": timezone,
-            "counted_listens": measured_listens + scrobbles, "measured_listens": measured_listens,
-            "measured_attempts": measured_attempts, "measured_ms": measured_ms,
-            "scrobble_evidence": scrobbles, "legacy_finish_evidence": legacy,
-            "first_observed_at": observed.replace(tzinfo=UTC).isoformat() if observed else None,
-            "tracks": sorted(tracks.values(), key=lambda x: (-x["measured_ms"], x["ref"] or x["nd_song_id"] or "")),
-            "quality": {"tracks_with_title": sum(bool(t["metadata"].get("title")) for t in tracks.values()),
-                        "tracks_with_artists": sum(bool(t["metadata"].get("artists")) for t in tracks.values()),
-                        "tracks_total": len(tracks),
-                        "measured": "cumulative player checkpoints", "scrobble": "threshold evidence; duration unknown",
-                        "legacy": "unmeasured; not counted", "period_assignment": "checkpoint deltas attributed to checkpoint time; offline compaction may delay attribution"}}
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "timezone": timezone,
+        "counted_listens": measured_listens + scrobbles,
+        "measured_listens": measured_listens,
+        "measured_attempts": measured_attempts,
+        "measured_ms": measured_ms,
+        "scrobble_evidence": scrobbles,
+        "legacy_finish_evidence": legacy,
+        "first_observed_at": observed.replace(tzinfo=UTC).isoformat() if observed else None,
+        "tracks": sorted(tracks.values(), key=lambda x: (-x["measured_ms"], x["ref"] or x["nd_song_id"] or "")),
+        "quality": {
+            "tracks_with_title": sum(bool(t["metadata"].get("title")) for t in tracks.values()),
+            "tracks_with_artists": sum(bool(t["metadata"].get("artists")) for t in tracks.values()),
+            "tracks_total": len(tracks),
+            "measured": "cumulative player checkpoints",
+            "scrobble": "threshold evidence; duration unknown",
+            "legacy": "unmeasured; not counted",
+            "period_assignment": "checkpoint deltas attributed to checkpoint time; offline compaction may delay attribution",
+        },
+    }

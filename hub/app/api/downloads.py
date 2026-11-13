@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import Integer, cast, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import listen
@@ -73,7 +73,7 @@ async def join_active(s: AsyncSession, user: User, refs: list[str], *, star: boo
     if changed:
         await s.execute(update(Job).where(
             Job.kind == "download_item", Job.status == "queued", Job.priority < 0,
-            func.json_extract(Job.payload_json, "$.item_id").in_([i.id for i in changed])).values(priority=0))
+            cast(Job.payload_json["item_id"].astext, Integer).in_([i.id for i in changed])).values(priority=0))
         await s.flush()
         links = await item_links(s, changed)
         for item in changed:

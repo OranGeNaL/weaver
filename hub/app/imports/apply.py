@@ -15,7 +15,7 @@ import asyncio
 import logging
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import Integer, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.catalog.models import split_ref
@@ -169,7 +169,7 @@ async def queue_album(s: AsyncSession, imp: Import, it: ImportItem) -> int:
 
 
 def _import_downloads(imp: Import):
-    return select(DownloadItem).where(func.json_extract(DownloadItem.query_json, "$.import.id") == imp.id)
+    return select(DownloadItem).where(cast(DownloadItem.query_json["import"]["id"].astext, Integer) == imp.id)
 
 
 async def active_downloads(s: AsyncSession, imp: Import) -> int:
@@ -194,7 +194,7 @@ async def refresh_items(s: AsyncSession, imp: Import) -> None:
                                      ImportCollection.kind == "albums"))).scalars().all()
     for it in albums:
         left = (await s.execute(select(func.count()).select_from(
-            select(DownloadItem.id).where(func.json_extract(DownloadItem.query_json, "$.import.album") == it.id,
+            select(DownloadItem.id).where(cast(DownloadItem.query_json["import"]["album"].astext, Integer) == it.id,
                                           DownloadItem.status.in_(ACTIVE_STATUSES)).subquery()))).scalar_one()
         if not left:
             it.status = "done"

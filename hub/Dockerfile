@@ -16,7 +16,15 @@ FROM python:3.12-slim-bookworm
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
     UV_PROJECT_ENVIRONMENT=/opt/venv UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy \
     PATH=/opt/venv/bin:$PATH
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates tzdata \
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates tzdata curl gnupg \
+    && rm -rf /var/lib/apt/lists/*
+# pg_dump/pg_restore must match the server (17): Debian bookworm ships 15, so take the client from PGDG
+RUN install -d /usr/share/postgresql-common/pgdg \
+    && curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+       https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update && apt-get install -y --no-install-recommends postgresql-client-17 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=deno /deno /usr/local/bin/deno
 COPY --from=ghcr.io/astral-sh/uv:0.9.5 /uv /usr/local/bin/uv

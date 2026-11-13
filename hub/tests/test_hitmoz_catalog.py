@@ -22,8 +22,8 @@ def fx(name: str) -> str:
 
 
 @pytest.fixture
-async def catalog(db_file):
-    init_engine(db_file)
+async def catalog(db_url: str):
+    init_engine(db_url)
     client = httpx.AsyncClient(follow_redirects=True)
     provider = HitmozProvider(HitmozCfg(rate_per_sec=1000), client=client)
     provider.base_delay = 0.01

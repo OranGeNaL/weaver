@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -12,13 +13,13 @@ from app.models import Job
 
 
 @pytest.fixture
-async def db(db_file: Path, monkeypatch: pytest.MonkeyPatch):
+async def db(db_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from app import config
 
-    monkeypatch.setenv("CONFIG_FILE", str(db_file.parent / "none.yaml"))
+    monkeypatch.setenv("CONFIG_FILE", str(tmp_path / "none.yaml"))
     config.get_settings.cache_clear()
     config.get_settings().cfg.jobs.workers = 3
-    init_engine(db_file)
+    init_engine(db_url)
     yield
     await dispose()
     config.get_settings.cache_clear()
@@ -72,3 +73,10 @@ async def test_background_job_runs_with_background_network_priority(db):
         queue._handlers.pop("test_probe", None)
     assert seen == [(0, False), (queue.PRIORITY_IMPORT, True)]
     assert not in_background()  # the worker itself is back to the foreground
+
+
+async def test_two_workers_never_claim_the_same_job(db):
+    await _add("download_item")
+    first, second = await asyncio.gather(queue._claim("worker-a"), queue._claim("worker-b"))
+    claimed = [job for job in (first, second) if job is not None]
+    assert len(claimed) == 1 and claimed[0].locked_by in {"worker-a", "worker-b"}

@@ -35,8 +35,10 @@ async def lifespan(app: FastAPI):
     setup_logging(s.log_level)
     for d in (s.library_dir, s.staging_dir, s.trash_dir, s.backups_dir):
         d.mkdir(parents=True, exist_ok=True)
+    db.init_engine()  # fails with a clear error without DATABASE_URL
+    await db.connect_with_retry()
+    await db.ensure_search_locale()
     await asyncio.to_thread(db.run_migrations)
-    db.init_engine()
 
     from app import listen
     from app.housekeeping import scheduler_loop

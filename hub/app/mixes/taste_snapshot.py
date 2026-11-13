@@ -1,13 +1,16 @@
 """Explicit inputs to taste math; local batch loading has no network or write side effects."""
+
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 
 def utc(value: datetime) -> datetime:
-    return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo else value
+    """Always timezone-aware UTC: the schema stores timestamptz, comparisons must not mix naive values."""
+    return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
 
 
 def calendar_cutoff(now: datetime) -> datetime:
@@ -102,23 +105,42 @@ async def load_snapshot(session, user_id: int, *, now: datetime) -> TasteSnapsho
     from app.plays import Ids
 
     now = utc(now)
-    rows = list((await session.execute(select(PlayEvent).where(
-        PlayEvent.user_id == user_id, PlayEvent.superseded_scrobble.is_(False), PlayEvent.ts <= now,
-        PlayEvent.kind.not_in(("progress", "interrupted", "error")),
-        or_(PlayEvent.ts >= calendar_cutoff(now),
-            PlayEvent.kind.in_(("like", "unlike", "dislike", "undislike")))))).scalars())
-    subjects = [Subject(x.target_type, tuple(x.aliases or ()), x.ref, x.nd_id, x.data or {})
-                for x in (await session.execute(select(FavoriteSubject))).scalars()]
+    rows = list(
+        (
+            await session.execute(
+                select(PlayEvent).where(
+                    PlayEvent.user_id == user_id,
+                    PlayEvent.superseded_scrobble.is_(False),
+                    PlayEvent.ts <= now,
+                    PlayEvent.kind.not_in(("progress", "interrupted", "error")),
+                    or_(
+                        PlayEvent.ts >= calendar_cutoff(now),
+                        PlayEvent.kind.in_(("like", "unlike", "dislike", "undislike")),
+                    ),
+                )
+            )
+        ).scalars()
+    )
+    subjects = [
+        Subject(x.target_type, tuple(x.aliases or ()), x.ref, x.nd_id, x.data or {})
+        for x in (await session.execute(select(FavoriteSubject))).scalars()
+    ]
     downloads = []
-    for item, nd in (await session.execute(select(DownloadItem, Track.nd_song_id).join(
-            Track, Track.id == DownloadItem.track_id).where(DownloadItem.user_id == user_id,
-                DownloadItem.status == "done", DownloadItem.created_at <= now))).all():
+    for item, nd in (
+        await session.execute(
+            select(DownloadItem, Track.nd_song_id)
+            .join(Track, Track.id == DownloadItem.track_id)
+            .where(DownloadItem.user_id == user_id, DownloadItem.status == "done", DownloadItem.created_at <= now)
+        )
+    ).all():
         if not quiet(item.query_json):
-            downloads.append(SavedDownload((item.query_json.get("meta") or {}).get("track_ref"), nd,
-                                           item.created_at))
-    dislikes = tuple(DislikedTarget(x.ref, x.nd_song_id, x.artist_ref, x.artist or "", x.title or "", x.created_at)
-        for x in (await session.execute(select(Dislike).where(Dislike.user_id == user_id,
-                                                             Dislike.created_at <= now))).scalars())
+            downloads.append(SavedDownload((item.query_json.get("meta") or {}).get("track_ref"), nd, item.created_at))
+    dislikes = tuple(
+        DislikedTarget(x.ref, x.nd_song_id, x.artist_ref, x.artist or "", x.title or "", x.created_at)
+        for x in (
+            await session.execute(select(Dislike).where(Dislike.user_id == user_id, Dislike.created_at <= now))
+        ).scalars()
+    )
     # Local verified pairs are metadata, not additional user events.
     ids = Ids(session)
     pairs = {(x.ref, x.nd_song_id) for x in rows if x.target_type == "track"}
@@ -128,10 +150,14 @@ async def load_snapshot(session, user_id: int, *, now: datetime) -> TasteSnapsho
         ref, nd = await ids.complete(ref, nd)
         if ref and nd:
             subjects.append(Subject("track", (f"ref:{ref}", f"nd:{nd}"), ref, nd))
-    index = AliasIndex(rows, subjects)
+    index = AliasIndex(rows, cast("Iterable[Any]", subjects))
     wanted = {index.key(e) for e in rows if aliases(e)}
-    wanted.update(index.root(("track", alias)) for ref, nd in pairs for alias in
-                  ((f"ref:{ref}",) if ref else (f"nd:{nd}",)) if ref or nd)
+    wanted.update(
+        index.root(("track", alias))
+        for ref, nd in pairs
+        for alias in ((f"ref:{ref}",) if ref else (f"nd:{nd}",))
+        if ref or nd
+    )
     subjects = [x for x in subjects if x.aliases and index.root((x.target_type, min(x.aliases))) in wanted]
     refs = {x.ref for x in rows if x.target_type == "track" and x.ref}
     songs = {x.nd_song_id for x in rows if x.target_type == "track" and x.nd_song_id}
@@ -150,16 +176,39 @@ async def load_snapshot(session, user_id: int, *, now: datetime) -> TasteSnapsho
                 album_refs.add(x.ref)
             refs.update(x.data.get("track_refs") or ())
     metadata = []
-    query = select(Track, Album).outerjoin(Album, Album.id == Track.album_id).where(or_(
-        Track.nd_song_id.in_(songs), Track.deezer_track_id.in_([r[3:] for r in refs if r.startswith("dz:")]),
-        Album.deezer_album_id.in_([r[3:] for r in album_refs if r.startswith("dz:")]))).order_by(Track.id.desc())
+    query = (
+        select(Track, Album)
+        .outerjoin(Album, Album.id == Track.album_id)
+        .where(
+            or_(
+                Track.nd_song_id.in_(songs),
+                Track.deezer_track_id.in_([r[3:] for r in refs if r.startswith("dz:")]),
+                Album.deezer_album_id.in_([r[3:] for r in album_refs if r.startswith("dz:")]),
+            )
+        )
+        .order_by(Track.id.desc())
+    )
     for tr, album in (await session.execute(query)).all():
-        metadata.append(TrackMetadata(f"dz:{tr.deezer_track_id}" if tr.deezer_track_id else None,
-            tr.nd_song_id, tr.artist, tr.title, tr.duration_s,
-            f"dz:{album.deezer_album_id}" if album and album.deezer_album_id else None,
-            None))  # Album.uid is a Hub id, not a verified Navidrome album id.
+        metadata.append(
+            TrackMetadata(
+                f"dz:{tr.deezer_track_id}" if tr.deezer_track_id else None,
+                tr.nd_song_id,
+                tr.artist,
+                tr.title,
+                tr.duration_s,
+                f"dz:{album.deezer_album_id}" if album and album.deezer_album_id else None,
+                None,
+            )
+        )  # Album.uid is a Hub id, not a verified Navidrome album id.
     settings = await session.get(MixSettings, user_id)
     fields = TasteEvent.__dataclass_fields__
     events = tuple(TasteEvent(**{k: getattr(x, k) for k in fields}) for x in rows)
-    return TasteSnapshot(user_id, events, tuple(subjects), tuple(metadata), tuple(downloads), dislikes,
-                         tuple(settings.artists_json or ()) if settings else ())
+    return TasteSnapshot(
+        user_id,
+        events,
+        tuple(subjects),
+        tuple(metadata),
+        tuple(downloads),
+        dislikes,
+        tuple(settings.artists_json or ()) if settings else (),
+    )

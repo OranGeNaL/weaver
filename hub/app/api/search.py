@@ -7,8 +7,8 @@ import logging
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from sqlalchemy import delete, or_, select
-from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy import delete, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import listen
@@ -20,7 +20,8 @@ from app.config import get_settings
 from app.db import get_session
 from app.events import bus
 from app.library.owned import annotate_albums, annotate_tracks
-from app.matching.normalize import has_cyrillic, normalize_title
+from app.library.search import ilike_all
+from app.matching.normalize import has_cyrillic
 from app.matching.select import rank_candidates
 from app.models import SearchHistory, Track, User, utcnow
 from app.providers.base import TrackQuery
@@ -35,76 +36,75 @@ HISTORY_LIMIT = 30
 
 
 def _recent_queries(user_id: int):
-    return select(SearchHistory).where(SearchHistory.user_id == user_id).order_by(
-        SearchHistory.searched_at.desc(), SearchHistory.query_key
-    ).limit(HISTORY_LIMIT)
+    return (
+        select(SearchHistory)
+        .where(SearchHistory.user_id == user_id)
+        .order_by(SearchHistory.searched_at.desc(), SearchHistory.query_key)
+        .limit(HISTORY_LIMIT)
+    )
 
 
 @router.get("/history", response_model=SearchHistoryOut)
-async def search_history(response: Response, user: User = Depends(current_user),
-                         s: AsyncSession = Depends(get_session, scope="function")):
+async def search_history(
+    response: Response,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session, scope="function"),
+):
     response.headers["Cache-Control"] = "no-store"
-    rows = (await s.execute(_recent_queries(user.id))).scalars()
+    rows = (await session.execute(_recent_queries(user.id))).scalars()
     return SearchHistoryOut(queries=[row.query for row in rows])
 
 
 @router.post("/history", response_model=dict[str, bool])
-async def remember_search(body: SearchHistoryIn, user: User = Depends(current_user),
-                          s: AsyncSession = Depends(get_session, scope="function")):
+async def remember_search(
+    body: SearchHistoryIn,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session, scope="function"),
+):
     # Start with a write: concurrent devices serialize their upsert and pruning in SQLite.
     stmt = insert(SearchHistory).values(
         user_id=user.id, query_key=body.query.casefold(), query=body.query, searched_at=utcnow()
     )
-    await s.execute(stmt.on_conflict_do_update(
-        index_elements=[SearchHistory.user_id, SearchHistory.query_key],
-        set_={"query": stmt.excluded.query, "searched_at": stmt.excluded.searched_at},
-    ))
+    await session.execute(
+        stmt.on_conflict_do_update(
+            index_elements=[SearchHistory.user_id, SearchHistory.query_key],
+            set_={"query": stmt.excluded.query, "searched_at": stmt.excluded.searched_at},
+        )
+    )
     keep = _recent_queries(user.id).with_only_columns(SearchHistory.query_key)
-    await s.execute(delete(SearchHistory).where(
-        SearchHistory.user_id == user.id, SearchHistory.query_key.not_in(keep)
-    ))
-    await s.commit()
+    await session.execute(
+        delete(SearchHistory).where(SearchHistory.user_id == user.id, SearchHistory.query_key.not_in(keep))
+    )
+    await session.commit()
     bus.publish(user.id, "search_history", {})
     return {"ok": True}
 
 
 @router.delete("/history", response_model=dict[str, bool])
-async def clear_search_history(user: User = Depends(current_user),
-                               s: AsyncSession = Depends(get_session, scope="function")):
-    await s.execute(delete(SearchHistory).where(SearchHistory.user_id == user.id))
-    await s.commit()
+async def clear_search_history(
+    user: User = Depends(current_user), session: AsyncSession = Depends(get_session, scope="function")
+):
+    await session.execute(delete(SearchHistory).where(SearchHistory.user_id == user.id))
+    await session.commit()
     bus.publish(user.id, "search_history", {})
     return {"ok": True}
 
 
 async def search_library(s: AsyncSession, q: str, limit: int = 20) -> list[Track]:
-    like = f"%{q}%"
-    rows = (
-        await s.execute(
-            select(Track)
-            .where(or_(Track.title.ilike(like), Track.artist.ilike(like), Track.album.ilike(like)))
-            .limit(limit)
-        )
-    ).scalars().all()
-    if rows:
-        return list(rows)
-    # SQLite LIKE is case-insensitive only for ASCII: fall back to normalized matching in Python
-    nq = normalize_title(q).text
-    if not nq:
+    """Every normalized token must occur in `search_text`; Postgres does the work, no Python fallback."""
+    cond = ilike_all(q)
+    if cond is None:
         return []
-    out = []
-    for t in (await s.execute(select(Track))).scalars():
-        hay = normalize_title(f"{t.artist} {t.title} {t.album or ''}").text
-        if all(w in hay for w in nq.split()):
-            out.append(t)
-            if len(out) >= limit:
-                break
-    return out
+    rows = (await s.execute(select(Track).where(Track.search_text.ilike(cond)).limit(limit))).scalars().all()
+    return list(rows)
 
 
 @router.get("", response_model=SearchOut)
-async def search(q: str = Query(min_length=1), user: User = Depends(current_user),
-                 s: AsyncSession = Depends(get_session, scope="function")):
+async def search(
+    q: str = Query(min_length=1),
+    user: User = Depends(current_user),
+    s: AsyncSession = Depends(get_session, scope="function"),
+):
     q = q.strip()
     out = SearchOut(library=[track_out(t) for t in await search_library(s, q)])
     res: SearchResults | None = None
@@ -139,9 +139,13 @@ def _unique(tracks: list[CatalogTrack]) -> list[CatalogTrack]:
 
 
 @router.get("/tracks", response_model=SearchTracksOut)
-async def search_tracks(q: str = Query(min_length=1), offset: int = Query(0, ge=0),
-                        limit: int = Query(TRACK_PAGE, ge=1, le=100), user: User = Depends(current_user),
-                        s: AsyncSession = Depends(get_session, scope="function")):
+async def search_tracks(
+    q: str = Query(min_length=1),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(TRACK_PAGE, ge=1, le=100),
+    user: User = Depends(current_user),
+    s: AsyncSession = Depends(get_session, scope="function"),
+):
     """More catalog tracks for `/api/search` (Deezer only: the hitmoz fallback has no pages)."""
     if svc.deezer is None:
         return SearchTracksOut()
@@ -154,9 +158,12 @@ async def search_tracks(q: str = Query(min_length=1), offset: int = Query(0, ge=
 
 
 @router.get("/providers", response_model=ProviderSearchOut)
-async def search_providers(q: str = Query(min_length=1), provider: str | None = None,
-                           group: Literal["sources", "reuploads"] | None = None,
-                           user: User = Depends(current_user)):
+async def search_providers(
+    q: str = Query(min_length=1),
+    provider: str | None = None,
+    group: Literal["sources", "reuploads"] | None = None,
+    user: User = Depends(current_user),
+):
     """Raw downloadable files. "Artist - Title" is split for ranking; otherwise results keep provider order.
     `group`: only the regular sources, or only re-uploads by small channels (slower: SoundCloud takes seconds).
     Each file can then be listened to and downloaded by its ref "file:<provider>:<provider_id>" (`app.listen`)."""
@@ -164,9 +171,15 @@ async def search_providers(q: str = Query(min_length=1), provider: str | None = 
     tq = TrackQuery(artist=artist.strip() if title else q.strip(), title=title.strip() if title else "")
     reuploads = {p.name for p in svc.reupload_providers()}
     # Soulseek only when asked by name: a search there takes seconds, its files are for downloads
-    names = [provider] if provider else [
-        n for n in svc.providers if n != "soulseek" and (group is None or (n in reuploads) == (group == "reuploads"))
-    ]
+    names = (
+        [provider]
+        if provider
+        else [
+            n
+            for n in svc.providers
+            if n != "soulseek" and (group is None or (n in reuploads) == (group == "reuploads"))
+        ]
+    )
     out = ProviderSearchOut()
 
     async def one(name: str):

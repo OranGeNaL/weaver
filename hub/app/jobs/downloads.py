@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import DownloadItemOut
@@ -44,11 +44,22 @@ from app.net import make_client
 from app.providers.base import Candidate, ProviderError, TrackQuery, file_ref
 from app.services import svc
 
+# an arbitrary constant key: every process_playlist_adds run in one server serializes on it
+PLAYLIST_ADDS_LOCK_KEY = 0x706C6179  # "play"
+
 log = logging.getLogger(__name__)
 
 TERMINAL = ("done", "failed", "cancelled", "needs_review")
 FAILED = ("failed", "needs_review")
-USER_FLAGS = ("star", "requested", "star_event_id", "star_cancelled", "star_failed", "favorite_client", "favorite_context")
+USER_FLAGS = (
+    "star",
+    "requested",
+    "star_event_id",
+    "star_cancelled",
+    "star_failed",
+    "favorite_client",
+    "favorite_context",
+)
 MAX_TRIES_PER_PROVIDER = 3
 MAX_SHOWN = 15  # candidates kept on the item for the user to pick from
 MAX_SHOWN_REUPLOADS = 5
@@ -63,14 +74,34 @@ async def item_links(s: AsyncSession, items: list[DownloadItem]) -> dict[int, tu
     """item id -> (Navidrome song id, batch target playlist id) for `item_out`."""
     track_ids = {i.track_id for i in items if i.track_id}
     batch_ids = {i.batch_id for i in items}
-    songs = dict((await s.execute(select(Track.id, Track.nd_song_id).where(Track.id.in_(track_ids)))).all())         if track_ids else {}
-    playlists = dict((await s.execute(
-        select(DownloadBatch.id, DownloadBatch.target_playlist_id).where(DownloadBatch.id.in_(batch_ids)))).all())         if batch_ids else {}
-    return {i.id: (songs.get(i.track_id), playlists.get(i.batch_id)) for i in items}
+    songs = (
+        dict((await s.execute(select(Track.id, Track.nd_song_id).where(Track.id.in_(track_ids)))).all())
+        if track_ids
+        else {}
+    )
+    playlists = (
+        dict(
+            (
+                await s.execute(
+                    select(DownloadBatch.id, DownloadBatch.target_playlist_id).where(DownloadBatch.id.in_(batch_ids))
+                )
+            ).all()
+        )
+        if batch_ids
+        else {}
+    )
+    return {
+        i.id: (
+            songs.get(i.track_id) if i.track_id is not None else None,
+            playlists.get(i.batch_id) if i.batch_id is not None else None,
+        )
+        for i in items
+    }
 
 
-def item_out(item: DownloadItem, *, detail: bool = False,
-             links: tuple[str | None, str | None] = (None, None)) -> DownloadItemOut:
+def item_out(
+    item: DownloadItem, *, detail: bool = False, links: tuple[str | None, str | None] = (None, None)
+) -> DownloadItemOut:
     q = (item.query_json or {}).get("query", {})
     meta = (item.query_json or {}).get("meta") or {}
     return DownloadItemOut(
@@ -124,6 +155,7 @@ async def update_item(item_id: int, **fields: Any) -> DownloadItem | None:
             item.query_json = {**item.query_json, "requested": True}
         if item.status in (*FAILED, "cancelled"):
             from app.favorites import download_failed
+
             await download_failed(s, item)
         await s.flush()
         await s.refresh(item)
@@ -268,17 +300,19 @@ async def handle_download_item(job: Job) -> None:
     # re-upload is looked up too: names from its title ("Трек – Исполнитель (без цензуры)") make poor tags.
     if not meta and not chosen:
         meta = await resolve_catalog_meta(q) or {}
-    elif not meta and (chosen.get("extra") or {}).get("reupload"):
+    elif not meta and chosen is not None and (chosen.get("extra") or {}).get("reupload"):
         if t := await resolve_catalog_track(q):
             q, meta = query_from_track(t), meta_from_catalog(t)
             qj["query"] = q.model_dump()
     meta = await complete_meta(meta) if meta else meta
     if meta:
-        q = q.model_copy(update={
-            "duration_s": q.duration_s or meta.get("duration_s"),
-            "isrc": q.isrc or meta.get("isrc"),
-            "explicit": q.explicit if q.explicit is not None else meta.get("explicit"),
-        })
+        q = q.model_copy(
+            update={
+                "duration_s": q.duration_s or meta.get("duration_s"),
+                "isrc": q.isrc or meta.get("isrc"),
+                "explicit": q.explicit if q.explicit is not None else meta.get("explicit"),
+            }
+        )
         qj["meta"] = meta
         qj["query"] = q.model_dump()
         await update_item(item_id, query_json=qj)
@@ -287,7 +321,11 @@ async def handle_download_item(job: Job) -> None:
     if not force:
         async with session_scope() as s:
             existing = await find_existing(
-                s, artist=q.artist, title=q.title, duration_s=q.duration_s, isrc=q.isrc,
+                s,
+                artist=q.artist,
+                title=q.title,
+                duration_s=q.duration_s,
+                isrc=q.isrc,
                 deezer_track_id=meta.get("deezer_track_id"),
             )
             existing_id = existing.id if existing else None
@@ -300,8 +338,13 @@ async def handle_download_item(job: Job) -> None:
             qj["replaces"] = existing_id
             await update_item(item_id, query_json=qj)
         elif existing_id:
-            item = await update_item(item_id, status="done" if linked else "importing", progress=1,
-                                     track_id=existing_id, warnings=["Уже есть в библиотеке"])
+            item = await update_item(
+                item_id,
+                status="done" if linked else "importing",
+                progress=1,
+                track_id=existing_id,
+                warnings=["Уже есть в библиотеке"],
+            )
             if linked and item is not None:
                 async with session_scope() as s:
                     await star_liked(s, [item])
@@ -371,17 +414,19 @@ async def handle_download_item(job: Job) -> None:
                 last_reason = reason or last_reason
             if guard:
                 if reups := await search_reuploads(pq, item_id, searched=providers):
-                    shown = all_cands[:MAX_SHOWN - min(MAX_SHOWN_REUPLOADS, len(reups))] + reups[:MAX_SHOWN_REUPLOADS]
+                    shown = all_cands[: MAX_SHOWN - min(MAX_SHOWN_REUPLOADS, len(reups))] + reups[:MAX_SHOWN_REUPLOADS]
                     all_cands.extend(reups)
                     await update_item(item_id, candidates_json=[c.model_dump(mode="json") for c in shown])
-                    ok, reason = await try_candidates(item_id, user_id, q, meta, reups[:MAX_TRIES_PER_PROVIDER],
-                                                      stage, force)
+                    ok, reason = await try_candidates(
+                        item_id, user_id, q, meta, reups[:MAX_TRIES_PER_PROVIDER], stage, force
+                    )
                     if ok:
                         return
                     last_reason = reason or last_reason
                 if held:
-                    ok, reason = await try_candidates(item_id, user_id, q, meta, held, stage, force,
-                                                      warning=MAYBE_CENSORED)
+                    ok, reason = await try_candidates(
+                        item_id, user_id, q, meta, held, stage, force, warning=MAYBE_CENSORED
+                    )
                     if ok:
                         return
                     last_reason = reason or last_reason
@@ -396,8 +441,11 @@ async def handle_download_item(job: Job) -> None:
         await update_item(item_id, status="needs_review", error="Не найдено ни в одном источнике")
     elif not meta:
         sure = classify(all_cands, get_settings().cfg.matching) == "auto"
-        await update_item(item_id, status="needs_review",
-                          error="Нет записи в каталоге — " + ("подтвердите файл" if sure else "выберите файл"))
+        await update_item(
+            item_id,
+            status="needs_review",
+            error="Нет записи в каталоге — " + ("подтвердите файл" if sure else "выберите файл"),
+        )
     else:
         await update_item(item_id, status="needs_review", error=f"Ни один кандидат не подошёл ({last_reason})")
 
@@ -408,7 +456,8 @@ async def soulseek_candidates(q: TrackQuery, item_id: int) -> list[Candidate]:
     p = svc.providers.get("soulseek")
     if p is None:
         return []
-    if (state := await p.health()) != "ready":
+    health = getattr(p, "health", None)
+    if health is not None and (state := await health()) != "ready":
         log.info("download %s: soulseek skipped (%s)", item_id, state)
         return []
     cands, err = await search_provider(p, q, item_id)
@@ -417,8 +466,9 @@ async def soulseek_candidates(q: TrackQuery, item_id: int) -> list[Candidate]:
     return cands
 
 
-async def search_provider(p, q: TrackQuery, item_id: int, *, limit: int = 15,
-                          enrich_top_n: int | None = None) -> tuple[list[Candidate], str | None]:
+async def search_provider(
+    p, q: TrackQuery, item_id: int, *, limit: int = 15, enrich_top_n: int | None = None
+) -> tuple[list[Candidate], str | None]:
     """Search one provider, rank its results and enrich the top ones (hitmoz: Explicit, real bitrate).
     Listening asks for fewer results and enrichments (`limit`, `enrich_top_n`): it has to start fast.
     Files uploaded after the source's cutoff (`sources.uploaded_before`) are dropped."""
@@ -454,8 +504,17 @@ async def search_reuploads(q: TrackQuery, item_id: int, *, searched: list | None
     return rank_candidates(q, [c for cands, _ in found for c in cands if trusted_original(c, cfg)], cfg)
 
 
-async def try_candidates(item_id: int, user_id: int, q: TrackQuery, meta: dict[str, Any], cands: list[Candidate],
-                         stage: Path, force: bool, *, warning: str | None = None) -> tuple[bool, str]:
+async def try_candidates(
+    item_id: int,
+    user_id: int,
+    q: TrackQuery,
+    meta: dict[str, Any],
+    cands: list[Candidate],
+    stage: Path,
+    force: bool,
+    *,
+    warning: str | None = None,
+) -> tuple[bool, str]:
     """Download candidates one by one until one passes the post-download check and is imported. `warning` goes
     to the imported track's warnings."""
     pcfg = get_settings().cfg
@@ -464,8 +523,13 @@ async def try_candidates(item_id: int, user_id: int, q: TrackQuery, meta: dict[s
         provider = svc.providers.get(cand.provider)
         if provider is None:
             continue
-        await update_item(item_id, status="downloading", provider=cand.provider,
-                          chosen_candidate_json=cand.model_dump(mode="json"), progress=0)
+        await update_item(
+            item_id,
+            status="downloading",
+            provider=cand.provider,
+            chosen_candidate_json=cand.model_dump(mode="json"),
+            progress=0,
+        )
         last_pub = [0.0]
         loop = asyncio.get_running_loop()
 
@@ -473,9 +537,7 @@ async def try_candidates(item_id: int, user_id: int, q: TrackQuery, meta: dict[s
             # may be called from a worker thread (yt-dlp)
             if frac - _last[0] >= 0.05 or frac >= 1:
                 _last[0] = frac
-                _loop.call_soon_threadsafe(
-                    lambda f=round(frac, 3): _loop.create_task(update_item(item_id, progress=f))
-                )
+                _loop.call_soon_threadsafe(lambda f=round(frac, 3): _loop.create_task(update_item(item_id, progress=f)))
 
         try:
             path = await provider.fetch(cand, stage, on_progress=on_progress)  # type: ignore[call-arg]
@@ -483,8 +545,9 @@ async def try_candidates(item_id: int, user_id: int, q: TrackQuery, meta: dict[s
             last_reason = f"{cand.provider}: {e}"
             log.warning("fetch failed %s: %r", cand.page_url, e, extra={"item_id": item_id})
             continue
-        check = await probe.postcheck(path, q.duration_s or cand.duration_s, pcfg.matching.duration_tolerance_s,
-                                      pcfg.postcheck.silence_warn_s)
+        check = await probe.postcheck(
+            path, q.duration_s or cand.duration_s, pcfg.matching.duration_tolerance_s, pcfg.postcheck.silence_warn_s
+        )
         if not check.ok:
             last_reason = f"{cand.provider}: {check.reason}"
             path.unlink(missing_ok=True)
@@ -494,8 +557,18 @@ async def try_candidates(item_id: int, user_id: int, q: TrackQuery, meta: dict[s
     return False, last_reason
 
 
-async def import_downloaded(item_id: int, user_id: int, q: TrackQuery, meta: dict[str, Any], cand: Candidate,
-                            path: Path, check: Any, force: bool, *, warning: str | None = None) -> None:
+async def import_downloaded(
+    item_id: int,
+    user_id: int,
+    q: TrackQuery,
+    meta: dict[str, Any],
+    cand: Candidate,
+    path: Path,
+    check: Any,
+    force: bool,
+    *,
+    warning: str | None = None,
+) -> None:
     await update_item(item_id, status="tagging", progress=1)
     cover = await fetch_cover(meta.get("cover_url") or cand.cover_url)
     release_date = _parse_date(meta.get("release_date"))
@@ -650,8 +723,10 @@ async def link_unlinked(nd) -> int:
                 if hit is None and i == 0:
                     hit = next(
                         (
-                            x for x in songs
-                            if _nfc(x.get("title")) == _nfc(t.title) and _nfc(x.get("album")) == _nfc(t.album)
+                            x
+                            for x in songs
+                            if _nfc(x.get("title")) == _nfc(t.title)
+                            and _nfc(x.get("album")) == _nfc(t.album)
                             and (t.duration_s is None or abs((x.get("duration") or 0) - t.duration_s) <= 2)
                             and not any(o.nd_song_id == x["id"] for o in tracks)
                         ),
@@ -692,14 +767,19 @@ async def star_liked(s: AsyncSession, items: list[DownloadItem]) -> None:
     if not liked:
         return
     old = {i.id: i.query_json["replaces"] for i in liked if i.query_json.get("replaces")}
-    songs = dict((await s.execute(select(Track.id, Track.nd_song_id).where(
-        Track.id.in_({i.track_id for i in liked} | set(old.values()))))).all())
+    songs = dict(
+        (
+            await s.execute(
+                select(Track.id, Track.nd_song_id).where(Track.id.in_({i.track_id for i in liked} | set(old.values())))
+            )
+        ).all()
+    )
     by_user: dict[int, list[str]] = {}
     off_by_user: dict[int, list[str]] = {}
     for i in liked:
-        if nd_id := songs.get(i.track_id):
-            from app.favorites import record, remember, snapshot
+        if i.track_id is not None and (nd_id := songs.get(i.track_id)):
             from app.api.schemas import FavoriteTarget
+            from app.favorites import record, remember, snapshot
             from app.models import PlayEvent
 
             i = await s.get(DownloadItem, i.id, populate_existing=True)
@@ -710,24 +790,44 @@ async def star_liked(s: AsyncSession, items: list[DownloadItem]) -> None:
             ref = item_ref(i)
             target = FavoriteTarget(ref=ref, nd_song_id=nd_id, target_data=i.query_json.get("query"))
             extra = [f"nd:{songs[old[i.id]]}"] if i.id in old and songs.get(old[i.id]) else []
-            original = (await s.execute(select(PlayEvent).where(PlayEvent.user_id == i.user_id,
-                PlayEvent.event_id == i.query_json.get("star_event_id")))).scalar_one_or_none()
+            original = (
+                await s.execute(
+                    select(PlayEvent).where(
+                        PlayEvent.user_id == i.user_id, PlayEvent.event_id == i.query_json.get("star_event_id")
+                    )
+                )
+            ).scalar_one_or_none()
             if original and original.ref:
                 extra.append(f"ref:{original.ref}")  # a picked provider file may acquire a catalog ref later
             await remember(s, target, extra_aliases=extra)
             states = await snapshot(s, i.user_id)
-            state = next((x for x in states.values() if x.target_type == "track" and
-                          (x.nd_id == nd_id or ref and x.ref == ref)), None)
+            state = next(
+                (
+                    x
+                    for x in states.values()
+                    if x.target_type == "track" and (x.nd_id == nd_id or (ref and x.ref == ref))
+                ),
+                None,
+            )
             if state and not state.liked:
                 # A terminal failure rolls back the promise, but a successful manual retry may restore it.
                 if original is None or state.event.event_id != original.event_id:
                     continue
-                event = await record(s, i.user_id, target, True, operation=f"retry:{original.event_id}",
-                                     client="hub", context="download:retry", mirror_pending=True)
+                event = await record(
+                    s,
+                    i.user_id,
+                    target,
+                    True,
+                    operation=f"retry:{original.event_id}",
+                    client="hub",
+                    context="download:retry",
+                    mirror_pending=True,
+                )
                 i.query_json = {**i.query_json, "star_event_id": event.event_id}
             i.query_json = {**i.query_json, "star_failed": False}
             by_user.setdefault(i.user_id, []).append(nd_id)
-            if (off := songs.get(old.get(i.id))) and off != nd_id:
+            old_song = old.get(i.id)
+            if old_song is not None and (off := songs.get(old_song)) and off != nd_id:
                 off_by_user.setdefault(i.user_id, []).append(off)
     for user_id, song_ids in by_user.items():
         user = await s.get(User, user_id)
@@ -737,6 +837,7 @@ async def star_liked(s: AsyncSession, items: list[DownloadItem]) -> None:
         try:
             await nd.star(song_ids=song_ids)
             from app.favorites import snapshot
+
             for state in (await snapshot(s, user_id)).values():
                 if state.target_type == "track" and state.nd_id in song_ids:
                     state.event.mirror_pending = False
@@ -778,16 +879,21 @@ async def process_playlist_adds(s: AsyncSession) -> None:
     """Wait for active downloads, pass manual review, and insert a reviewed song back into its requested place."""
     from app.auth import user_navidrome
 
-    # Serialize readers through the transaction commit, including concurrent scan/download completions.
-    # An asyncio lock released here would let the next caller see uncommitted additions and add them twice.
-    await s.execute(update(PendingPlaylistAdd).where(PendingPlaylistAdd.id == -1).values(position=0))
+    # Serialize the readers through the transaction commit, including concurrent scan/download completions.
+    # A transaction-scoped advisory lock does what SQLite's global write lock used to: an asyncio lock released
+    # before the commit would let the next caller see uncommitted additions and add them twice.
+    await s.execute(select(func.pg_advisory_xact_lock(PLAYLIST_ADDS_LOCK_KEY)))
     rows = (
         await s.execute(
             select(PendingPlaylistAdd, DownloadItem, Track)
             .join(DownloadItem, DownloadItem.id == PendingPlaylistAdd.download_item_id)
             .outerjoin(Track, Track.id == DownloadItem.track_id)
-            .order_by(PendingPlaylistAdd.playlist_id, DownloadItem.batch_id,
-                      PendingPlaylistAdd.position, PendingPlaylistAdd.id)
+            .order_by(
+                PendingPlaylistAdd.playlist_id,
+                DownloadItem.batch_id,
+                PendingPlaylistAdd.position,
+                PendingPlaylistAdd.id,
+            )
         )
     ).all()
     groups: dict[tuple[int, str], list[tuple[PendingPlaylistAdd, DownloadItem, Track | None]]] = {}
@@ -818,9 +924,9 @@ async def process_playlist_adds(s: AsyncSession) -> None:
                     await nd.replace_playlist_songs(playlist_id, songs)
                 else:
                     for k in range(0, len(new), 300):
-                        await nd.update_playlist(playlist_id, add=[song for _, song in new[k:k + 300]])
+                        await nd.update_playlist(playlist_id, add=[song for _, song in new[k : k + 300]])
                         # Flush each successful chunk so a later chunk's failure cannot duplicate it on retry.
-                        for add, song in new[k:k + 300]:
+                        for add, song in new[k : k + 300]:
                             add.applied_song_id = song
                         await s.flush()
             except Exception as e:
@@ -857,7 +963,9 @@ async def create_items(
         if star:
             query_json["star"] = True  # ♥: star the song once it is in Navidrome (`star_liked`)
             if batch.origin == "assistant":
-                query_json.update(favorite_client="assistant", favorite_context="assistant:bulk" if len(entries) > 1 else "assistant")
+                query_json.update(
+                    favorite_client="assistant", favorite_context="assistant:bulk" if len(entries) > 1 else "assistant"
+                )
         item = DownloadItem(
             batch_id=batch.id,
             user_id=batch.user_id,
@@ -869,28 +977,40 @@ async def create_items(
         await s.flush()
         if star:
             from app.favorites import download_requested, snapshot
+
             ref = item_ref(item)
             if favorite_events and ref in favorite_events:
                 current = await snapshot(s, batch.user_id)
                 state = next((x for x in current.values() if x.ref == ref and x.target_type == "track"), None)
-                item.query_json = {**item.query_json, "star_event_id": favorite_events[ref],
-                                   "star": bool(state and state.liked), "star_cancelled": not bool(state and state.liked)}
+                item.query_json = {
+                    **item.query_json,
+                    "star_event_id": favorite_events[ref],
+                    "star": bool(state and state.liked),
+                    "star_cancelled": not bool(state and state.liked),
+                }
                 if state is None or not state.liked:
                     # This quiet download was cancelled before expansion finished.
                     item.status = "cancelled"
             else:
                 await download_requested(s, item)
         if batch.target_playlist_id:
-            s.add(PendingPlaylistAdd(playlist_id=batch.target_playlist_id, user_id=batch.user_id,
-                                     download_item_id=item.id, position=start_position + i))
+            s.add(
+                PendingPlaylistAdd(
+                    playlist_id=batch.target_playlist_id,
+                    user_id=batch.user_id,
+                    download_item_id=item.id,
+                    position=start_position + i,
+                )
+            )
         if item.status != "cancelled":
             await enqueue(s, "download_item", {"item_id": item.id})
     return len(entries)
 
 
 def query_from_track(t: CatalogTrack) -> TrackQuery:
-    return TrackQuery(artist=t.artist, title=t.title, album=t.album_title, duration_s=t.duration_s, isrc=t.isrc,
-                      explicit=t.explicit)
+    return TrackQuery(
+        artist=t.artist, title=t.title, album=t.album_title, duration_s=t.duration_s, isrc=t.isrc, explicit=t.explicit
+    )
 
 
 async def get_catalog_album(ref: str) -> CatalogAlbum:
@@ -909,10 +1029,18 @@ async def handle_expand_batch(job: Job) -> None:
     if p.get("artist_ref"):
         src, id_ = split_ref(p["artist_ref"])
         types = set(p.get("record_types") or ["album", "single", "ep"])
-        page = await (svc.deezer.get_artist_page(id_) if src == "dz" else svc.hitmoz_catalog.get_artist(id_))
+        if src == "dz":
+            if svc.deezer is None:
+                return
+            page = await svc.deezer.get_artist_page(id_)
+        else:
+            if svc.hitmoz_catalog is None:
+                return
+            page = await svc.hitmoz_catalog.get_artist(id_)
         # oldest first, so singles that are later included in an album don't win the album slot
-        album_refs += [a.ref for a in sorted(page.albums, key=lambda a: a.release_date or date.min)
-                       if a.record_type in types]
+        album_refs += [
+            a.ref for a in sorted(page.albums, key=lambda a: a.release_date or date.min) if a.record_type in types
+        ]
     entries: list[tuple[TrackQuery, dict[str, Any], Candidate | None]] = []
     seen: set[str] = set()
     for ref in album_refs:
@@ -941,7 +1069,14 @@ async def handle_expand_batch(job: Job) -> None:
         batch = await s.get(DownloadBatch, int(p["batch_id"]))
         if batch is None:
             return
-        await create_items(s, batch, entries, force=bool(p.get("force")), star=bool(p.get("star")),
-                           start_position=int(p.get("position", 0)), favorite_events=p.get("favorite_events"))
+        await create_items(
+            s,
+            batch,
+            entries,
+            force=bool(p.get("force")),
+            star=bool(p.get("star")),
+            start_position=int(p.get("position", 0)),
+            favorite_events=p.get("favorite_events"),
+        )
     notify()
     bus.publish(batch.user_id, "batch", {"batch_id": batch.id, "queued": len(entries)})

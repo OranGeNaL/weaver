@@ -5,9 +5,8 @@ Generators are fakes here (their sources: test_mix_sources.py); the profile is m
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from itertools import pairwise
-from pathlib import Path
 
 import httpx
 import pytest
@@ -17,15 +16,30 @@ from app.catalog.models import CatalogTrack
 from app.mixes import build as b
 from app.mixes.taste import Profile, TasteTrack, artist_key
 
-NOW = datetime(2026, 10, 23, 2, 0)  # Friday 05:00 in Moscow
+NOW = datetime(2026, 10, 23, 2, 0, tzinfo=UTC)  # Friday 05:00 in Moscow
 EMBEDDER = "http://embedder.test"
 
 
-def tr(n: int | str, artist: str = "", title: str = "", *, duration: int | None = 200, rank: int | None = None,
-       artist_ref: str | None = None) -> CatalogTrack:
-    return CatalogTrack(ref=f"dz:{n}", source="dz", id=str(n), title=title or f"Песня {n}",
-                        artist=artist or f"Артист {n}", artists=[artist or f"Артист {n}"], duration_s=duration,
-                        rank=rank, artist_ref=artist_ref)
+def tr(
+    n: int | str,
+    artist: str = "",
+    title: str = "",
+    *,
+    duration: int | None = 200,
+    rank: int | None = None,
+    artist_ref: str | None = None,
+) -> CatalogTrack:
+    return CatalogTrack(
+        ref=f"dz:{n}",
+        source="dz",
+        id=str(n),
+        title=title or f"Песня {n}",
+        artist=artist or f"Артист {n}",
+        artists=[artist or f"Артист {n}"],
+        duration_s=duration,
+        rank=rank,
+        artist_ref=artist_ref,
+    )
 
 
 def cand(n: int, artist: str = "", *, familiar: bool = False, score: float = 1.0) -> b.Cand:
@@ -48,24 +62,37 @@ def profile(*tracks: TasteTrack, listens: dict[str, int] | None = None) -> Profi
 def known(n: int, artist: str = "", *, score: float = 2.0, played_days_ago: float | None = None, **kw) -> TasteTrack:
     t = tr(n, artist)
     played = NOW - timedelta(days=played_days_ago) if played_days_ago is not None else None
-    return TasteTrack(key=t.ref, ref=t.ref, artist=t.artist, title=t.title, score=score, last_played=played,
-                      last_event=played, track=t, **kw)
+    return TasteTrack(
+        key=t.ref,
+        ref=t.ref,
+        artist=t.artist,
+        title=t.title,
+        score=score,
+        last_played=played,
+        last_event=played,
+        track=t,
+        **kw,
+    )
 
 
 # --- filters and score -------------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(("track", "why"), [
-    (tr(1, "Нелюбимый"), "disliked track"),
-    (tr(2, "Нелюбимый артист", artist_ref="dz:666"), "disliked artist by ref"),
-    (tr(3, "Тоже нелюбимый"), "disliked artist by name"),
-    (tr(4, title="Песня (Live)"), "live"),
-    (tr(5, title="Песня (Remix)"), "remix"),
-    (tr(6, title="Песня (Караоке версия)"), "karaoke"),
-    (tr(7, title="Песня - минусовка"), "instrumental"),
-    (tr(8, duration=80), "shorter than 1:30"),
-    (tr(9, duration=660), "longer than 10 min"),
-], ids=lambda x: x if isinstance(x, str) else "")
+@pytest.mark.parametrize(
+    ("track", "why"),
+    [
+        (tr(1, "Нелюбимый"), "disliked track"),
+        (tr(2, "Нелюбимый артист", artist_ref="dz:666"), "disliked artist by ref"),
+        (tr(3, "Тоже нелюбимый"), "disliked artist by name"),
+        (tr(4, title="Песня (Live)"), "live"),
+        (tr(5, title="Песня (Remix)"), "remix"),
+        (tr(6, title="Песня (Караоке версия)"), "karaoke"),
+        (tr(7, title="Песня - минусовка"), "instrumental"),
+        (tr(8, duration=80), "shorter than 1:30"),
+        (tr(9, duration=660), "longer than 10 min"),
+    ],
+    ids=lambda x: x if isinstance(x, str) else "",
+)
 def test_filters_drop(track: CatalogTrack, why: str) -> None:
     p = profile()
     p.disliked_ids.add("dz:1")
@@ -76,8 +103,13 @@ def test_filters_drop(track: CatalogTrack, why: str) -> None:
 
 
 def test_familiar_and_new() -> None:
-    p = profile(known(1, "Кино"), known(2, "Кино", played_days_ago=1), known(3, "Кино", score=-1),
-                known(4, "Кино", score=0, downloaded=True), listens={"Кино": 6, "Сплин": 5})
+    p = profile(
+        known(1, "Кино"),
+        known(2, "Кино", played_days_ago=1),
+        known(3, "Кино", score=-1),
+        known(4, "Кино", score=0, downloaded=True),
+        listens={"Кино": 6, "Сплин": 5},
+    )
     cfg = b.get_settings().cfg.mixes
     heard, recent, skipped, downloaded = (b.Cand(track=tr(n, "Кино")) for n in (1, 2, 3, 4))
     unheard_known_artist, unknown_artist = b.Cand(track=tr(10, "Кино")), b.Cand(track=tr(11, "Сплин"))
@@ -164,9 +196,13 @@ def test_order_puts_the_closest_by_sound_next() -> None:
 
 
 def test_stash_and_favorites() -> None:
-    p = profile(known(1, score=5, played_days_ago=3), known(2, score=4, played_days_ago=10),
-                known(3, score=1, played_days_ago=90, liked=True), known(4, score=0, downloaded=True),
-                known(5, score=3, played_days_ago=70, liked=True))
+    p = profile(
+        known(1, score=5, played_days_ago=3),
+        known(2, score=4, played_days_ago=10),
+        known(3, score=1, played_days_ago=90, liked=True),
+        known(4, score=0, downloaded=True),
+        known(5, score=3, played_days_ago=70, liked=True),
+    )
 
     # not the one heard 3 days ago, nor the one only downloaded (a download weighs nothing, M4)
     assert [t.ref for t in b.favorites(p)] == ["dz:2", "dz:5", "dz:3"]
@@ -177,10 +213,10 @@ def test_stash_and_favorites() -> None:
 
 
 @pytest.fixture
-async def db(hub_env, db_file: Path):
+async def db(hub_env, db_url: str):
     from app.db import dispose, init_engine
 
-    init_engine(db_file)
+    init_engine(db_url)
     yield
     await dispose()
 
@@ -191,6 +227,7 @@ def gens(**lists: list[CatalogTrack] | Exception) -> dict[str, b.Gen]:
             if isinstance(x, Exception):
                 raise x
             return x
+
         return fn
 
     return {k: make(v) for k, v in lists.items()}
@@ -200,16 +237,28 @@ async def test_build_without_sound_and_ai(db) -> None:
     p = profile(*(known(i, f"Свой {i}", played_days_ago=20) for i in range(40)))
     radio = [tr(1000 + i, f"Новый {i}") for i in range(80)]
 
-    built = await b.build(p, "normal", gens(favorites=b.favorites(p), ytm_radio=radio,
-                                            lastfm_similar=b.Off("нет LASTFM_API_KEY"),
-                                            yandex_similar=RuntimeError("yandex is down")))
+    built = await b.build(
+        p,
+        "normal",
+        gens(
+            favorites=b.favorites(p),
+            ytm_radio=radio,
+            lastfm_similar=b.Off("нет LASTFM_API_KEY"),
+            yandex_similar=RuntimeError("yandex is down"),
+        ),
+    )
 
     assert len(built.active) == 50 and sum(c.familiar for c in built.active) == 20 and len(built.reserve) == 20
     assert built.title == "Микс дня · пятница" and "знакомых" in built.description
     g = built.stats["generators"]
     assert g["favorites"]["used"] == 20 and g["ytm_radio"]["used"] == 30
-    assert g["lastfm_similar"] == {"tracks": 0, "used": 0, "seconds": g["lastfm_similar"]["seconds"],
-                                   "error": "нет LASTFM_API_KEY", "off": True}
+    assert g["lastfm_similar"] == {
+        "tracks": 0,
+        "used": 0,
+        "seconds": g["lastfm_similar"]["seconds"],
+        "error": "нет LASTFM_API_KEY",
+        "off": True,
+    }
     assert "yandex is down" in g["yandex_similar"]["error"] and built.stats["embedder"] == "off"
 
 
@@ -231,9 +280,24 @@ async def test_build_with_sound(db, monkeypatch: pytest.MonkeyPatch, respx_mock:
         body = json.loads(request.content)
         if calls["similarity"] == 1:
             return httpx.Response(200, json={"model": "m", "results": [], "missing": body["candidates"]})
-        return httpx.Response(200, json={"model": "m", "missing": [], "results": [
-            {"key": k, "pos": 0, "neg": 0, "score": 0.9 if k == "dz:2002" else 0.0, "nearest": [], "nearest_neg": None}
-            for k in body["candidates"]]})
+        return httpx.Response(
+            200,
+            json={
+                "model": "m",
+                "missing": [],
+                "results": [
+                    {
+                        "key": k,
+                        "pos": 0,
+                        "neg": 0,
+                        "score": 0.9 if k == "dz:2002" else 0.0,
+                        "nearest": [],
+                        "nearest_neg": None,
+                    }
+                    for k in body["candidates"]
+                ],
+            },
+        )
 
     embed = respx_mock.post(f"{EMBEDDER}/embed").respond(json={"queued": 1, "known": 0, "rejected": []})
     respx_mock.post(f"{EMBEDDER}/similarity").mock(side_effect=similarity)
@@ -247,8 +311,9 @@ async def test_build_with_sound(db, monkeypatch: pytest.MonkeyPatch, respx_mock:
     assert built.active[0].track.ref == "dz:2002" and built.active[0].sim == 0.9
 
 
-async def test_build_survives_the_embedder_down(db, monkeypatch: pytest.MonkeyPatch,
-                                                respx_mock: respx.MockRouter) -> None:
+async def test_build_survives_the_embedder_down(
+    db, monkeypatch: pytest.MonkeyPatch, respx_mock: respx.MockRouter
+) -> None:
     from app.config import get_settings
 
     monkeypatch.setenv("EMBEDDER_URL", EMBEDDER)
@@ -275,12 +340,13 @@ async def test_v2_build_keeps_early_skip_and_album_stash_when_sound_is_missing(d
     album.album_liked = True
     liked = seed_track(3)
     liked.liked, liked.heard30, liked.last_heard = True, True, NOW - timedelta(days=8)
-    p = vp(skipped, album, liked, maturity=.2)
-    built = await b.build(p, "normal", gens(ytm_radio=[tr(1, skipped.artist)], stash=b.stash(p),
-                                          favorites=b.favorites(p)))
+    p = vp(skipped, album, liked, maturity=0.2)
+    built = await b.build(
+        p, "normal", gens(ytm_radio=[tr(1, skipped.artist)], stash=b.stash(p), favorites=b.favorites(p))
+    )
     assert {c.track.ref for c in built.active} == {"dz:1", "dz:2", "dz:3"}
     assert not next(c for c in built.active if c.track.ref == "dz:1").familiar
-    assert built.stats["taste_model"] == "v2" and built.stats["maturity"] == .2
+    assert built.stats["taste_model"] == "v2" and built.stats["maturity"] == 0.2
     assert all(c.sim is None for c in built.active)
     assert all(call.request.url.path not in ("/similarity", "/vectors") for call in respx_mock.calls)
 
@@ -315,11 +381,18 @@ async def test_name_by_ai(db, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def test_build_counts_why_candidates_were_dropped_and_keeps_score_parts(db) -> None:
-    p = profile(*(known(i, f"Свой {i}", played_days_ago=20) for i in range(30)), known(500, "Недавний", played_days_ago=1))
+    p = profile(
+        *(known(i, f"Свой {i}", played_days_ago=20) for i in range(30)), known(500, "Недавний", played_days_ago=1)
+    )
     p.disliked_ids.add("dz:501")
     radio = [tr(1000 + i, f"Новый {i}", rank=1000 * i) for i in range(60)]
-    dropped = [tr(500, "Недавний"), tr(501, "Нелюбимый"), tr(502, title="Песня (Live)"), tr(503, title="Песня (Remix)"),
-               tr(504, duration=80)]
+    dropped = [
+        tr(500, "Недавний"),
+        tr(501, "Нелюбимый"),
+        tr(502, title="Песня (Live)"),
+        tr(503, title="Песня (Remix)"),
+        tr(504, duration=80),
+    ]
 
     built = await b.build(p, "normal", gens(favorites=b.favorites(p), ytm_radio=radio + dropped))
 
@@ -328,7 +401,8 @@ async def test_build_counts_why_candidates_were_dropped_and_keeps_score_parts(db
     for c in built.active + built.reserve:
         f = c.features()
         assert f["score_parts"]["total"] == c.score and f["score_parts"]["maturity"] is None
-        assert (f["profile"] is not None) == c.track.ref.startswith("dz:") and int(c.track.ref[3:]) < 30 or \
-            f["profile"] is None
+        assert ((f["profile"] is not None) == c.track.ref.startswith("dz:") and int(c.track.ref[3:]) < 30) or f[
+            "profile"
+        ] is None
     own = next(c for c in built.active if c.track.ref == "dz:0").features()["profile"]
     assert own == {"key": "dz:0", "s": 2.0, "positive": None, "negative": None, "artist_score": 2.0, "familiar": True}

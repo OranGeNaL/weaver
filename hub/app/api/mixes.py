@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import Integer, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import (
@@ -66,7 +66,7 @@ async def settings_out(s: AsyncSession, user_id: int) -> MixSettingsOut:
 async def _building(s: AsyncSession, user_id: int) -> bool:
     return (await s.execute(select(Job.id).where(
         Job.kind == "mix_build", Job.status.in_(("queued", "running")),
-        func.json_extract(Job.payload_json, "$.user_id") == user_id).limit(1))).scalar_one_or_none() is not None
+        cast(Job.payload_json["user_id"].astext, Integer) == user_id).limit(1))).scalar_one_or_none() is not None
 
 
 @router.get("/api/mixes/today", response_model=MixTodayOut)

@@ -20,7 +20,7 @@ from sqlalchemy import func, select
 from app.catalog.models import CatalogTrack
 from tests.support import FakeDeezer, app_client
 
-NOW = datetime(2026, 10, 22, 12, 0)
+NOW = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
 
 
 class ND:
@@ -50,10 +50,13 @@ class ND:
         if name == "getUser":
             ok["user"] = {"adminRole": user == "admin"}
         elif name == "getStarred2":
-            ok["starred2"] = {"song": [{"id": x, "starred": "2026-10-01T10:00:00Z"} for x in self.starred.get(user, ())]}
+            ok["starred2"] = {
+                "song": [{"id": x, "starred": "2026-10-01T10:00:00Z"} for x in self.starred.get(user, ())]
+            }
         elif name == "getPlaylists":
-            ok["playlists"] = {"playlist": [{"id": k, "name": v["name"]} for k, v in self.playlists.items()
-                                            if v["owner"] == user]}
+            ok["playlists"] = {
+                "playlist": [{"id": k, "name": v["name"]} for k, v in self.playlists.items() if v["owner"] == user]
+            }
         elif name == "getPlaylist":
             pl = self.playlists[p["id"]]
             ok["playlist"] = {"id": p["id"], "entry": [{"id": x} for x in pl["songs"]]}
@@ -67,10 +70,13 @@ class ND:
                 self.playlists[pid] = {"name": p["name"], "owner": user, "songs": songs, "comment": ""}
             ok["playlist"] = {"id": pid}
         elif name in ("getArtist", "getAlbum", "getSong"):
-            found = {"getArtist": self.artists, "getAlbum": self.albums, "getSong": self.songs}[name].get(p.get("id", ""))
+            found = {"getArtist": self.artists, "getAlbum": self.albums, "getSong": self.songs}[name].get(
+                p.get("id", "")
+            )
             if found is None:
-                return httpx.Response(200, json={"subsonic-response": {
-                    "status": "failed", "error": {"code": 70, "message": "not found"}}})
+                return httpx.Response(
+                    200, json={"subsonic-response": {"status": "failed", "error": {"code": 70, "message": "not found"}}}
+                )
             ok[name[3:].lower()] = found
         elif name == "updatePlaylist":
             pl = self.playlists[p["playlistId"]]
@@ -87,6 +93,7 @@ async def env(hub_env, tmp_path: Path):
 
     (tmp_path / "none.yaml").write_text("mixes:\n  size: 6\n  reserve: 2\n", encoding="utf-8")
     from app.config import get_settings
+
     get_settings.cache_clear()  # importing app.main creates the module's app and may cache defaults
     nd = ND()
     app = create_app()
@@ -130,27 +137,58 @@ async def add_track(n: int, *, music: Path | None = None, deezer: bool = True) -
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_bytes(b"mp3")
     async with session_scope() as s:
-        t = Track(uid=str(uuid.uuid4()), path=path, nd_song_id=f"nd{n}", artist=f"Свой {n}", title=f"Песня {n}",
-                  duration_s=200, deezer_track_id=str(n) if deezer else None,
-                  fingerprint=fingerprint(f"Свой {n}", f"Песня {n}"))
+        t = Track(
+            uid=str(uuid.uuid4()),
+            path=path,
+            nd_song_id=f"nd{n}",
+            artist=f"Свой {n}",
+            title=f"Песня {n}",
+            duration_s=200,
+            deezer_track_id=str(n) if deezer else None,
+            fingerprint=fingerprint(f"Свой {n}", f"Песня {n}"),
+        )
         s.add(t)
         await s.flush()
         return t.id
 
 
-async def add_event(user: int, kind: str, *, nd: str | None = None, ref: str | None = None, at: datetime | None = None,
-                    position: float | None = None) -> None:
+async def add_event(
+    user: int,
+    kind: str,
+    *,
+    nd: str | None = None,
+    ref: str | None = None,
+    at: datetime | None = None,
+    position: float | None = None,
+) -> None:
     from app.db import session_scope
     from app.models import PlayEvent
 
     async with session_scope() as s:
-        s.add(PlayEvent(user_id=user, event_id=uuid.uuid4().hex, ts=at or NOW, kind=kind, ref=ref, nd_song_id=nd,
-                        position_s=position, client="app/1.5.0"))
+        s.add(
+            PlayEvent(
+                user_id=user,
+                event_id=uuid.uuid4().hex,
+                ts=at or NOW,
+                kind=kind,
+                ref=ref,
+                nd_song_id=nd,
+                position_s=position,
+                client="app/1.5.0",
+            )
+        )
 
 
 def new_track(n: int) -> CatalogTrack:
-    return CatalogTrack(ref=f"dz:{n}", source="dz", id=str(n), title=f"Новая {n}", artist=f"Новый {n}",
-                        artists=[f"Новый {n}"], duration_s=200)
+    return CatalogTrack(
+        ref=f"dz:{n}",
+        source="dz",
+        id=str(n),
+        title=f"Новая {n}",
+        artist=f"Новый {n}",
+        artists=[f"Новый {n}"],
+        duration_s=200,
+    )
 
 
 def fake_generators(monkeypatch: pytest.MonkeyPatch, new: list[CatalogTrack]) -> None:
@@ -198,22 +236,54 @@ async def test_profile_weights_and_decay(env) -> None:
         batch = DownloadBatch(user_id=me, origin="catalog")
         s.add(batch)
         await s.flush()
-        s.add(DownloadItem(batch_id=batch.id, user_id=me, status="done", track_id=4, created_at=NOW,
-                           query_json={"query": {}, "meta": {"track_ref": "dz:4"}}))
-        s.add(DownloadItem(batch_id=batch.id, user_id=me, status="done", track_id=6, created_at=NOW,
-                           query_json={"query": {}, "meta": {"track_ref": "dz:6"}, "mix": {"id": 1}}))  # not own
-        s.add(DownloadItem(batch_id=batch.id, user_id=me, status="done", track_id=9, created_at=NOW,
-                           query_json={"query": {}, "meta": {"track_ref": "dz:9"}}))
+        s.add(
+            DownloadItem(
+                batch_id=batch.id,
+                user_id=me,
+                status="done",
+                track_id=4,
+                created_at=NOW,
+                query_json={"query": {}, "meta": {"track_ref": "dz:4"}},
+            )
+        )
+        s.add(
+            DownloadItem(
+                batch_id=batch.id,
+                user_id=me,
+                status="done",
+                track_id=6,
+                created_at=NOW,
+                query_json={"query": {}, "meta": {"track_ref": "dz:6"}, "mix": {"id": 1}},
+            )
+        )  # not own
+        s.add(
+            DownloadItem(
+                batch_id=batch.id,
+                user_id=me,
+                status="done",
+                track_id=9,
+                created_at=NOW,
+                query_json={"query": {}, "meta": {"track_ref": "dz:9"}},
+            )
+        )
         s.add(Dislike(user_id=me, nd_song_id="nd5", source="app", created_at=NOW))
         s.add(Import(user_id=me, source="yandex", method="token", options_json={"liked": ["nd6"]}))
         user = await s.get(User, me)
-        p = await build_profile(s, user, now=NOW, starred=[{"id": "nd4", "starred": "2026-10-22T12:00:00Z"},
-                                                            {"id": "nd6", "starred": "2026-10-22T12:00:00Z"},
-                                                            {"id": "nd7", "starred": "2026-10-21T12:00:00Z"}])
+        p = await build_profile(
+            s,
+            user,
+            now=NOW,
+            starred=[
+                {"id": "nd4", "starred": "2026-10-22T12:00:00Z"},
+                {"id": "nd6", "starred": "2026-10-22T12:00:00Z"},
+                {"id": "nd7", "starred": "2026-10-21T12:00:00Z"},
+            ],
+        )
 
     score = {t.nd_song_id: round(t.score, 3) for t in p.tracks.values()}
     assert score == {
-        "nd1": 2.0, "nd2": 1.0,
+        "nd1": 2.0,
+        "nd2": 1.0,
         "nd3": -0.702,  # −1 + 2 · (70/170) / (1 + 3 · 100/170)
         "nd4": 1.0,  # ♥ without an event; its own download adds nothing
         "nd5": -5.0,
@@ -242,8 +312,16 @@ async def test_own_download_alone_weighs_nothing_but_stays_in_the_profile(env) -
         batch = DownloadBatch(user_id=me, origin="catalog")
         s.add(batch)
         await s.flush()
-        s.add(DownloadItem(batch_id=batch.id, user_id=me, status="done", track_id=1, created_at=NOW,
-                           query_json={"query": {}, "meta": {"track_ref": "dz:1"}}))
+        s.add(
+            DownloadItem(
+                batch_id=batch.id,
+                user_id=me,
+                status="done",
+                track_id=1,
+                created_at=NOW,
+                query_json={"query": {}, "meta": {"track_ref": "dz:1"}},
+            )
+        )
         await s.flush()
         p = await build_profile(s, await s.get(User, me), now=NOW, starred=[])
 
@@ -272,8 +350,18 @@ async def test_skip_after_30_s_takes_the_length_of_the_event(env) -> None:
     me = env["admin"]
     await add_track(1)  # the file says 200 s, the player said 130 s: the event wins
     async with session_scope() as s:
-        s.add(PlayEvent(user_id=me, event_id="e1", ts=NOW, kind="skip", nd_song_id="nd1", position_s=80,
-                        duration_s=130, client="app/1.6.0"))
+        s.add(
+            PlayEvent(
+                user_id=me,
+                event_id="e1",
+                ts=NOW,
+                kind="skip",
+                nd_song_id="nd1",
+                position_s=80,
+                duration_s=130,
+                client="app/1.6.0",
+            )
+        )
         await s.flush()
         p = await build_profile(s, await s.get(User, me), now=NOW, starred=[])
 
@@ -287,8 +375,9 @@ async def test_cold_start_seeds_from_picked_artists(env) -> None:
     from app.models import MixSettings, User
 
     async with session_scope() as s:
-        s.add(MixSettings(user_id=env["admin"], mode="normal", mix_hour=5,
-                          artists_json=[{"ref": "dz:1", "name": "Кино"}]))
+        s.add(
+            MixSettings(user_id=env["admin"], mode="normal", mix_hour=5, artists_json=[{"ref": "dz:1", "name": "Кино"}])
+        )
         await s.flush()
         p = await build_profile(s, await s.get(User, env["admin"]), starred=[])
 
@@ -304,8 +393,9 @@ async def mix_rows(mix_id: int) -> list:
     from app.models import MixItem
 
     async with session_scope() as s:
-        return list((await s.execute(select(MixItem).where(MixItem.mix_id == mix_id).order_by(MixItem.position)))
-                    .scalars())
+        return list(
+            (await s.execute(select(MixItem).where(MixItem.mix_id == mix_id).order_by(MixItem.position))).scalars()
+        )
 
 
 @pytest.mark.parametrize("shadow", ["off", "on", "error", "snapshot_error"])
@@ -319,13 +409,17 @@ async def test_build_queues_quiet_downloads_and_writes_the_playlist(env, monkeyp
 
     monkeypatch.setattr(get_settings().cfg.mixes, "taste_shadow", shadow != "off")
     if shadow == "error":
+
         def fail(*args, **kwargs):
             raise RuntimeError("diagnostic failure")
+
         monkeypatch.setattr(shadow_module, "compare", fail)
 
     if shadow == "snapshot_error":
+
         async def fail_snapshot(*args, **kwargs):
             raise RuntimeError("snapshot failure")
+
         monkeypatch.setattr(taste_snapshot, "load_snapshot", fail_snapshot)
 
     warmed: list[list[str]] = []
@@ -340,7 +434,8 @@ async def test_build_queues_quiet_downloads_and_writes_the_playlist(env, monkeyp
         assert "taste_shadow" not in mix.stats_json
     elif shadow in ("error", "snapshot_error"):
         assert mix.stats_json["taste_shadow"]["error"] == (
-            "comparison_failed" if shadow == "error" else "snapshot_failed")
+            "comparison_failed" if shadow == "error" else "snapshot_failed"
+        )
     else:
         assert mix.stats_json["taste_shadow"]["schema"] == 1
         assert mix.stats_json["taste_shadow"]["sound"] is None
@@ -432,8 +527,18 @@ async def old_mix_with(user: int, track_id: int, *, for_mix: bool = True, ref: s
         m = Mix(user_id=user, title="Микс", description="", mode="normal", status="closed")
         s.add(m)
         await s.flush()
-        s.add(MixItem(mix_id=m.id, position=0, state="active", ref=ref, nd_song_id="nd7", track_id=track_id,
-                      generator="ytm_radio", downloaded_for_mix=for_mix))
+        s.add(
+            MixItem(
+                mix_id=m.id,
+                position=0,
+                state="active",
+                ref=ref,
+                nd_song_id="nd7",
+                track_id=track_id,
+                generator="ytm_radio",
+                downloaded_for_mix=for_mix,
+            )
+        )
         return m.id
 
 
@@ -454,8 +559,15 @@ async def keep_by(case: str, env, me: int, other: int, track_id: int) -> None:
             b = DownloadBatch(user_id=other, origin="catalog")
             s.add(b)
             await s.flush()
-            s.add(DownloadItem(batch_id=b.id, user_id=other, status="done", track_id=track_id,
-                               query_json={"query": {}, "meta": {"track_ref": "dz:7"}}))
+            s.add(
+                DownloadItem(
+                    batch_id=b.id,
+                    user_id=other,
+                    status="done",
+                    track_id=track_id,
+                    query_json={"query": {}, "meta": {"track_ref": "dz:7"}},
+                )
+            )
     elif case == "another mix":
         async with session_scope() as s:
             m = Mix(user_id=other, title="Микс", description="", mode="normal", status="active")
@@ -475,8 +587,19 @@ async def keep_by(case: str, env, me: int, other: int, track_id: int) -> None:
         env["nd"].down = True
 
 
-@pytest.mark.parametrize("case", ["listened", "listened 30 s", "starred", "in a playlist", "asked to download",
-                                  "another mix", "an import", "Navidrome down"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "listened",
+        "listened 30 s",
+        "starred",
+        "in a playlist",
+        "asked to download",
+        "another mix",
+        "an import",
+        "Navidrome down",
+    ],
+)
 async def test_a_song_of_the_old_mix_stays(env, case: str) -> None:
     from app.db import session_scope
     from app.mixes import core
@@ -645,8 +768,8 @@ async def test_schedule_builds_once_a_day_after_the_hour(env) -> None:
     me = env["admin"]
     quiet = await add_user("quiet")  # no history, no picked artists: no mix
     await history(me, 1)
-    before = datetime(2026, 10, 23, 1, 30)  # 04:30 in Moscow
-    after = datetime(2026, 10, 23, 2, 30)  # 05:30
+    before = datetime(2026, 10, 23, 1, 30, tzinfo=UTC)  # 04:30 in Moscow
+    after = datetime(2026, 10, 23, 2, 30, tzinfo=UTC)  # 05:30
 
     assert await core.due_users(before) == []
     assert await core.due_users(after) == [me]

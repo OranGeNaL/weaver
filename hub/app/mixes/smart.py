@@ -29,7 +29,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import and_, func, or_, select, update
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.catalog.models import CatalogTrack, split_ref
 from app.config import get_settings
@@ -62,8 +62,9 @@ class SmartError(Exception):
 
 
 def valid_context(context: str) -> bool:
-    return context == "liked" or (context.startswith("playlist:") and 0 < len(context) - 9 <= 64
-                                  and not any(c.isspace() for c in context))
+    return context == "liked" or (
+        context.startswith("playlist:") and 0 < len(context) - 9 <= 64 and not any(c.isspace() for c in context)
+    )
 
 
 def is_ref(song_id: str) -> bool:
@@ -109,10 +110,22 @@ class SmartRuntime(wave.Runtime):
 
 
 def dump(rt: SmartRuntime) -> dict[str, Any]:
-    return {"wave": rt.state.dump(), "own": rt.own, "own_artist": rt.own_artist, "filled": rt.filled,
-            "rec_artists": rt.rec_artists, "hidden": sorted(rt.hidden), "offered": sorted(rt.offered),
-            "own_refs": sorted(rt.own_refs), "own_nd": sorted(rt.own_nd), "center": rt.center, "psim": rt.psim,
-            "accepted": rt.accepted, "seed_pool": rt.seed_pool, "seed_next": rt.seed_next}
+    return {
+        "wave": rt.state.dump(),
+        "own": rt.own,
+        "own_artist": rt.own_artist,
+        "filled": rt.filled,
+        "rec_artists": rt.rec_artists,
+        "hidden": sorted(rt.hidden),
+        "offered": sorted(rt.offered),
+        "own_refs": sorted(rt.own_refs),
+        "own_nd": sorted(rt.own_nd),
+        "center": rt.center,
+        "psim": rt.psim,
+        "accepted": rt.accepted,
+        "seed_pool": rt.seed_pool,
+        "seed_next": rt.seed_next,
+    }
 
 
 async def _save(sid: str, rt: wave.Runtime) -> None:
@@ -125,8 +138,11 @@ async def _save(sid: str, rt: wave.Runtime) -> None:
 
 def _blocked(rt: SmartRuntime):
     def blocked(c: build.Cand) -> bool:
-        return (c.track.ref in rt.own_refs or (c.nd_song_id is not None and c.nd_song_id in rt.own_nd)
-                or wave.fp_of(c) in rt.hidden)
+        return (
+            c.track.ref in rt.own_refs
+            or (c.nd_song_id is not None and c.nd_song_id in rt.own_nd)
+            or wave.fp_of(c) in rt.hidden
+        )
 
     return blocked
 
@@ -144,19 +160,36 @@ async def _runtime(sid: str, user: User) -> SmartRuntime:
     if rt is None:
         async with session_scope() as s:
             row = await s.get(SmartSession, sid)
-            if row is None or row.user_id != user.id or row.updated_at < utcnow() - IDLE or \
-                    (row.state_json or {}).get("cleared"):
+            if (
+                row is None
+                or row.user_id != user.id
+                or row.updated_at < utcnow() - IDLE
+                or (row.state_json or {}).get("cleared")
+            ):
                 raise SmartError(404, "Умное перемешивание закончилось: запустите его заново")
             d = row.state_json or {}
-            rt = _wire(SmartRuntime(
-                user_id=user.id, mode="normal", state=wave.State.load(d.get("wave") or {}), sid=sid,
-                context=row.context, own=list(d.get("own") or []), own_artist=dict(d.get("own_artist") or {}),
-                filled=dict(d.get("filled") or {}), rec_artists=list(d.get("rec_artists") or []),
-                hidden=set(d.get("hidden") or []), offered=set(d.get("offered") or []),
-                own_refs=set(d.get("own_refs") or []), own_nd=set(d.get("own_nd") or []),
-                center=dict(d.get("center") or {}), psim=dict(d.get("psim") or {}),
-                accepted=list(d.get("accepted") or []), seed_pool=list(d.get("seed_pool") or []),
-                seed_next=int(d.get("seed_next") or 0)))
+            rt = _wire(
+                SmartRuntime(
+                    user_id=user.id,
+                    mode="normal",
+                    state=wave.State.load(d.get("wave") or {}),
+                    sid=sid,
+                    context=row.context,
+                    own=list(d.get("own") or []),
+                    own_artist=dict(d.get("own_artist") or {}),
+                    filled=dict(d.get("filled") or {}),
+                    rec_artists=list(d.get("rec_artists") or []),
+                    hidden=set(d.get("hidden") or []),
+                    offered=set(d.get("offered") or []),
+                    own_refs=set(d.get("own_refs") or []),
+                    own_nd=set(d.get("own_nd") or []),
+                    center=dict(d.get("center") or {}),
+                    psim=dict(d.get("psim") or {}),
+                    accepted=list(d.get("accepted") or []),
+                    seed_pool=list(d.get("seed_pool") or []),
+                    seed_next=int(d.get("seed_next") or 0),
+                )
+            )
         rt = _rt.setdefault(sid, rt)
     elif rt.user_id != user.id:
         raise SmartError(404, "Умное перемешивание закончилось: запустите его заново")
@@ -175,9 +208,9 @@ async def own_infos(ids: list[str]) -> dict[str, OwnInfo]:
     async with session_scope() as s:
         rows: list[Track] = []
         for k in range(0, len(nd_ids), 500):
-            rows += (await s.execute(select(Track).where(Track.nd_song_id.in_(nd_ids[k:k + 500])))).scalars()
+            rows += (await s.execute(select(Track).where(Track.nd_song_id.in_(nd_ids[k : k + 500])))).scalars()
         for k in range(0, len(dz), 500):
-            rows += (await s.execute(select(Track).where(Track.deezer_track_id.in_(list(dz)[k:k + 500])))).scalars()
+            rows += (await s.execute(select(Track).where(Track.deezer_track_id.in_(list(dz)[k : k + 500])))).scalars()
         for t in rows:
             i = t.nd_song_id if t.nd_song_id in out else dz.get(str(t.deezer_track_id))
             if i is None or out[i].title:
@@ -189,7 +222,9 @@ async def own_infos(ids: list[str]) -> dict[str, OwnInfo]:
         todo = [i for i, x in out.items() if is_ref(i) and not x.title]
         keys = {f"{p}{i}": i for i in todo for p in ("listen:", "mix:track:")}
         for k in range(0, len(keys), 500):
-            for row in (await s.execute(select(CatalogCache).where(CatalogCache.key.in_(list(keys)[k:k + 500])))).scalars():
+            for row in (
+                await s.execute(select(CatalogCache).where(CatalogCache.key.in_(list(keys)[k : k + 500])))
+            ).scalars():
                 meta = row.payload_json.get("v") or {}
                 x = out[keys[row.key]]
                 if not x.title and meta.get("title"):
@@ -202,30 +237,59 @@ async def last_heard(user_id: int, ids: list[str], now: datetime) -> dict[str, d
     scrobbles of Navidrome are `finish` events too."""
     heard = or_(PlayEvent.kind == "finish", and_(PlayEvent.kind == "skip", PlayEvent.position_s >= HEARD_PLAY_S))
     out: dict[str, datetime] = {}
-    async with session_scope() as s:
-        for col, wanted in ((PlayEvent.nd_song_id, [i for i in ids if not is_ref(i)]),
-                            (PlayEvent.ref, [i for i in ids if is_ref(i)])):
+    async with session_scope() as session:
+        for col, wanted in (
+            (PlayEvent.nd_song_id, [i for i in ids if not is_ref(i)]),
+            (PlayEvent.ref, [i for i in ids if is_ref(i)]),
+        ):
             for k in range(0, len(wanted), 500):
-                rows = await s.execute(select(col, func.max(PlayEvent.ts)).where(
-                    PlayEvent.user_id == user_id, col.in_(wanted[k:k + 500]), PlayEvent.ts <= now, heard,
-                    PlayEvent.target_type == "track").group_by(col))
+                rows = await session.execute(
+                    select(col, func.max(PlayEvent.ts))
+                    .where(
+                        PlayEvent.user_id == user_id,
+                        col.in_(wanted[k : k + 500]),
+                        PlayEvent.ts <= now,
+                        heard,
+                        PlayEvent.target_type == "track",
+                    )
+                    .group_by(col)
+                )
                 for key, ts in rows:
-                    out[key] = max(ts, out[key]) if key in out else ts
+                    if key:
+                        out[key] = max(ts, out[key]) if key in out else ts
     return out
 
 
 async def hidden_in(user_id: int, context: str) -> set[str]:
     async with session_scope() as s:
-        return set((await s.execute(select(SmartHidden.fingerprint).where(
-            SmartHidden.user_id == user_id, SmartHidden.context == context))).scalars())
+        return set(
+            (
+                await s.execute(
+                    select(SmartHidden.fingerprint).where(
+                        SmartHidden.user_id == user_id, SmartHidden.context == context
+                    )
+                )
+            ).scalars()
+        )
 
 
 async def offered_in(user_id: int, context: str, now: datetime) -> set[str]:
     async with session_scope() as s:
-        return {x for x in (await s.execute(select(SmartItem.fingerprint).join(
-            SmartSession, SmartSession.id == SmartItem.session_id).where(
-            SmartItem.user_id == user_id, SmartSession.context == context,
-            SmartItem.handed_at > now - timedelta(days=OFFERED_DAYS)))).scalars() if x}
+        return {
+            x
+            for x in (
+                await s.execute(
+                    select(SmartItem.fingerprint)
+                    .join(SmartSession, SmartSession.id == SmartItem.session_id)
+                    .where(
+                        SmartItem.user_id == user_id,
+                        SmartSession.context == context,
+                        SmartItem.handed_at > now - timedelta(days=OFFERED_DAYS),
+                    )
+                )
+            ).scalars()
+            if x
+        }
 
 
 # --- candidates -----------------------------------------------------------------------------------------------------
@@ -258,10 +322,20 @@ def _seed_tracks(rt: SmartRuntime, ids: list[str], infos: dict[str, OwnInfo]) ->
     for i in ids:
         x = infos[i]
         if x.artist and x.title:
-            out.append(wave.taste_of(x.track or CatalogTrack(
-                ref=x.ref or f"nd:{x.nd_song_id}", source="dz" if (x.ref or "").startswith("dz:") else "nd",
-                id=(x.ref or f"nd:{x.nd_song_id}").split(":", 1)[1], title=x.title, artist=x.artist,
-                artists=[x.artist], duration_s=x.duration_s)))
+            out.append(
+                wave.taste_of(
+                    x.track
+                    or CatalogTrack(
+                        ref=x.ref or f"nd:{x.nd_song_id}",
+                        source="dz" if (x.ref or "").startswith("dz:") else "nd",
+                        id=(x.ref or f"nd:{x.nd_song_id}").split(":", 1)[1],
+                        title=x.title,
+                        artist=x.artist,
+                        artists=[x.artist],
+                        duration_s=x.duration_s,
+                    )
+                )
+            )
     return out
 
 
@@ -286,8 +360,14 @@ async def _sound(rt: SmartRuntime) -> None:
             for k in keys:
                 rt.asked[f"p:{k}"] = now
             by_key = {c.key: c for c in cands}
-            todo = sorted((by_key[k] for k in sim.missing if k in by_key and by_key[k].track.source == "dz"
-                           and f"e:{k}" not in rt.asked), key=lambda c: -c.score)[:wave.EMBED_NEW]
+            todo = sorted(
+                (
+                    by_key[k]
+                    for k in sim.missing
+                    if k in by_key and by_key[k].track.source == "dz" and f"e:{k}" not in rt.asked
+                ),
+                key=lambda c: -c.score,
+            )[: wave.EMBED_NEW]
             urls = await asyncio.gather(*(build._preview(c.track) for c in todo))
             items = [{"key": c.key, "url": u} for c, u in zip(todo, urls, strict=True) if u]
             for c in todo:
@@ -334,7 +414,9 @@ async def _fill(rt: SmartRuntime, slots: list[int]) -> list[tuple[int, build.Can
             wave._signal(st.pos, key)
     vectors = await wave._vectors(rt)
     await _sound(rt)
-    pos = wave._weighted_center(st.positive_weights, vectors) if st.taste_model == "v2" else wave._center(st.pos, vectors)
+    pos = (
+        wave._weighted_center(st.positive_weights, vectors) if st.taste_model == "v2" else wave._center(st.pos, vectors)
+    )
     neg = None if st.taste_model == "v2" else wave._center(st.neg, vectors)
     neutral = _neutral(rt)
     pool = [c for c in st.pool.values() if not wave._disliked(c, p) and not _blocked(rt)(c)]
@@ -362,7 +444,9 @@ def _refill(rt: SmartRuntime) -> None:
     if rt.refilling or rt.profile is None or not rt.seed_pool:
         return
     pool = rt.seed_pool
-    chosen = [CatalogTrack.model_validate(pool[(rt.seed_next + i) % len(pool)]) for i in range(min(SEED_REFILL, len(pool)))]
+    chosen = [
+        CatalogTrack.model_validate(pool[(rt.seed_next + i) % len(pool)]) for i in range(min(SEED_REFILL, len(pool)))
+    ]
     rt.seed_next = (rt.seed_next + len(chosen)) % len(pool)
     seeds = [wave.taste_of(t) for t in chosen]
     profile = rt.profile
@@ -389,17 +473,37 @@ async def _save_items(rt: SmartRuntime, picked: list[tuple[int, build.Cand, floa
     if not picked:
         return
     try:
-        async with session_scope() as s:
-            nxt = (await s.execute(select(func.coalesce(func.max(SmartItem.position) + 1, 0)).where(
-                SmartItem.session_id == rt.sid))).scalar_one()
-            rows = [dict(session_id=rt.sid, user_id=rt.user_id, handed_at=utcnow(), position=nxt + i, slot=k,
-                         ref=c.track.ref, nd_song_id=c.nd_song_id, fingerprint=wave.fp_of(c)[:1024],
-                         artist=(c.track.artist or "")[:256], title=(c.track.title or "")[:256],
-                         generator=wave.top_generator(c)[:32], gens=dict(c.gens), familiar=c.familiar, score=c.score,
-                         sim=rt.psim.get(c.key), value=v, state="handed")
-                    for i, (k, c, v) in enumerate(picked)]
-            await s.execute(sqlite_insert(SmartItem).values(rows).on_conflict_do_nothing(
-                index_elements=["session_id", "ref"]))
+        async with session_scope() as session:
+            nxt = (
+                await session.execute(
+                    select(func.coalesce(func.max(SmartItem.position) + 1, 0)).where(SmartItem.session_id == rt.sid)
+                )
+            ).scalar_one()
+            rows = [
+                dict(
+                    session_id=rt.sid,
+                    user_id=rt.user_id,
+                    handed_at=utcnow(),
+                    position=nxt + i,
+                    slot=k,
+                    ref=c.track.ref,
+                    nd_song_id=c.nd_song_id,
+                    fingerprint=wave.fp_of(c)[:1024],
+                    artist=(c.track.artist or "")[:256],
+                    title=(c.track.title or "")[:256],
+                    generator=wave.top_generator(c)[:32],
+                    gens=dict(c.gens),
+                    familiar=c.familiar,
+                    score=c.score,
+                    sim=rt.psim.get(c.key),
+                    value=v,
+                    state="handed",
+                )
+                for i, (k, c, v) in enumerate(picked)
+            ]
+            await session.execute(
+                pg_insert(SmartItem).values(rows).on_conflict_do_nothing(index_elements=["session_id", "ref"])
+            )
     except Exception:
         log.exception("smart %s: handed out tracks not recorded", rt.sid)
 
@@ -413,8 +517,13 @@ async def _hand_out(rt: SmartRuntime, slots: list[int]) -> list[tuple[int, build
     stream = [c.track.ref for _, c, _ in picked if not c.nd_song_id and c.track.source != "nd"]
     if stream:
         listen.prefetch(rt.user_id, stream)
-    listen.warm_light([f"nd:{c.nd_song_id}" if c.nd_song_id else c.track.ref for _, c, _ in picked
-                       if c.nd_song_id or c.track.source != "nd"])
+    listen.warm_light(
+        [
+            f"nd:{c.nd_song_id}" if c.nd_song_id else c.track.ref
+            for _, c, _ in picked
+            if c.nd_song_id or c.track.source != "nd"
+        ]
+    )
     return [(k, c) for k, c, _ in picked]
 
 
@@ -454,9 +563,18 @@ async def clear_old(now: datetime | None = None) -> int:
     return n
 
 
-async def start(user: User, context: str, songs: list[str], current: str | None, *, title: str | None = None,
-                origin: str | None = None, client: str | None = None, rng: random.Random | None = None,
-                now: datetime | None = None) -> Plan:
+async def start(
+    user: User,
+    context: str,
+    songs: list[str],
+    current: str | None,
+    *,
+    title: str | None = None,
+    origin: str | None = None,
+    client: str | None = None,
+    rng: random.Random | None = None,
+    now: datetime | None = None,
+) -> Plan:
     if not valid_context(context):
         raise SmartError(422, "context: liked или playlist:<id>")
     ids = list(dict.fromkeys(songs))
@@ -467,7 +585,8 @@ async def start(user: User, context: str, songs: list[str], current: str | None,
     cfg = get_settings().cfg.mixes
     await clear_old(now)
     infos, heard, hidden, offered = await asyncio.gather(
-        own_infos(ids), last_heard(user.id, ids, now), hidden_in(user.id, context), offered_in(user.id, context, now))
+        own_infos(ids), last_heard(user.id, ids, now), hidden_in(user.id, context), offered_in(user.id, context, now)
+    )
     songs_o = [smart_order.OwnSong(i, artist_key(infos[i].artist) if infos[i].artist else "") for i in ids]
     order = smart_order.fewer_repeats(songs_o, heard, now, rng, first=current)
     own = [x.id for x in order]
@@ -476,31 +595,59 @@ async def start(user: User, context: str, songs: list[str], current: str | None,
         profile = await build_profile(s, user, model=cfg.taste_model)
     if isinstance(profile, V2Profile):
         from app.mixes.taste_select import prepare
+
         await prepare(profile)
     sid = uuid.uuid4().hex[:16]
     state = wave.State(taste_model=cfg.taste_model)
-    rt = _wire(SmartRuntime(user_id=user.id, mode="normal", state=state, profile=profile, sid=sid, context=context,
-                            own=own, own_artist={x.id: x.artist for x in songs_o}, hidden=hidden, offered=offered))
+    rt = _wire(
+        SmartRuntime(
+            user_id=user.id,
+            mode="normal",
+            state=state,
+            profile=profile,
+            sid=sid,
+            context=context,
+            own=own,
+            own_artist={x.id: x.artist for x in songs_o},
+            hidden=hidden,
+            offered=offered,
+        )
+    )
     rt.own_refs = {x.ref for x in infos.values() if x.ref}
     rt.own_nd = {x.nd_song_id for x in infos.values() if x.nd_song_id}
     state.heard = {x.fp for x in infos.values() if x.fp} | hidden
-    keys = [embedder.song_key(infos[i].nd_song_id) for i in ids if infos[i].nd_song_id][:CENTER_MAX]
+    keys = [embedder.song_key(nd) for i in ids if (nd := infos[i].nd_song_id)][:CENTER_MAX]
     rt.center = dict.fromkeys(keys, 1.0)
     seeds = _seed_tracks(rt, seed_ids, infos)
     rt.seed_pool = [t.track.model_dump(mode="json") for t in seeds if t.track is not None]
     rt.seed_next = 0
     async with session_scope() as s:
-        s.add(SmartSession(id=sid, user_id=user.id, context=context, title=(title or "")[:256] or None,
-                           own_count=len(own), per_rec=smart_order.own_per_rec(len(own)), first_id=current,
-                           taste_model=cfg.taste_model, origin=origin, client=client, state_json={}))
+        s.add(
+            SmartSession(
+                id=sid,
+                user_id=user.id,
+                context=context,
+                title=(title or "")[:256] or None,
+                own_count=len(own),
+                per_rec=smart_order.own_per_rec(len(own)),
+                first_id=current,
+                taste_model=cfg.taste_model,
+                origin=origin,
+                client=client,
+                state_json={},
+            )
+        )
     _rt[sid] = rt
     async with rt.lock:
-        await wave._gather(sid, rt, list(generators(profile, seeds).items()),
-                           lambda: len(rt.state.pool) >= 4 * wave.BATCH)
+        await wave._gather(
+            sid, rt, list(generators(profile, seeds).items()), lambda: len(rt.state.pool) >= 4 * wave.BATCH
+        )
         slots = smart_order.slots_ahead(len(own), 0, AHEAD)
         handed = await _hand_out(rt, slots)
         pending = bool(rt.tasks)
-    return Plan(sid, context, title, own, [(k, _after(rt, k), c) for k, c in handed], pending, smart_order.own_per_rec(len(own)))
+    return Plan(
+        sid, context, title, own, [(k, _after(rt, k), c) for k, c in handed], pending, smart_order.own_per_rec(len(own))
+    )
 
 
 async def record(rt: SmartRuntime, raw: list[Any]):
@@ -519,19 +666,39 @@ async def record(rt: SmartRuntime, raw: list[Any]):
         events.append(x)
     async with session_scope() as s:
         out = await record_events(s, rt.user_id, events)
-        ids = [x["event_id"] for x in events if isinstance(x, dict) and x.get("context") == context
-               and isinstance(x.get("event_id"), str)]
+        ids = [
+            x["event_id"]
+            for x in events
+            if isinstance(x, dict) and x.get("context") == context and isinstance(x.get("event_id"), str)
+        ]
         rows: list[PlayEvent] = []
         if ids:
-            await s.execute(update(PlayEvent).where(PlayEvent.user_id == rt.user_id, PlayEvent.event_id.in_(ids))
-                            .values(context=context))
-            rows = list((await s.execute(select(PlayEvent).where(
-                PlayEvent.user_id == rt.user_id, PlayEvent.event_id.in_(ids), PlayEvent.context == context)
-                .order_by(PlayEvent.ts, PlayEvent.id))).scalars())
+            await s.execute(
+                update(PlayEvent)
+                .where(PlayEvent.user_id == rt.user_id, PlayEvent.event_id.in_(ids))
+                .values(context=context)
+            )
+            rows = list(
+                (
+                    await s.execute(
+                        select(PlayEvent)
+                        .where(
+                            PlayEvent.user_id == rt.user_id, PlayEvent.event_id.in_(ids), PlayEvent.context == context
+                        )
+                        .order_by(PlayEvent.ts, PlayEvent.id)
+                    )
+                ).scalars()
+            )
         if rt.state.taste_model == "v2":
-            rows = list((await s.execute(select(PlayEvent).where(
-                PlayEvent.user_id == rt.user_id, PlayEvent.context == context, PlayEvent.ts <= utcnow())
-                .order_by(PlayEvent.ts, PlayEvent.id))).scalars())
+            rows = list(
+                (
+                    await s.execute(
+                        select(PlayEvent)
+                        .where(PlayEvent.user_id == rt.user_id, PlayEvent.context == context, PlayEvent.ts <= utcnow())
+                        .order_by(PlayEvent.ts, PlayEvent.id)
+                    )
+                ).scalars()
+            )
         row = await s.get(SmartSession, rt.sid)
         if row is not None:
             row.next_calls = (row.next_calls or 0) + 1
@@ -552,21 +719,30 @@ async def next_batch(user: User, sid: str, played: list[Any], at: str | None) ->
         slots = [k for k in smart_order.slots_ahead(len(rt.own), index, AHEAD) if str(k) not in rt.filled]
         handed = await _hand_out(rt, slots)
         pending = bool(rt.tasks) or len(handed) < len(slots)
-        async with session_scope() as s:
-            title = (await s.get(SmartSession, sid)).title  # type: ignore[union-attr]
-    return Plan(sid, rt.context, title, [], [(k, _after(rt, k), c) for k, c in handed], pending,
-                smart_order.own_per_rec(len(rt.own)), recorded)
+        async with session_scope() as session:
+            title = (await session.get(SmartSession, sid)).title  # type: ignore[union-attr]
+    return Plan(
+        sid,
+        rt.context,
+        title,
+        [],
+        [(k, _after(rt, k), c) for k, c in handed],
+        pending,
+        smart_order.own_per_rec(len(rt.own)),
+        recorded,
+    )
 
 
 async def _item(sid: str, ref: str | None, nd_song_id: str | None) -> SmartItem:
-    async with session_scope() as s:
+    async with session_scope() as session:
         q = select(SmartItem).where(SmartItem.session_id == sid)
-        q = q.where(or_(*([SmartItem.ref == ref] if ref else []), *([SmartItem.nd_song_id == nd_song_id]
-                                                                    if nd_song_id else [])))
-        item = (await s.execute(q.limit(1))).scalar_one_or_none()
+        q = q.where(
+            or_(*([SmartItem.ref == ref] if ref else []), *([SmartItem.nd_song_id == nd_song_id] if nd_song_id else []))
+        )
+        item = (await session.execute(q.limit(1))).scalar_one_or_none()
         if item is None:
             raise SmartError(404, "Такой рекомендации в этом перемешивании не было")
-        s.expunge(item)
+        session.expunge(item)
         return item
 
 
@@ -581,11 +757,21 @@ async def hide(user: User, sid: str, ref: str | None, nd_song_id: str | None) ->
     rt = await _runtime(sid, user)
     item = await _item(sid, ref, nd_song_id)
     async with rt.lock:
-        async with session_scope() as s:
-            await s.execute(sqlite_insert(SmartHidden).values(
-                user_id=user.id, context=rt.context, fingerprint=item.fingerprint, ref=item.ref,
-                nd_song_id=item.nd_song_id, artist=item.artist, title=item.title, created_at=utcnow())
-                .on_conflict_do_nothing(index_elements=["user_id", "context", "fingerprint"]))
+        async with session_scope() as session:
+            await session.execute(
+                pg_insert(SmartHidden)
+                .values(
+                    user_id=user.id,
+                    context=rt.context,
+                    fingerprint=item.fingerprint,
+                    ref=item.ref,
+                    nd_song_id=item.nd_song_id,
+                    artist=item.artist,
+                    title=item.title,
+                    created_at=utcnow(),
+                )
+                .on_conflict_do_nothing(index_elements=["user_id", "context", "fingerprint"])
+            )
         await _mark(sid, item.id, "hidden")
         rt.hidden.add(item.fingerprint)
         st = rt.state
@@ -630,4 +816,3 @@ async def reset() -> None:
 
 
 __all__ = ["Plan", "SmartError", "accept", "hide", "next_batch", "reset", "settle", "start", "valid_context"]
-

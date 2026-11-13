@@ -13,7 +13,7 @@ HomeMusic — это персональный музыкальный серви�
 | Подсистема | Технологии | Назначение |
 |---|---|---|
 | **Navidrome** | готовый образ `deluan/navidrome` | библиотека, стриминг, пользователи, плейлисты, Subsonic API |
-| **Hub** | Python 3.12, FastAPI, SQLAlchemy async, SQLite, Alembic | поиск, загрузки, импорт, теги, прослушивание, ИИ-ассистент, рекомендации, аналитика |
+| **Hub** | Python 3.12, FastAPI, SQLAlchemy async, Postgres, Alembic | поиск, загрузки, импорт, теги, прослушивание, ИИ-ассистент, рекомендации, аналитика |
 | **Embedder** | Python, FastAPI, PyTorch, MuQ-MuLan | аудио- и текстовые векторы для «Микса дня», «Моей волны», карт вкуса |
 
 Доступ из интернета обеспечивает внешняя VPN/mesh-сеть — **NetBird** или аналог; собственного шлюза в проекте нет.
@@ -92,7 +92,7 @@ HomeMusic — это персональный музыкальный серви�
 
 Важные архитектурные решения:
 
-1. **SQLite лежит в именованных Docker-томах** на файловой системе Linux-хоста.
+1. **Postgres лежит в именованном Docker-томе** на файловой системе Linux-хоста (внешний Postgres — через `DATABASE_URL`).
 2. **Медиатека — каталог Linux-хоста** `/srv/music` (меняется через `MUSIC_ROOT`), примонтированный в контейнеры.
 3. **Navidrome не использует watcher**: сканирование выполняет Hub (`startScan`) после импорта, плюс раз в час по расписанию.
 4. **Navidrome и Hub публикуют порты** `4533` и `8080`; embedder, slskd и youtube-pot доступны только внутри compose-сети.
@@ -199,7 +199,7 @@ HomeMusic — это персональный музыкальный серви�
 - `config.py` — двухуровневая конфигурация:
   - `Settings` из `.env` — секреты и пути;
   - `AppConfig` из `config.yaml` — источники, лимиты, веса, `matching`, `mixes`, `analytics`.
-- `db.py` — async SQLAlchemy + SQLite WAL, `PRAGMA foreign_keys=ON`, `busy_timeout=10000`, миграции на старте.
+- `db.py` — async SQLAlchemy + Postgres (`asyncpg`), подключение из `DATABASE_URL`, миграции Alembic на старте.
 - `models.py` — 33 таблицы.
 - `net.py` — общие `httpx`-клиенты, rate limiter, retry/backoff, `Priority` для фоновых задач.
 - `events.py` — in-process pub/sub для SSE.
@@ -253,8 +253,8 @@ HomeMusic — это персональный музыкальный серви�
 
 Файл: `hub/app/jobs/queue.py`.
 
-- Очередь хранится в SQLite-таблице `jobs`.
-- Атомарный claim через `UPDATE ... RETURNING`.
+- Очередь хранится в таблице `jobs` Postgres.
+- Атомарный claim через `SELECT ... FOR UPDATE SKIP LOCKED` и `UPDATE ... RETURNING` с повтором предиката.
 - При старте «зависшие» `running` возвращаются в `queued`.
 - Повтор с экспоненциальной задержкой, `PermanentError` завершает сразу.
 - Приоритеты:
@@ -725,8 +725,8 @@ Navidrome доступен по `http://<navidrome-host>:4533`.
 1. **Один процесс Hub.**
    `EventBus` и часть runtime-состояния (`wave._rt`, `smart`-сессии) живут в памяти процесса. Запуск uvicorn с несколькими workers сломает SSE и часть состояния. Это осознанное решение для домашнего сервиса.
 
-2. **SQLite как единственная БД.**
-   WAL и `busy_timeout` помогают, но при росте нагрузки или нескольких писателях возможны блокировки. Бэкапы выполняются через `sqlite3.backup()` в Docker-том.
+2. **Postgres как единственная БД.**
+   Параллельная запись масштабируется, но требует обслуживания: миграции только через Alembic, бэкапы — `pg_dump --format=custom` с проверкой восстановления в отдельную базу.
 
 3. **Тесная связка с Navidrome.**
    Многие функции (звёзды, плейлисты, сканы, история) зависят от Subsonic API и поведения Navidrome.

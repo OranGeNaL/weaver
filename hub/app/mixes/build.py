@@ -44,10 +44,15 @@ log = logging.getLogger(__name__)
 MODES = {"normal": 0.4, "favorites": 0.8, "discover": 0.1}  # share of familiar songs
 MODE_TITLES = {"normal": "Обычный", "favorites": "Любимое", "discover": "Незнакомое"}
 GENERATOR_TITLES = {
-    "favorites": "Любимое", "stash": "Тайник", "ytm_radio": "Похожее: радио YouTube Music",
-    "lastfm_similar": "Похожее: Last.fm", "deezer_radio": "Похожее: радио Deezer",
-    "yandex_similar": "Незнакомое: похожие Яндекса", "similar_artists": "Незнакомое: похожие исполнители",
-    "new_releases": "Новинки", "yandex_wave": "Моя волна Яндекса",
+    "favorites": "Любимое",
+    "stash": "Тайник",
+    "ytm_radio": "Похожее: радио YouTube Music",
+    "lastfm_similar": "Похожее: Last.fm",
+    "deezer_radio": "Похожее: радио Deezer",
+    "yandex_similar": "Незнакомое: похожие Яндекса",
+    "similar_artists": "Незнакомое: похожие исполнители",
+    "new_releases": "Новинки",
+    "yandex_wave": "Моя волна Яндекса",
 }
 BANNED_VERSIONS = {"karaoke", "instrumental", "cover", "slowed", "sped up", "8d", "bass boosted", "remix", "live"}
 REJECT_REASONS = ("disliked", "version", "duration", "recent", "negative_score")  # `keep_reason`
@@ -90,8 +95,15 @@ class Cand:
         return max(self.gens, key=lambda g: w.get(g, 0.5) / math.log2(self.gens[g] + 2))
 
     def features(self) -> dict[str, Any]:
-        return {"track": self.track.model_dump(mode="json"), "generators": self.gens, "sim": self.sim,
-                "rank": self.track.rank, "familiar": self.familiar, "score_parts": self.parts, "profile": self.known}
+        return {
+            "track": self.track.model_dump(mode="json"),
+            "generators": self.gens,
+            "sim": self.sim,
+            "rank": self.track.rank,
+            "familiar": self.familiar,
+            "score_parts": self.parts,
+            "profile": self.known,
+        }
 
 
 @dataclass
@@ -126,26 +138,53 @@ def taste_track(t: TasteTrack) -> CatalogTrack | None:
     if t.track is not None:
         return t.track
     if t.ref and t.ref.startswith("dz:") and t.artist:
-        return CatalogTrack(ref=t.ref, source="dz", id=split_ref(t.ref)[1], title=t.title, artist=t.artist,
-                            artists=[t.artist], duration_s=t.duration_s)
+        return CatalogTrack(
+            ref=t.ref,
+            source="dz",
+            id=split_ref(t.ref)[1],
+            title=t.title,
+            artist=t.artist,
+            artists=[t.artist],
+            duration_s=t.duration_s,
+        )
     if t.nd_song_id and t.artist:
-        return CatalogTrack(ref=f"nd:{t.nd_song_id}", source="nd", id=t.nd_song_id, title=t.title, artist=t.artist,
-                            artists=[t.artist], duration_s=t.duration_s)
+        return CatalogTrack(
+            ref=f"nd:{t.nd_song_id}",
+            source="nd",
+            id=t.nd_song_id,
+            title=t.title,
+            artist=t.artist,
+            artists=[t.artist],
+            duration_s=t.duration_s,
+        )
     return None
 
 
 def _stable(key: str, salt: str) -> str:
-    return hashlib.sha1(f"{salt}|{key}".encode()).hexdigest()
+    """A stable pseudo-random order (not a security primitive): sha1 is fine and short."""
+    return hashlib.sha1(f"{salt}|{key}".encode(), usedforsecurity=False).hexdigest()
+
+
+def _last_seen(t: Any, p: Profile) -> datetime | None:
+    """When the track was last heard (`v2`) or played (`v1`)."""
+    return t.last_heard if isinstance(p, V2Profile) else t.last_played
+
+
+def _rest_ok(last: datetime | None, rest: datetime) -> bool:
+    return last is None or last < rest
 
 
 def favorites(p: Profile) -> list[CatalogTrack]:
     """The best of the profile, not heard for a week."""
     rest = p.now - timedelta(days=FAVORITE_REST_DAYS)
-    best = sorted((t for t in p.tracks.values() if t.score > 0 and
-                   (not isinstance(p, V2Profile) or t.familiar) and
-                   ((t.last_heard if isinstance(p, V2Profile) else t.last_played) is None or
-                    (t.last_heard if isinstance(p, V2Profile) else t.last_played) < rest)),
-                  key=lambda t: -t.score)
+    best = sorted(
+        (
+            t
+            for t in p.tracks.values()
+            if t.score > 0 and (not isinstance(p, V2Profile) or t.familiar) and _rest_ok(_last_seen(t, p), rest)
+        ),
+        key=lambda t: -t.score,
+    )
     return [x for t in best if (x := taste_track(t)) is not None]
 
 
@@ -154,20 +193,24 @@ def stash(p: Profile) -> list[CatalogTrack]:
     rest = p.now - timedelta(days=STASH_REST_DAYS)
     if isinstance(p, V2Profile):
         from datetime import UTC
+
         day = p.now.replace(tzinfo=UTC).astimezone(ZoneInfo(p.timezone)).date().isoformat()
     else:
         day = p.now.date().isoformat()
-    pool = [t for t in p.tracks.values()
-            if (t.liked or t.downloaded or (isinstance(p, V2Profile) and t.album_liked)) and
-            (isinstance(p, V2Profile) or t.score >= 0) and
-            ((t.last_heard if isinstance(p, V2Profile) else t.last_played) is None or
-             (t.last_heard if isinstance(p, V2Profile) else t.last_played) < rest)]
+    pool = [
+        t
+        for t in p.tracks.values()
+        if (t.liked or t.downloaded or (isinstance(p, V2Profile) and t.album_liked))
+        and (isinstance(p, V2Profile) or t.score >= 0)
+        and _rest_ok(_last_seen(t, p), rest)
+    ]
     pool.sort(key=lambda t: _stable(t.key, day))
     return [x for t in pool if (x := taste_track(t)) is not None]
 
 
-async def _by_seeds(seeds: list[TasteTrack], fetch: Callable[[TasteTrack], Awaitable[list[sources.Hit]]],
-                    source: str) -> list[CatalogTrack]:
+async def _by_seeds(
+    seeds: list[TasteTrack], fetch: Callable[[TasteTrack], Awaitable[list[sources.Hit]]], source: str
+) -> list[CatalogTrack]:
     """A source asked by every seed; the lists interleaved (each seed's first, then its second...)."""
     lists = await asyncio.gather(*(fetch(t) for t in seeds), return_exceptions=True)
     errors = [x for x in lists if isinstance(x, BaseException)]
@@ -192,7 +235,12 @@ async def artist_ref(p: Profile, key: str) -> str | None:
             data = state.data or {}
             if state.liked and state.target_type == "artist" and artist_key(data.get("name")) == key and state.ref:
                 return state.ref
-            if state.liked and state.target_type == "album" and artist_key(data.get("artist")) == key and data.get("artist_ref"):
+            if (
+                state.liked
+                and state.target_type == "album"
+                and artist_key(data.get("artist")) == key
+                and data.get("artist_ref")
+            ):
                 return data["artist_ref"]
     for t in p.tracks.values():
         if t.track is not None and t.track.artist_ref and artist_key(t.track.artist) == key:
@@ -208,8 +256,10 @@ async def artist_by_name(name: str) -> str | None:
         return None
     from app.catalog.cache import cached
 
+    deezer = svc.deezer
+
     async def produce() -> str:
-        found = await svc.deezer.search(name, kinds=("artist",), limit=5)
+        found = await deezer.search(name, kinds=("artist",), limit=5)
         want = normalize_artist(name)
         for a in found.artists:
             got = normalize_artist(a.name)
@@ -280,9 +330,14 @@ async def yandex_token(user_id: int) -> str | None:
     from app.security import decrypt
 
     async with session_scope() as s:
-        enc = (await s.execute(select(Import.token_enc).where(
-            Import.user_id == user_id, Import.source == "yandex", Import.token_enc.is_not(None))
-            .order_by(Import.id.desc()).limit(1))).scalar_one_or_none()
+        enc = (
+            await s.execute(
+                select(Import.token_enc)
+                .where(Import.user_id == user_id, Import.source == "yandex", Import.token_enc.is_not(None))
+                .order_by(Import.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
     try:
         return decrypt(enc) if enc else None
     except RuntimeError:
@@ -312,8 +367,9 @@ def generators(p: Profile, seeds: list[TasteTrack]) -> dict[str, Gen]:
         "ytm_radio": lambda: _by_seeds(seeds, lambda t: sources.ytm_radio(t.artist, t.title), "ytm"),
         "lastfm_similar": lastfm,
         "deezer_radio": lambda: deezer_radio(p),
-        "yandex_similar": lambda: _by_seeds(seeds, lambda t: sources.yandex_similar(t.artist, t.title, t.duration_s),
-                                            "yandex"),
+        "yandex_similar": lambda: _by_seeds(
+            seeds, lambda t: sources.yandex_similar(t.artist, t.title, t.duration_s), "yandex"
+        ),
         "similar_artists": lambda: similar_artists(p),
         "new_releases": lambda: new_releases(p),
         "yandex_wave": lambda: yandex_wave(p),
@@ -341,11 +397,14 @@ async def cold_seeds(p: Profile, n: int) -> list[TasteTrack]:
     if svc.deezer is None or not p.picked_artists:
         return []
     refs = [a["ref"] for a in p.picked_artists if str(a.get("ref", "")).startswith("dz:")]
-    tops = await asyncio.gather(*(svc.deezer.get_artist_top(split_ref(r)[1], limit=2) for r in refs),
-                                return_exceptions=True)
+    tops = await asyncio.gather(
+        *(svc.deezer.get_artist_top(split_ref(r)[1], limit=2) for r in refs), return_exceptions=True
+    )
     tracks = _interleave([x for x in tops if not isinstance(x, BaseException)])
-    return [TasteTrack(key=t.ref, ref=t.ref, artist=t.artist, title=t.title, duration_s=t.duration_s, track=t)
-            for t in tracks][:n]
+    return [
+        TasteTrack(key=t.ref, ref=t.ref, artist=t.artist, title=t.title, duration_s=t.duration_s, track=t)
+        for t in tracks
+    ][:n]
 
 
 # --- candidates ---------------------------------------------------------------------------------------------------
@@ -373,16 +432,23 @@ async def link_library(cands: dict[str, Cand]) -> None:
     """Which candidates the library has (its Navidrome song): those need no download."""
     from app.library.owned import annotate_tracks
 
-    dz = [c for c in cands.values() if c.track.source == "dz"]
+    dz = [c for c in cands.values() if c.track is not None and c.track.source == "dz"]
     async with session_scope() as s:
         for c, o in zip(dz, await annotate_tracks(s, [c.track for c in dz]), strict=True):
             if o.owned and o.nd_song_id:
                 c.nd_song_id, c.library_track_id = o.nd_song_id, o.library_track_id
-        nd = {c.track.id: c for c in cands.values() if c.track.source == "nd"}
-        if nd:
-            for tid, song in (await s.execute(select(Track.id, Track.nd_song_id)
-                                              .where(Track.nd_song_id.in_(list(nd))))).all():
-                nd[song].nd_song_id, nd[song].library_track_id = song, tid
+        nd: dict[str, Cand] = {}
+        for c in cands.values():
+            if c.track is not None and c.track.source == "nd" and c.track.id:
+                nd[c.track.id] = c
+        for tid, song in (
+            await s.execute(select(Track.id, Track.nd_song_id).where(Track.nd_song_id.in_(list(nd))))
+        ).all():
+            if not song:
+                continue
+            target = nd.get(song)
+            if target is not None:
+                target.nd_song_id, target.library_track_id = song, tid
 
 
 def keep_reason(c: Cand, p: Profile, cfg) -> str | None:
@@ -429,9 +495,9 @@ def score_parts(c: Cand, weights: dict[str, float], profile: Profile | None = No
     pop = POP_WEIGHT * popularity(c.track.rank)
     if isinstance(profile, V2Profile):
         t = profile.find(ref=c.track.ref, nd_song_id=c.nd_song_id, fp=fingerprint(c.track.artist, c.track.title))
-        track_penalty = .5 * max(t.score, -4) if t and t.score < 0 else 0
+        track_penalty = 0.5 * max(t.score, -4) if t and t.score < 0 else 0
         artist_score = profile.artists.get(c.artist, 0)
-        artist_penalty = .3 * max(artist_score, -3) if artist_score < 0 else 0
+        artist_penalty = 0.3 * max(artist_score, -3) if artist_score < 0 else 0
         sound = SIM_WEIGHT * profile.maturity * (c.sim or 0)
         total = gens + sound + pop + track_penalty + artist_penalty
         maturity: float | None = profile.maturity
@@ -440,8 +506,15 @@ def score_parts(c: Cand, weights: dict[str, float], profile: Profile | None = No
         sound = SIM_WEIGHT * (c.sim or 0.0)
         total = gens + sound + pop
         maturity = None
-    return {"generators": gens, "sound": sound, "popularity": pop, "track_penalty": track_penalty,
-            "artist_penalty": artist_penalty, "maturity": maturity, "total": total}
+    return {
+        "generators": gens,
+        "sound": sound,
+        "popularity": pop,
+        "track_penalty": track_penalty,
+        "artist_penalty": artist_penalty,
+        "maturity": maturity,
+        "total": total,
+    }
 
 
 def score(c: Cand, weights: dict[str, float], profile: Profile | None = None) -> float:
@@ -455,9 +528,14 @@ def known_of(c: Cand, p: Profile) -> dict[str, Any] | None:
     if known is None:
         return None
     v2 = isinstance(p, V2Profile)
-    return {"key": known.key, "s": known.score, "positive": known.positive_raw if v2 else None,
-            "negative": known.negative if v2 else None, "artist_score": p.artists.get(c.artist),
-            "familiar": known.familiar if v2 else True}
+    return {
+        "key": known.key,
+        "s": known.score,
+        "positive": known.positive_raw if v2 else None,
+        "negative": known.negative if v2 else None,
+        "artist_score": p.artists.get(c.artist),
+        "familiar": known.familiar if v2 else True,
+    }
 
 
 # --- the audio term ----------------------------------------------------------------------------------------------
@@ -466,7 +544,7 @@ def known_of(c: Cand, p: Profile) -> dict[str, Any] | None:
 async def library_items() -> list[dict[str, str]]:
     async with session_scope() as s:
         rows = (await s.execute(select(Track.nd_song_id, Track.path).where(Track.nd_song_id.is_not(None)))).all()
-    return [{"key": embedder.song_key(song), "path": path} for song, path in rows]
+    return [{"key": embedder.song_key(song), "path": path} for song, path in rows if song is not None]
 
 
 async def _preview(c: CatalogTrack) -> str | None:
@@ -496,12 +574,14 @@ async def sound(p: Profile, cands: list[Cand], stats: dict[str, Any]) -> dict[st
             keys = [c.key for c in cands]
             sim = await e.similarity(keys, profile)
             need = [k for k in profile if k in sim.missing and not k.startswith("nd:")]
-            todo = [c for c in cands if c.key in sim.missing and c.track.source == "dz"]
+            todo = [c for c in cands if c.key in sim.missing and c.track is not None and c.track.source == "dz"]
             by_key = {t.key: t for t in p.tracks.values()}
-            urls = await asyncio.gather(*(_preview(c.track) for c in todo),
-                                        *(_preview(by_key[k].track) if by_key[k].track else _none() for k in need))
-            items = [{"key": c.key, "url": u} for c, u in zip(todo, urls[:len(todo)], strict=True) if u]
-            items += [{"key": k, "url": u} for k, u in zip(need, urls[len(todo):], strict=True) if u]
+            urls = await asyncio.gather(
+                *(_preview(c.track) for c in todo if c.track is not None),
+                *(_preview_optional(by_key[k].track) for k in need),
+            )
+            items = [{"key": c.key, "url": u} for c, u in zip(todo, urls[: len(todo)], strict=True) if u]
+            items += [{"key": k, "url": u} for k, u in zip(need, urls[len(todo) :], strict=True) if u]
             if items:
                 await e.embed(items)
                 waiting = {x["key"] for x in items}
@@ -516,8 +596,11 @@ async def sound(p: Profile, cands: list[Cand], stats: dict[str, Any]) -> dict[st
         log.warning("mix: embedder unavailable, no audio term: %s", e)
         stats["embedder"] = f"down: {e}"[:300]
         return {}
-    stats["embedder"] = {"scored": sum(c.sim is not None for c in cands), "embedded": len(items),
-                         "seconds": round(time.monotonic() - t0, 1)}
+    stats["embedder"] = {
+        "scored": sum(c.sim is not None for c in cands),
+        "embedded": len(items),
+        "seconds": round(time.monotonic() - t0, 1),
+    }
     return vectors
 
 
@@ -554,6 +637,11 @@ async def _sound_v2(p: V2Profile, cands: list[Cand], stats: dict[str, Any]) -> d
 
 async def _none() -> None:
     return None
+
+
+async def _preview_optional(track: CatalogTrack | None) -> str | None:
+    """`_preview` for a profile track that may lack catalog metadata."""
+    return await _preview(track) if track is not None else None
 
 
 # --- assembling -----------------------------------------------------------------------------------------------
@@ -618,8 +706,11 @@ def order(songs: list[Cand], vectors: dict[str, list[float]]) -> list[Cand]:
         prev = out[-1] if out else None
         window = pool[:ORDER_LOOKAHEAD]
         fresh = [c for c in window if prev is None or c.artist != prev.artist] or window
-        if prev is not None and vectors.get(prev.key):
-            pick = max(fresh, key=lambda c: _cos(vectors.get(c.key), vectors.get(prev.key)) + 0.01 * -fresh.index(c))
+        prev_key: str = (prev.key if prev is not None else None) or ""
+        if prev_key and vectors.get(prev_key):
+            pick = max(
+                fresh, key=lambda c: _cos(vectors.get(c.key or ""), vectors.get(prev_key)) + 0.01 * -fresh.index(c)
+            )
         else:
             pick = fresh[0]
         pool.remove(pick)
@@ -671,25 +762,40 @@ async def name_mix(user_id: int, songs: list[Cand], local: datetime, stats: dict
             log.info("mix name: tags: %s", e)
     tags = [t for t, _ in sorted({t.lower(): tags.count(t) for t in tags}.items(), key=lambda x: -x[1])][:10]
     fam = sum(c.familiar for c in songs)
-    prompt = (f"День: {WEEKDAYS[local.weekday()]}, время: {time_of_day(local.hour)}.\n"
-              f"Исполнители: {', '.join(top)}.\nТеги Last.fm: {', '.join(tags) or 'нет'}.\n"
-              f"Знакомых песен {fam}, новых {len(songs) - fam}.")
+    prompt = (
+        f"День: {WEEKDAYS[local.weekday()]}, время: {time_of_day(local.hour)}.\n"
+        f"Исполнители: {', '.join(top)}.\nТеги Last.fm: {', '.join(tags) or 'нет'}.\n"
+        f"Знакомых песен {fam}, новых {len(songs) - fam}."
+    )
     try:
         async with llm.LLMClient() as client:
             out, usage = await client.call_tool(
-                system=("Ты придумываешь название ежедневному музыкальному миксу в духе Spotify daylist: жанр или "
-                        "настроение + день недели или время суток, например «Ночной русский пост-панк на "
-                        f"{WEEKDAYS_ACC[4]}». По-русски, живо, без кавычек и эмодзи."),
-                user_content=prompt, tool_name="mix_name", tool_description="Название и описание микса дня",
-                parameters=NAME_TOOL, max_tokens=300)
+                system=(
+                    "Ты придумываешь название ежедневному музыкальному миксу в духе Spotify daylist: жанр или "
+                    "настроение + день недели или время суток, например «Ночной русский пост-панк на "
+                    f"{WEEKDAYS_ACC[4]}». По-русски, живо, без кавычек и эмодзи."
+                ),
+                user_content=prompt,
+                tool_name="mix_name",
+                tool_description="Название и описание микса дня",
+                parameters=NAME_TOOL,
+                max_tokens=300,
+            )
     except Exception as e:
         log.info("mix name: llm failed: %r", e)
         return title, desc
     from app.models import AiUsage
 
     async with session_scope() as s:
-        s.add(AiUsage(user_id=user_id, kind="mix", tokens_in=usage.tokens_in, tokens_out=usage.tokens_out,
-                      cost_usd=usage.cost_usd))
+        s.add(
+            AiUsage(
+                user_id=user_id,
+                kind="mix",
+                tokens_in=usage.tokens_in,
+                tokens_out=usage.tokens_out,
+                cost_usd=usage.cost_usd,
+            )
+        )
     stats["name_cost_usd"] = usage.cost_usd
     t, d = str(out.get("title") or "").strip()[:120], str(out.get("description") or "").strip()[:300]
     return (t or title), (d or desc)
@@ -699,24 +805,27 @@ async def name_mix(user_id: int, songs: list[Cand], local: datetime, stats: dict
 
 
 def local_now(now: datetime | None = None) -> datetime:
-    """Users' local time (`Settings.timezone`), naive."""
+    """Users' local time (`Settings.timezone`) as a naive wall clock for hour/day comparisons."""
     from datetime import UTC
 
-    utc = (now or utcnow()).replace(tzinfo=UTC)
+    value = now or utcnow()
+    utc = value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
     try:
         return utc.astimezone(ZoneInfo(get_settings().timezone)).replace(tzinfo=None)
     except Exception:  # no tz database (Windows without tzdata): the machine's own zone
         return utc.astimezone().replace(tzinfo=None)
 
 
-async def build(p: Profile, mode: str, gens: dict[str, Gen] | None = None,
-                shadow_pool: list[Cand] | None = None) -> Built:
+async def build(
+    p: Profile, mode: str, gens: dict[str, Gen] | None = None, shadow_pool: list[Cand | None] | None = None
+) -> Built:
     cfg = get_settings().cfg.mixes
     t0 = time.monotonic()
     stats: dict[str, Any] = {"mode": mode, "taste_model": "v2" if isinstance(p, V2Profile) else "v1"}
     if isinstance(p, V2Profile):
         from app.mixes.taste_select import prepare
         from app.mixes.taste_select import seeds as select_seeds
+
         await prepare(p)
         seeds = await select_seeds(p, cfg.seeds)
     else:
@@ -729,10 +838,11 @@ async def build(p: Profile, mode: str, gens: dict[str, Gen] | None = None,
     if shadow_pool is not None:
         try:
             from copy import deepcopy
+
             shadow_pool.extend(deepcopy(list(cands.values())[:500]))
         except Exception:
             shadow_pool.append(None)  # comparison reports failure without affecting the build
-    rejected = dict.fromkeys(REJECT_REASONS, 0)
+    rejected: dict[str, int] = dict.fromkeys(REJECT_REASONS, 0)
     kept = []
     for c in cands.values():
         if (reason := keep_reason(c, p, cfg)) is None:
@@ -753,9 +863,16 @@ async def build(p: Profile, mode: str, gens: dict[str, Gen] | None = None,
     used: dict[str, int] = {}
     for c in active:
         used[c.generator] = used.get(c.generator, 0) + 1
-    stats["generators"] = {r.name: {"tracks": len(r.tracks), "used": used.get(r.name, 0), "seconds": r.seconds,
-                                    **({"error": r.error} if r.error else {}), **({"off": True} if r.off else {})}
-                           for r in results}
+    stats["generators"] = {
+        r.name: {
+            "tracks": len(r.tracks),
+            "used": used.get(r.name, 0),
+            "seconds": r.seconds,
+            **({"error": r.error} if r.error else {}),
+            **({"off": True} if r.off else {}),
+        }
+        for r in results
+    }
     stats["candidates"], stats["kept"] = len(cands), len(kept)
     stats["familiar"] = sum(c.familiar for c in active)
     title, description = await name_mix(p.user_id, active, local_now(p.now), stats)

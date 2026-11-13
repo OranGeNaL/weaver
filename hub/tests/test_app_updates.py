@@ -100,7 +100,7 @@ async def test_patch_not_smaller_than_the_apk_is_dropped(client, tmp_path):
 
 @pytest.mark.asyncio
 async def test_full_that_disagrees_with_the_legacy_fields_hides_all_new_metadata(client, tmp_path):
-    _, full, _ = _publish(tmp_path, manifest_overrides={"sha256": "b" * 64})
+    _, _full, _ = _publish(tmp_path, manifest_overrides={"sha256": "b" * 64})
     async with client:
         data = (await client.get("/app/latest.json")).json()
         legacy = await client.get("/app/latest.apk")

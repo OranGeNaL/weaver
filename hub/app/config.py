@@ -42,6 +42,7 @@ class SoulseekCfg(BaseModel):
     """Soulseek (slskd): a background source for library downloads only, never for listening (a peer's queue and
     the whole-file transfer take seconds to minutes). It is tried first and takes only files better than the
     regular sources give: FLAC by default."""
+
     format: Literal["any", "flac", "mp3"] = "flac"
     min_mp3_bitrate_kbps: int = Field(default=320, ge=0, le=320)
     min_flac_bit_depth: int = Field(default=0, ge=0, le=32)
@@ -70,8 +71,20 @@ class MatchingCfg(BaseModel):
     enrich_top_n: int = 3
     original_before: date = date(2026, 3, 1)
     reject_words: list[str] = [
-        "караоке", "минус", "минусовка", "instrumental", "инструментал", "кавер", "cover",
-        "remix", "ремикс", "slowed", "speed up", "sped up", "nightcore", "8d",
+        "караоке",
+        "минус",
+        "минусовка",
+        "instrumental",
+        "инструментал",
+        "кавер",
+        "cover",
+        "remix",
+        "ремикс",
+        "slowed",
+        "speed up",
+        "sped up",
+        "nightcore",
+        "8d",
     ]
 
 
@@ -121,8 +134,15 @@ class MixesCfg(BaseModel):
     taste_shadow: bool = False
     # generator weights in the score (`app.mixes.build`)
     weights: dict[str, float] = {
-        "favorites": 1.0, "stash": 0.8, "ytm_radio": 1.0, "lastfm_similar": 0.8, "deezer_radio": 0.7,
-        "yandex_similar": 0.8, "similar_artists": 0.6, "new_releases": 0.7, "yandex_wave": 1.0,
+        "favorites": 1.0,
+        "stash": 0.8,
+        "ytm_radio": 1.0,
+        "lastfm_similar": 0.8,
+        "deezer_radio": 0.7,
+        "yandex_similar": 0.8,
+        "similar_artists": 0.6,
+        "new_releases": 0.7,
+        "yandex_wave": 1.0,
     }
 
 
@@ -160,6 +180,10 @@ class Settings(BaseSettings):
     data_dir: Path = Path("/data")
     config_file: Path = Path("/config/config.yaml")
     static_dir: Path = Path(__file__).parent / "static"
+
+    # Postgres connection string of the Hub: postgresql+asyncpg://user:password@host:5432/db.
+    # Required: the Hub refuses to start without it, and SQLite is not supported. Tests use TEST_DATABASE_URL.
+    database_url: str = ""
 
     navidrome_url: str = "http://navidrome:4533"
     navidrome_admin_user: str = "admin"
@@ -245,10 +269,6 @@ class Settings(BaseSettings):
     @property
     def backups_dir(self) -> Path:
         return self.music_root / ".backups"
-
-    @property
-    def db_path(self) -> Path:
-        return self.data_dir / "hub.sqlite3"
 
     @property
     def proxy_hosts(self) -> set[str]:

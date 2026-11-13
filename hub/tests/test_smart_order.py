@@ -3,6 +3,7 @@ spread of an artist's songs, the picking of a recommendation, the seeds. No data
 
 from __future__ import annotations
 
+import itertools
 import random
 from datetime import datetime, timedelta
 
@@ -76,7 +77,7 @@ def test_songs_of_one_artist_do_not_follow_one_another(seed: int) -> None:
 
     got = so.fewer_repeats(src, {}, NOW, random.Random(seed), first="s0")
 
-    assert all(a.artist != b.artist for a, b in zip(got, got[1:], strict=False))
+    assert all(a.artist != b.artist for a, b in itertools.pairwise(got))
 
 
 def test_an_artist_with_most_of_the_list_cannot_be_spread_but_nothing_breaks() -> None:

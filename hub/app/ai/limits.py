@@ -5,7 +5,7 @@ from math import ceil
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
-from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -21,7 +21,7 @@ def validate_message_text(text: str) -> None:
         raise HTTPException(400, f"В одном сообщении не больше {MAX_MESSAGE_CHARS} символов")
 
 
-async def reserve_message(s: AsyncSession, user: User) -> None:
+async def reserve_message(session: AsyncSession, user: User) -> None:
     """Atomically consume and commit an accepted request, including ones whose later AI work fails.
 
     Call after input/ownership validation and before adding tasks or invoking the model.
@@ -39,11 +39,11 @@ async def reserve_message(s: AsyncSession, user: User) -> None:
         set_={"messages": usage.messages + 1},
         where=usage.messages < DAILY_MESSAGES,
     ).returning(usage.messages)
-    if (await s.execute(stmt)).scalar_one_or_none() is None:
+    if (await session.execute(stmt)).scalar_one_or_none() is None:
         reset = datetime.combine(day + timedelta(days=1), time.min, zone).astimezone(UTC)
         raise HTTPException(
             429,
             f"Дневной лимит — {DAILY_MESSAGES} сообщений ассистенту. Попробуйте завтра: лимит обновится в 00:00 ({zone.key}).",
             headers={"Retry-After": str(max(1, ceil((reset - now).total_seconds())))},
         )
-    await s.commit()
+    await session.commit()

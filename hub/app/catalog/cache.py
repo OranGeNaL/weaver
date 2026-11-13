@@ -7,7 +7,7 @@ from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import delete, select
-from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.dialects.postgresql import insert
 
 from app.db import session_scope
 from app.models import CatalogCache, utcnow
@@ -27,9 +27,11 @@ async def cache_set(key: str, value: Any, ttl_s: int) -> None:
     # upsert: concurrent producers of the same key (e.g. gathered page fetches) must not collide
     row = {"key": key, "payload_json": {"v": value}, "ttl_s": ttl_s, "fetched_at": utcnow()}
     stmt = insert(CatalogCache).values(**row)
-    stmt = stmt.on_conflict_do_update(index_elements=[CatalogCache.key], set_={k: stmt.excluded[k] for k in row if k != "key"})
-    async with session_scope() as s:
-        await s.execute(stmt)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[CatalogCache.key], set_={k: stmt.excluded[k] for k in row if k != "key"}
+    )
+    async with session_scope() as session:
+        await session.execute(stmt)
 
 
 async def cache_set_many(values: dict[str, Any], ttl_s: int) -> None:
@@ -39,10 +41,11 @@ async def cache_set_many(values: dict[str, Any], ttl_s: int) -> None:
     now = utcnow()
     rows = [{"key": k, "payload_json": {"v": v}, "ttl_s": ttl_s, "fetched_at": now} for k, v in values.items()]
     stmt = insert(CatalogCache)
-    stmt = stmt.on_conflict_do_update(index_elements=[CatalogCache.key],
-                                      set_={k: stmt.excluded[k] for k in ("payload_json", "ttl_s", "fetched_at")})
-    async with session_scope() as s:
-        await s.execute(stmt, rows)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[CatalogCache.key], set_={k: stmt.excluded[k] for k in ("payload_json", "ttl_s", "fetched_at")}
+    )
+    async with session_scope() as session:
+        await session.execute(stmt, rows)
 
 
 async def cache_delete(key: str) -> None:

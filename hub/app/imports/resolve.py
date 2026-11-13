@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.catalog.models import make_ref, split_ref
@@ -54,14 +54,17 @@ async def _remembered(s: AsyncSession, source: str, kind: str, external_id: str)
     return row
 
 
-async def _remember(s: AsyncSession, source: str, kind: str, external_id: str, r: Resolution) -> None:
+async def _remember(session: AsyncSession, source: str, kind: str, external_id: str, r: Resolution) -> None:
     # The same song can be resolved concurrently from likes and a playlist (or two users).
-    stmt = insert(SourceMap).values(source=source, kind=kind, external_id=external_id,
-                                    ref=r.ref, match=r.match, score=r.score, updated_at=utcnow())
-    await s.execute(stmt.on_conflict_do_update(
-        index_elements=[SourceMap.source, SourceMap.kind, SourceMap.external_id],
-        set_={name: getattr(stmt.excluded, name) for name in ("ref", "match", "score", "updated_at")},
-    ))
+    stmt = insert(SourceMap).values(
+        source=source, kind=kind, external_id=external_id, ref=r.ref, match=r.match, score=r.score, updated_at=utcnow()
+    )
+    await session.execute(
+        stmt.on_conflict_do_update(
+            index_elements=[SourceMap.source, SourceMap.kind, SourceMap.external_id],
+            set_={name: getattr(stmt.excluded, name) for name in ("ref", "match", "score", "updated_at")},
+        )
+    )
 
 
 async def _owned(s: AsyncSession, raw: dict[str, Any], ref: str | None = None) -> Track | None:
@@ -69,8 +72,13 @@ async def _owned(s: AsyncSession, raw: dict[str, Any], ref: str | None = None) -
     if ref:
         src, id_ = split_ref(ref)
         dz_id = id_ if src == "dz" else None
-    return await find_existing(s, artist=raw.get("artist") or "", title=raw.get("title") or "",
-                               duration_s=raw.get("duration_s"), deezer_track_id=dz_id)
+    return await find_existing(
+        s,
+        artist=raw.get("artist") or "",
+        title=raw.get("title") or "",
+        duration_s=raw.get("duration_s"),
+        deezer_track_id=dz_id,
+    )
 
 
 async def catalog_track(raw: dict[str, Any]) -> Resolution:
@@ -136,8 +144,10 @@ async def resolve_album(s: AsyncSession, source: str, external_id: str, raw: dic
             albums = await svc.deezer.search_albums(raw.get("artist") or "", raw.get("title") or "", limit=5)
         except Exception as e:
             raise CatalogDown(repr(e)) from e
-        scored = sorted(((score(raw.get("artist") or "", raw.get("title") or "", a.artist, a.title).total, a)
-                         for a in albums), key=lambda x: -x[0])
+        scored = sorted(
+            ((score(raw.get("artist") or "", raw.get("title") or "", a.artist, a.title).total, a) for a in albums),
+            key=lambda x: -x[0],
+        )
         if scored:
             verdict = VERDICT[classify_scores([x[0] for x in scored], cfg)]
             if verdict != "not_found":

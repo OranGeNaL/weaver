@@ -1,49 +1,131 @@
-"""Shared fixtures: a migrated DB template and the Hub's test environment (fakes and helpers: support.py).
+"""Shared fixtures: a migrated Postgres template and the Hub's test environment (fakes and helpers: support.py).
 
-Alembic migrations take ~0.5 s, so they run once per session (once per xdist worker) into a template file;
-each test gets its own copy of that file.
+`TEST_DATABASE_URL` is required (see `app.db.test_database_url`). Migrations run once per session into a template
+database; each xdist worker clones it, and every test starts from a truncated schema — no SQLite template file.
 """
 
 from __future__ import annotations
 
-import shutil
 from collections.abc import Iterator
-from pathlib import Path
 
+import psycopg
 import pytest
 from cryptography.fernet import Fernet
+from psycopg import sql
+from sqlalchemy.engine import make_url
 
 from tests.support import ND
 
 
+def _with_database(url: str, name: str) -> str:
+    return make_url(url).set(database=name).render_as_string(hide_password=False)
+
+
+def _libpq(url: str) -> str:
+    """libpq form (psycopg, pg_dump): no SQLAlchemy driver suffix."""
+    return "postgresql://" + url.split("://", 1)[1]
+
+
+def _async_url(url: str) -> str:
+    """The driver the Hub's async engine uses."""
+    return "postgresql+asyncpg://" + url.split("://", 1)[1]
+
+
+def _maintenance_url(url: str) -> str:
+    return _libpq(_with_database(url, "postgres"))
+
+
+def pg_url_of_current_run() -> str:
+    from app.db import test_database_url
+
+    return test_database_url()
+
+
+def _drop_database(url: str, name: str) -> None:
+    with psycopg.connect(_maintenance_url(url), autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = %s", (name,))
+        cur.execute(sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(name)))
+
+
 @pytest.fixture(scope="session")
-def migrated_db(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """The Hub's DB at alembic head; copy it, never open it."""
-    from app.db import run_migrations
+def pg_url() -> str:
+    """The test server: required, Postgres-only, never the working database."""
+    return pg_url_of_current_run()
 
-    path = tmp_path_factory.mktemp("db-template") / "hub.sqlite3"
-    run_migrations(path)
-    return path
+
+# pg_advisory_lock key of the template creation: xdist workers do it exactly once between them
+_TEMPLATE_LOCK = 0x74656D70  # "temp"
+
+
+@pytest.fixture(scope="session")
+def template_name(pg_url: str) -> Iterator[str]:
+    """A database at alembic head; workers clone it instead of migrating again."""
+    from app import db
+
+    name = f"{make_url(pg_url).database}__template"
+    with psycopg.connect(_maintenance_url(pg_url), autocommit=True) as conn, conn.cursor() as cur:
+        # the lock is held for creation *and* migrations: another worker must not clone a half-built template
+        cur.execute("SELECT pg_advisory_lock(%s)", (_TEMPLATE_LOCK,))
+        try:
+            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (name,))
+            if cur.fetchone() is None:
+                _drop_database(pg_url, name)
+                cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+                db.run_migrations(_with_database(pg_url, name))
+        finally:
+            cur.execute("SELECT pg_advisory_unlock(%s)", (_TEMPLATE_LOCK,))
+    try:
+        yield name
+    finally:
+        _drop_database(pg_url, name)
+
+
+@pytest.fixture(scope="session")
+def worker_url(pg_url: str, template_name: str, worker_id: str) -> Iterator[str]:
+    """This xdist worker's own clone of the template; tests in it never see each other's data."""
+    name = f"{make_url(pg_url).database}__{worker_id.replace('-', '_')}"
+    _drop_database(pg_url, name)
+    with psycopg.connect(_maintenance_url(pg_url), autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("CREATE DATABASE {} TEMPLATE {}").format(sql.Identifier(name), sql.Identifier(template_name))
+        )
+    try:
+        yield _async_url(_with_database(pg_url, name))
+    finally:
+        _drop_database(pg_url, name)
+
+
+def _truncate(url: str) -> None:
+    with psycopg.connect(_libpq(url), autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'alembic_version'")
+        tables = [row[0] for row in cur.fetchall()]
+        for table in tables:
+            cur.execute(sql.SQL("TRUNCATE TABLE {} RESTART IDENTITY CASCADE").format(sql.Identifier(table)))
+
+
+@pytest.fixture(autouse=True)
+def clean_db(worker_url: str) -> None:
+    """Every test starts from a clean schema (the previous test's rows are gone)."""
+    _truncate(worker_url)
 
 
 @pytest.fixture
-def db_file(migrated_db: Path, tmp_path: Path) -> Path:
-    """A fresh migrated DB of this test's own."""
-    path = tmp_path / "data" / "hub.sqlite3"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(migrated_db, path)
-    return path
+def db_url(worker_url: str) -> str:
+    """The test database URL: pass it to `app.db.init_engine()`."""
+    return worker_url
 
 
 @pytest.fixture
-def hub_env(db_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+def hub_env(db_url: str, tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator:
     """Settings for create_app(): temp folders, a fake Navidrome, no background workers, no waiting.
 
     Yields the music root. Module caches that outlive a test are cleared before and after it.
     """
     music = tmp_path / "music"
+    # the app's lifespan migrates/uses DATABASE_URL: in tests that is this worker's clone, never a working DB
+    monkeypatch.setenv("DATABASE_URL", db_url)
     monkeypatch.setenv("MUSIC_ROOT", str(music))
-    monkeypatch.setenv("DATA_DIR", str(db_file.parent))
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("CONFIG_FILE", str(tmp_path / "none.yaml"))
     monkeypatch.setenv("NAVIDROME_URL", ND)
     monkeypatch.setenv("NAVIDROME_ADMIN_USER", "admin")
@@ -78,4 +160,3 @@ def _clear_caches() -> None:
     ytdlp._media_hosts.clear()
     sources._lastfm_limiter = None
     wave._rt.clear()
-

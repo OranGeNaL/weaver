@@ -8,7 +8,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
-from sqlalchemy import func, select
+from sqlalchemy import false, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import (
@@ -31,7 +31,7 @@ from app.jobs.downloads import enqueue_scan
 from app.jobs.queue import notify
 from app.library import editor, tagger
 from app.library.importer import album_reldir, library_abs
-from app.matching.normalize import normalize_title
+from app.library.search import ilike_all
 from app.models import Album, Track, User
 
 router = APIRouter(tags=["library"])
@@ -78,11 +78,11 @@ async def _after_edit(s: AsyncSession, user: User, album_id: int | None) -> None
 @router.get("/api/library/albums", response_model=list[LibAlbumOut])
 async def list_albums(q: str | None = None, offset: int = 0, limit: int = Query(50, le=200),
                       user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
-    rows = (await s.execute(select(Album).order_by(Album.updated_at.desc()))).scalars().all()
+    stmt = select(Album).order_by(Album.updated_at.desc())
     if q:
-        nq = normalize_title(q).text
-        rows = [a for a in rows if all(w in normalize_title(f"{a.album_artist} {a.title}").text for w in nq.split())]
-    rows = rows[offset: offset + limit]
+        cond = ilike_all(q)
+        stmt = stmt.where(Album.search_text.ilike(cond) if cond is not None else false())
+    rows = (await s.execute(stmt.offset(offset).limit(limit))).scalars().all()
     counts = dict((await s.execute(
         select(Track.album_id, func.count(Track.id)).where(Track.album_id.in_([a.id for a in rows]))
         .group_by(Track.album_id)

@@ -354,7 +354,7 @@ def _read_mp4(tags: Any) -> tuple[dict[str, list[str]], bytes | None]:
             c[key] = [str(x) for x in tags[atom]]
     for atom, num_key, total_key in (("trkn", "TRACKNUMBER", "TRACKTOTAL"), ("disk", "DISCNUMBER", "DISCTOTAL")):
         if tags.get(atom):
-            n, total = (tuple(tags[atom][0]) + (0, 0))[:2]
+            n, total = (*tuple(tags[atom][0]), 0, 0)[:2]
             if n:
                 c[num_key] = [str(n)]
             if total:
