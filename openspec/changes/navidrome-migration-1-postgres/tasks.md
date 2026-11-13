@@ -41,7 +41,7 @@
 ## 7. Проверка
 
 - [x] 7.1 Прогнать `pytest` на Postgres; ожидается зелёный прогон.
-- [ ] 7.2 Прогнать `ruff check` и `ruff format --check`; ожидается без ошибок.
+- [x] 7.2 Прогнать `ruff check` и `ruff format --check`; ожидается без ошибок.
 - [x] 7.3 Проверить `alembic upgrade head` и `alembic downgrade -1` на пустой БД.
 - [x] 7.4 Проверить запуск Hub с внешним `DATABASE_URL` (без compose-сервиса Postgres).
 - [x] 7.5 Прогнать `npm run typecheck` и `npm run build` (правило tasks);
