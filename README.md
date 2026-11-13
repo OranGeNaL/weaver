@@ -428,6 +428,22 @@ curl http://localhost:8080/healthz
 
 ## Разработка
 
+Проверки перед коммитом (в этом порядке):
+
+```bash
+cd hub
+uv run ruff check                   # линтер
+uv run ruff format --check          # форматирование (исправить: uv run ruff format)
+TEST_DATABASE_URL=postgresql+asyncpg://hub:hub@localhost:5432/hub_test uv run pytest -q
+cd ../web
+npm run typecheck
+```
+
+Тестам нужен отдельный Postgres (`TEST_DATABASE_URL`, не совпадающий с `DATABASE_URL`) и права `CREATEDB`:
+шаблонная база мигрируется один раз, каждый воркер клонирует её, каждый тест начинается с пустой схемы.
+Форматный коммит `style: ruff format` не учитывается в истории строк:
+`git config blame.ignoreRevsFile .git-blame-ignore-revs`.
+
 ```
 cd hub
 uv sync
