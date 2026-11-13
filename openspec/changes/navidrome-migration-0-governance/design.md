@@ -66,6 +66,7 @@ Navidrome перестаёт быть владельцем чего-либо: е
 - В `design.rules` заменить «MUST сохранять Navidrome как источник истины» (`:96`) и упоминание Navidrome в адаптерах (`:97`) на «Hub — источник истины для учёток, ♥, плейлистов, истории и каталога; Navidrome не используется». Добавить: Postgres + Alembic; S3-блобы только через `storage`; `auth` — локальные учётки + JWT + OIDC RP; JWT передаётся в существующей HttpOnly-cookie `hm_session` на всём протяжении серии; payload меняется на этапе 4, имя/scope cookie — отдельный breaking-change с правкой правила `:61`; никаких прямых обращений к ND из доменов; новые объекты библиотеки — только через импорт Hub.
 - В `proposal.rules` и `tasks.rules` заменить упоминания SQLite/Navidrome на целевую модель; в `operations.apply.guidance` (`:118`) заменить «проверь PWA и Android-совместимость» на «проверь PWA и capability-совместимость; `/app/*` и `HomeMusicAndroid` контракт не ломать»; сохранить требования к Alembic, capability/version и тестам.
 - В `operations.apply.guidance` заменить «Сначала обнови спецификацию, затем код и тесты» на «Сначала обнови delta-спеку внутри change; базовые `openspec/specs/*` меняются только при архивации».
+- В `.gitignore` добавить исключение `!openspec/config.yaml`, чтобы рамка версионировалась; корневой локальный `config.yaml` остаётся игнорируемым.
 
 ### 7. Инварианты, которые нельзя потерять
 
@@ -86,7 +87,7 @@ Navidrome перестаёт быть владельцем чего-либо: е
 
 ## Migration Plan
 
-1. Применить правки `config.yaml` из решения 6.
+1. Применить правки `config.yaml` и `.gitignore` из решения 6.
 2. Прогнать `openspec validate "navidrome-migration-0-governance"` и `openspec doctor`.
 3. Убедиться, что `hub/`, `web/`, `docker-compose.yml`, `.env` не изменены.
 4. Приступать к `-1-postgres`.

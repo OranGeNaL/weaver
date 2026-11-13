@@ -23,7 +23,7 @@
 
 ## Impact
 
-- `openspec/config.yaml` — context и rules.
+- `openspec/config.yaml` — context и rules; `.gitignore` — исключение `!openspec/config.yaml`, чтобы рамка версионировалась.
 - Все последующие change серии `navidrome-migration-*` — их design опирается на новые правила.
 - Код, API, БД, фоновые задачи и клиенты не затрагиваются.
 - План проверки: `openspec validate` для change и `openspec doctor` после правки config; отсутствие изменений в `hub/`, `web/`, `docker-compose.yml`.

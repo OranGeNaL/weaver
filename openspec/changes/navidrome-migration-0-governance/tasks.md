@@ -7,7 +7,7 @@
 ## 2. Правила
 
 - [x] 2.1 Заменить в `design.rules` правило «MUST сохранять Navidrome как источник истины» (`:96`) и упоминание Navidrome в адаптерах (`:97`) на «Hub — источник истины для учёток, ♥, плейлистов, истории и каталога; Navidrome не используется»; проверить `openspec validate "navidrome-migration-0-governance"`.
-- [x] 2.2 Добавить в `design.rules` правила: Postgres + Alembic, S3-блобы только через `storage`, `auth` — локальные учётки + JWT + OIDC RP, JWT — представление серверной сессии с сохранением `hm_session` до этапа 4, новые объекты библиотеки только через импорт Hub, никаких прямых обращений к ND из доменов, сканирование бакета запрещено; проверить, что правила не противоречат друг другу.
+- [x] 2.2 Добавить в `design.rules` правила: Postgres + Alembic, S3-блобы только через `storage`, `auth` — локальные учётки + JWT + OIDC RP, JWT передаётся в существующей HttpOnly-cookie `hm_session` на всём протяжении серии, payload меняется на этапе 4, имя/scope cookie — отдельный breaking-change, новые объекты библиотеки только через импорт Hub, никаких прямых обращений к ND из доменов, сканирование бакета запрещено; проверить, что правила не противоречат друг другу.
 - [x] 2.3 Обновить `proposal.rules` и `tasks.rules`: заменить упоминания SQLite/Navidrome на целевую модель; в `operations.apply.guidance` (`:118`) — «PWA и capability» вместо «PWA и Android», сохранив имя/scope cookie `hm_session` и контракт `/app/*`/`HomeMusicAndroid`; проверить `openspec doctor`.
 - [x] 2.4 Убрать Navidrome/Subsonic из `:26-27`, `:64`, переписать `:33-34` как S3-primary + staging/hot-cache на локальном диске; проверить `rg -i "navidrome|subsonic" openspec/config.yaml` — остались только намеренные упоминания.
 
@@ -21,5 +21,5 @@
 
 - [x] 4.1 Прогнать `openspec validate "navidrome-migration-0-governance"`; ожидается успешная валидация (при `skip_specs: true` — без delta-спек).
 - [x] 4.2 Прогнать `openspec doctor`; ожидается отсутствие ошибок конфигурации.
-- [x] 4.3 Проверить `git status`: изменён только `openspec/config.yaml` и артефакты change 0; `hub/`, `web/`, `docker-compose.yml`, `.env` не изменены.
+- [x] 4.3 Проверить `git status`: изменены `openspec/config.yaml`, `.gitignore` (исключение `!openspec/config.yaml`) и артефакты change 0; `hub/`, `web/`, `docker-compose.yml`, `.env` не изменены.
 - [x] 4.4 Повторно проверить `rg -l "navidrome-migration-0-governance" openspec/changes/navidrome-migration-[1-7]-*/proposal.md`; ожидается 7 файлов (та же проверка, что 3.3).
