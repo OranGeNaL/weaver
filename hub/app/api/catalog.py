@@ -54,7 +54,9 @@ async def get_album(ref: str) -> CatalogAlbum:
 
 
 @router.get("/artist/{ref}", response_model=ArtistPageOut)
-async def artist(ref: str, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+async def artist(
+    ref: str, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
     page = await get_artist_page(ref)
     albums = await annotate_albums(s, page.albums, user.id)
     albums.sort(key=lambda a: (a.release_date is not None, a.release_date), reverse=True)

@@ -67,15 +67,25 @@ def read_snapshot(
     events = []
     missing_received = False
     columns = (
-        PlayEvent.id, PlayEvent.user_id, PlayEvent.event_id, PlayEvent.ts, PlayEvent.kind, PlayEvent.ref,
+        PlayEvent.id,
+        PlayEvent.user_id,
+        PlayEvent.event_id,
+        PlayEvent.ts,
+        PlayEvent.kind,
+        PlayEvent.ref,
         PlayEvent.nd_song_id,
-        PlayEvent.target_type, PlayEvent.nd_album_id, PlayEvent.nd_artist_id, PlayEvent.target_data,
-        PlayEvent.reverts_event_id, PlayEvent.position_s, PlayEvent.duration_s, PlayEvent.context,
-        PlayEvent.client, PlayEvent.received_at,
+        PlayEvent.target_type,
+        PlayEvent.nd_album_id,
+        PlayEvent.nd_artist_id,
+        PlayEvent.target_data,
+        PlayEvent.reverts_event_id,
+        PlayEvent.position_s,
+        PlayEvent.duration_s,
+        PlayEvent.context,
+        PlayEvent.client,
+        PlayEvent.received_at,
     )
-    rows = connection.execute(
-        select(*columns).where(PlayEvent.user_id == user_id).order_by(PlayEvent.id)
-    ).mappings()
+    rows = connection.execute(select(*columns).where(PlayEvent.user_id == user_id).order_by(PlayEvent.id)).mappings()
     for row in rows:
         data = {k: row[k] for k in fields if k in row}
         data["ts"] = utc(data["ts"])

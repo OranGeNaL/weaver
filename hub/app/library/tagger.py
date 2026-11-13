@@ -44,11 +44,24 @@ CUSTOM_FIELDS: dict[str, str] = {
     "deezer_album_id": "DEEZER_ALBUM_ID",
 }
 
-_ID3_TEXT = {"TITLE": TIT2, "ARTIST": TPE1, "ALBUMARTIST": TPE2, "ALBUM": TALB, "DATE": TDRC, "GENRE": TCON,
-             "ISRC": TSRC}
+_ID3_TEXT = {
+    "TITLE": TIT2,
+    "ARTIST": TPE1,
+    "ALBUMARTIST": TPE2,
+    "ALBUM": TALB,
+    "DATE": TDRC,
+    "GENRE": TCON,
+    "ISRC": TSRC,
+}
 _ID3_TXXX_ALIASES = {"RELEASETYPE": "MusicBrainz Album Type"}
-_MP4_ATOMS = {"TITLE": "©nam", "ARTIST": "©ART", "ALBUMARTIST": "aART", "ALBUM": "©alb", "DATE": "©day",
-              "GENRE": "©gen"}
+_MP4_ATOMS = {
+    "TITLE": "©nam",
+    "ARTIST": "©ART",
+    "ALBUMARTIST": "aART",
+    "ALBUM": "©alb",
+    "DATE": "©day",
+    "GENRE": "©gen",
+}
 _MP4_FREEFORM_ALIASES = {"RELEASETYPE": "MusicBrainz Album Type"}
 _MP4_FREEFORM = "----:com.apple.iTunes:"
 _DATE_RE = re.compile(r"^\d{4}(-\d{2}(-\d{2})?)?$")
@@ -175,8 +188,13 @@ def _from_canonical(c: dict[str, list[str]]) -> dict[str, Any]:
         return vals[0].strip() if vals and vals[0] is not None and str(vals[0]).strip() else None
 
     out: dict[str, Any] = {}
-    for field, key in (("title", "TITLE"), ("album", "ALBUM"), ("album_artist", "ALBUMARTIST"),
-                       ("genre", "GENRE"), ("isrc", "ISRC")):
+    for field, key in (
+        ("title", "TITLE"),
+        ("album", "ALBUM"),
+        ("album_artist", "ALBUMARTIST"),
+        ("genre", "GENRE"),
+        ("isrc", "ISRC"),
+    ):
         if (v := first(key)) is not None:
             out[field] = v
 
@@ -193,8 +211,12 @@ def _from_canonical(c: dict[str, list[str]]) -> dict[str, Any]:
     disc_no, disc_total = _num_pair(first("DISCNUMBER"))
     track_total = _num_pair(first("TRACKTOTAL") or first("TOTALTRACKS"))[0] or track_total
     disc_total = _num_pair(first("DISCTOTAL") or first("TOTALDISCS"))[0] or disc_total
-    for field, v in (("track_no", track_no), ("track_total", track_total), ("disc_no", disc_no),
-                     ("disc_total", disc_total)):
+    for field, v in (
+        ("track_no", track_no),
+        ("track_total", track_total),
+        ("disc_no", disc_no),
+        ("disc_total", disc_total),
+    ):
         if v is not None:
             out[field] = v
 
@@ -364,7 +386,7 @@ def _read_mp4(tags: Any) -> tuple[dict[str, list[str]], bytes | None]:
     for name, values in tags.items():
         if not name.lower().startswith(prefix):
             continue
-        key = name[len(prefix):].upper()
+        key = name[len(prefix) :].upper()
         key = reverse.get(key, key)
         c[key] = [bytes(v).decode("utf-8", "replace") for v in values]
     if tags.get("rtng"):

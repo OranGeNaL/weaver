@@ -56,8 +56,17 @@ async def song(env, name: str, nd_id: str, body: bytes = AUDIO) -> Path:
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_bytes(body)
     async with session_scope() as s:
-        s.add(Track(uid=nd_id, path=rel, artist="Artist", title=name, duration_s=200, nd_song_id=nd_id,
-                    fingerprint=fingerprint("Artist", name)))
+        s.add(
+            Track(
+                uid=nd_id,
+                path=rel,
+                artist="Artist",
+                title=name,
+                duration_s=200,
+                nd_song_id=nd_id,
+                fingerprint=fingerprint("Artist", name),
+            )
+        )
     return f
 
 
@@ -88,8 +97,9 @@ async def test_heavy_song_is_served_as_an_opus_copy_with_size_and_range(env, fak
     r = await c.get("/api/listen/stream", params={"ref": "nd:nd1", "q": "mobile"}, headers={"Range": "bytes=10-19"})
     assert r.status_code == 206 and r.content == copy[10:20]
     assert r.headers["content-range"] == f"bytes 10-19/{len(copy)}" and r.headers["accept-ranges"] == "bytes"
-    r = await c.get("/api/listen/stream", params={"ref": "nd:nd1", "q": "mobile"},
-                    headers={"Range": f"bytes={len(copy) + 5}-"})
+    r = await c.get(
+        "/api/listen/stream", params={"ref": "nd:nd1", "q": "mobile"}, headers={"Range": f"bytes={len(copy) + 5}-"}
+    )
     assert r.status_code == 416
     assert len(fake_encoder.calls) == 1  # one encode for all of them
 
@@ -112,8 +122,9 @@ async def test_without_the_quality_the_stream_is_as_before(env, fake_encoder):
     assert fake_encoder.calls == []
 
 
-async def test_copy_not_ready_in_time_gives_the_original_and_is_finished_in_the_background(env, fake_encoder,
-                                                                                         monkeypatch):
+async def test_copy_not_ready_in_time_gives_the_original_and_is_finished_in_the_background(
+    env, fake_encoder, monkeypatch
+):
     c = env["client"]
     monkeypatch.setattr(light, "WAIT_S", 0.05)
     fake_encoder.gate = asyncio.Event()
@@ -231,6 +242,7 @@ async def test_catalog_track_is_lightened_from_its_server_copy(env, fake_encoder
     c, hm = env["client"], env["hm"]
     hm.cands = [cand("1", "https://cdn.test/good.mp3")]
     await search_files(c)
+
     # the source says heavy: the probe of the server copy is by its path, which has no "heavy" in it
     async def probe(path, timeout=60):
         return SimpleNamespace(bitrate_kbps=320)
@@ -240,7 +252,9 @@ async def test_catalog_track_is_lightened_from_its_server_copy(env, fake_encoder
     assert r.status_code == 200 and r.headers[VARIANT] == light.LIGHT
     assert r.content == b"OggS" + AUDIO[: len(AUDIO) // 2]
     # the next ask is answered from the copy alone
-    r = await c.get("/api/listen/stream", params={"ref": "file:hitmoz:1", "q": "mobile"}, headers={"Range": "bytes=0-3"})
+    r = await c.get(
+        "/api/listen/stream", params={"ref": "file:hitmoz:1", "q": "mobile"}, headers={"Range": "bytes=0-3"}
+    )
     assert r.status_code == 206 and r.content == b"OggS" and r.headers[VARIANT] == light.LIGHT
     # the plain stream is the original, as ever
     r = await c.get("/api/listen/stream", params={"ref": "file:hitmoz:1"})
@@ -256,13 +270,14 @@ async def test_catalog_track_that_is_light_already_is_served_as_it_is(env, fake_
         return SimpleNamespace(bitrate_kbps=128)  # a YouTube m4a
 
     monkeypatch.setattr(light, "probe", probe)
-    r = await c.get("/api/listen/stream", params={"ref": "file:hitmoz:1", "q": "mobile"}, headers={"Range": "bytes=5-9"})
+    r = await c.get(
+        "/api/listen/stream", params={"ref": "file:hitmoz:1", "q": "mobile"}, headers={"Range": "bytes=5-9"}
+    )
     assert r.status_code == 206 and r.content == AUDIO[5:10] and r.headers[VARIANT] == light.ORIGINAL
     assert fake_encoder.calls == []
 
 
-async def test_catalog_track_whose_copy_is_slow_plays_the_original_and_the_copy_follows(env, fake_encoder,
-                                                                                         monkeypatch):
+async def test_catalog_track_whose_copy_is_slow_plays_the_original_and_the_copy_follows(env, fake_encoder, monkeypatch):
     from app import listen
 
     c, hm, mock = env["client"], env["hm"], env["mock"]
@@ -315,8 +330,24 @@ async def settled(cond) -> None:
 
 
 def make_audio(path: Path, codec: str, kbps: int, seconds: int = 12) -> None:
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
-                    "-c:a", codec, "-b:a", f"{kbps}k", str(path)], check=True)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:duration={seconds}",
+            "-c:a",
+            codec,
+            "-b:a",
+            f"{kbps}k",
+            str(path),
+        ],
+        check=True,
+    )
 
 
 @needs_ffmpeg
@@ -334,8 +365,17 @@ async def test_real_ffmpeg_halves_a_320_mp3_and_the_copy_is_reproducible(env):
     async with session_scope() as s:
         for uid, p in (("a", f), ("b", plain)):
             rel = p.relative_to(env["music"] / "library").as_posix()
-            s.add(Track(uid=uid, path=rel, artist="Artist", title=p.name, duration_s=12, nd_song_id=uid,
-                        fingerprint=fingerprint("Artist", p.name)))
+            s.add(
+                Track(
+                    uid=uid,
+                    path=rel,
+                    artist="Artist",
+                    title=p.name,
+                    duration_s=12,
+                    nd_song_id=uid,
+                    fingerprint=fingerprint("Artist", p.name),
+                )
+            )
 
     r = await c.get("/api/listen/stream", params={"ref": "nd:a", "q": "mobile"}, headers={"Range": "bytes=0-"})
     if r.headers[VARIANT] == light.PENDING:  # a slow machine: the copy is finished in the background

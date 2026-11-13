@@ -39,10 +39,24 @@ router = APIRouter(tags=["library"])
 
 def track_out(t: Track) -> LibTrackOut:
     return LibTrackOut(
-        id=t.id, nd_song_id=t.nd_song_id, album_id=t.album_id, artist=t.artist, title=t.title, album=t.album,
-        album_artist=t.album_artist, track_no=t.track_no, disc_no=t.disc_no, year=t.year, duration_s=t.duration_s,
-        bitrate_kbps=t.bitrate_kbps, codec=t.codec, explicit=t.explicit, source=t.source, locked=t.locked,
-        warnings=t.warnings or [], path=t.path,
+        id=t.id,
+        nd_song_id=t.nd_song_id,
+        album_id=t.album_id,
+        artist=t.artist,
+        title=t.title,
+        album=t.album,
+        album_artist=t.album_artist,
+        track_no=t.track_no,
+        disc_no=t.disc_no,
+        year=t.year,
+        duration_s=t.duration_s,
+        bitrate_kbps=t.bitrate_kbps,
+        codec=t.codec,
+        explicit=t.explicit,
+        source=t.source,
+        locked=t.locked,
+        warnings=t.warnings or [],
+        path=t.path,
     )
 
 
@@ -52,11 +66,21 @@ def _has_cover(a: Album) -> bool:
 
 async def album_out(s: AsyncSession, a: Album, *, with_tracks: bool = False) -> LibAlbumOut:
     tracks = (
-        await s.execute(select(Track).where(Track.album_id == a.id).order_by(Track.disc_no, Track.track_no, Track.id))
-    ).scalars().all()
+        (await s.execute(select(Track).where(Track.album_id == a.id).order_by(Track.disc_no, Track.track_no, Track.id)))
+        .scalars()
+        .all()
+    )
     return LibAlbumOut(
-        id=a.id, uid=a.uid, title=a.title, album_artist=a.album_artist, year=a.year, release_type=a.release_type,
-        genre=a.genre, deezer_album_id=a.deezer_album_id, track_count=len(tracks), has_cover=_has_cover(a),
+        id=a.id,
+        uid=a.uid,
+        title=a.title,
+        album_artist=a.album_artist,
+        year=a.year,
+        release_type=a.release_type,
+        genre=a.genre,
+        deezer_album_id=a.deezer_album_id,
+        track_count=len(tracks),
+        has_cover=_has_cover(a),
         tracks=[track_out(t) for t in tracks] if with_tracks else None,
     )
 
@@ -76,37 +100,66 @@ async def _after_edit(s: AsyncSession, user: User, album_id: int | None) -> None
 
 
 @router.get("/api/library/albums", response_model=list[LibAlbumOut])
-async def list_albums(q: str | None = None, offset: int = 0, limit: int = Query(50, le=200),
-                      user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+async def list_albums(
+    q: str | None = None,
+    offset: int = 0,
+    limit: int = Query(50, le=200),
+    user: User = Depends(current_user),
+    s: AsyncSession = Depends(get_session, scope="function"),
+):
     stmt = select(Album).order_by(Album.updated_at.desc())
     if q:
         cond = ilike_all(q)
         stmt = stmt.where(Album.search_text.ilike(cond) if cond is not None else false())
     rows = (await s.execute(stmt.offset(offset).limit(limit))).scalars().all()
-    counts = dict((await s.execute(
-        select(Track.album_id, func.count(Track.id)).where(Track.album_id.in_([a.id for a in rows]))
-        .group_by(Track.album_id)
-    )).all())
+    counts = dict(
+        (
+            await s.execute(
+                select(Track.album_id, func.count(Track.id))
+                .where(Track.album_id.in_([a.id for a in rows]))
+                .group_by(Track.album_id)
+            )
+        ).all()
+    )
     return [
-        LibAlbumOut(id=a.id, uid=a.uid, title=a.title, album_artist=a.album_artist, year=a.year,
-                    release_type=a.release_type, genre=a.genre, deezer_album_id=a.deezer_album_id,
-                    track_count=counts.get(a.id, 0), has_cover=_has_cover(a))
+        LibAlbumOut(
+            id=a.id,
+            uid=a.uid,
+            title=a.title,
+            album_artist=a.album_artist,
+            year=a.year,
+            release_type=a.release_type,
+            genre=a.genre,
+            deezer_album_id=a.deezer_album_id,
+            track_count=counts.get(a.id, 0),
+            has_cover=_has_cover(a),
+        )
         for a in rows
     ]
 
 
 @router.post("/api/library/albums", response_model=LibAlbumOut)
-async def create_album(body: AlbumCreateIn, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
-    a = Album(uid=str(uuid.uuid4()), title=body.title.strip(), album_artist=body.album_artist.strip(), year=body.year,
-              genre=body.genre, release_type=body.release_type, created_by=user.id)
+async def create_album(
+    body: AlbumCreateIn, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
+    a = Album(
+        uid=str(uuid.uuid4()),
+        title=body.title.strip(),
+        album_artist=body.album_artist.strip(),
+        year=body.year,
+        genre=body.genre,
+        release_type=body.release_type,
+        created_by=user.id,
+    )
     s.add(a)
     await s.flush()
     return await album_out(s, a, with_tracks=True)
 
 
 @router.get("/api/library/track-source", response_model=TrackSourceOut)
-async def track_source(nd_song_id: str, user: User = Depends(current_user),
-                       s: AsyncSession = Depends(get_session, scope="function")):
+async def track_source(
+    nd_song_id: str, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
     t = (await s.execute(select(Track).where(Track.nd_song_id == nd_song_id).limit(1))).scalar_one_or_none()
     if t is None:
         raise HTTPException(404, "Трек не найден")
@@ -114,13 +167,19 @@ async def track_source(nd_song_id: str, user: User = Depends(current_user),
 
 
 @router.get("/api/library/albums/{album_id}", response_model=LibAlbumOut)
-async def get_album(album_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+async def get_album(
+    album_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
     return await album_out(s, await _album(s, album_id), with_tracks=True)
 
 
 @router.patch("/api/library/albums/{album_id}", response_model=LibAlbumOut)
-async def patch_album(album_id: int, body: AlbumPatchIn, user: User = Depends(current_user),
-                      s: AsyncSession = Depends(get_session, scope="function")):
+async def patch_album(
+    album_id: int,
+    body: AlbumPatchIn,
+    user: User = Depends(current_user),
+    s: AsyncSession = Depends(get_session, scope="function"),
+):
     a = await _album(s, album_id)
     await editor.update_album(s, a, **body.model_dump(exclude_unset=True))
     await _after_edit(s, user, a.id)
@@ -128,8 +187,12 @@ async def patch_album(album_id: int, body: AlbumPatchIn, user: User = Depends(cu
 
 
 @router.put("/api/library/albums/{album_id}/cover", response_model=LibAlbumOut)
-async def put_cover(album_id: int, file: UploadFile = File(...), user: User = Depends(current_user),
-                    s: AsyncSession = Depends(get_session, scope="function")):
+async def put_cover(
+    album_id: int,
+    file: UploadFile = File(...),
+    user: User = Depends(current_user),
+    s: AsyncSession = Depends(get_session, scope="function"),
+):
     a = await _album(s, album_id)
     data = await file.read()
     if len(data) > 20 * 1024 * 1024:
@@ -143,8 +206,12 @@ async def put_cover(album_id: int, file: UploadFile = File(...), user: User = De
 
 
 @router.get("/api/library/albums/{album_id}/cover")
-async def get_cover(album_id: int, size: int | None = Query(None, ge=32, le=1000), user: User = Depends(current_user),
-                    s: AsyncSession = Depends(get_session, scope="function")):
+async def get_cover(
+    album_id: int,
+    size: int | None = Query(None, ge=32, le=1000),
+    user: User = Depends(current_user),
+    s: AsyncSession = Depends(get_session, scope="function"),
+):
     a = await _album(s, album_id)
     p = library_abs(album_reldir(a)) / "cover.jpg"
     data: bytes | None = await asyncio.to_thread(p.read_bytes) if p.is_file() else None
@@ -170,7 +237,9 @@ def _resize(data: bytes, size: int) -> bytes:
 
 
 @router.post("/api/library/albums/merge", response_model=LibAlbumOut)
-async def merge(body: AlbumMergeIn, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+async def merge(
+    body: AlbumMergeIn, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
     target = await _album(s, body.target_id)
     await editor.merge_albums(s, body.source_ids, target)
     await _after_edit(s, user, target.id)
@@ -178,7 +247,9 @@ async def merge(body: AlbumMergeIn, user: User = Depends(current_user), s: Async
 
 
 @router.post("/api/library/tracks/move", response_model=LibAlbumOut)
-async def move(body: TracksMoveIn, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+async def move(
+    body: TracksMoveIn, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
     target = await _album(s, body.album_id)
     await editor.move_tracks(s, body.track_ids, target)
     await _after_edit(s, user, target.id)
@@ -186,8 +257,12 @@ async def move(body: TracksMoveIn, user: User = Depends(current_user), s: AsyncS
 
 
 @router.patch("/api/library/tracks/{track_id}", response_model=LibTrackOut)
-async def patch_track(track_id: int, body: TrackPatchIn, user: User = Depends(current_user),
-                      s: AsyncSession = Depends(get_session, scope="function")):
+async def patch_track(
+    track_id: int,
+    body: TrackPatchIn,
+    user: User = Depends(current_user),
+    s: AsyncSession = Depends(get_session, scope="function"),
+):
     t = await s.get(Track, track_id)
     if t is None:
         raise HTTPException(404, "Трек не найден")
@@ -197,7 +272,9 @@ async def patch_track(track_id: int, body: TrackPatchIn, user: User = Depends(cu
 
 
 @router.delete("/api/library/tracks/{track_id}")
-async def delete_track(track_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+async def delete_track(
+    track_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
     t = await s.get(Track, track_id)
     if t is None:
         raise HTTPException(404, "Трек не найден")
@@ -220,11 +297,22 @@ async def starred(user: User = Depends(current_user), s: AsyncSession = Depends(
     finally:
         await nd.aclose()
     states = await snapshot(s, user.id)
-    subjects = [dict(target_type=x.target_type, key=x.key, ref=x.ref, nd_id=x.nd_id,
-                     liked=x.liked, liked_since=x.since, target_data=x.data,
-                     event_id=x.event.event_id, aliases=x.aliases, provenance="own") for x in states.values()]
-    index = AliasIndex([x.event for x in states.values()],
-                       list((await s.execute(select(FavoriteSubject))).scalars()))
+    subjects = [
+        dict(
+            target_type=x.target_type,
+            key=x.key,
+            ref=x.ref,
+            nd_id=x.nd_id,
+            liked=x.liked,
+            liked_since=x.since,
+            target_data=x.data,
+            event_id=x.event.event_id,
+            aliases=x.aliases,
+            provenance="own",
+        )
+        for x in states.values()
+    ]
+    index = AliasIndex([x.event for x in states.values()], list((await s.execute(select(FavoriteSubject))).scalars()))
     for state in states.values():
         index.join(state.target_type, set(state.aliases))
     imported = {index.root(k) for k in await imported_targets(s, user.id)}
@@ -235,23 +323,45 @@ async def starred(user: User = Depends(current_user), s: AsyncSession = Depends(
             target = FavoriteTarget(target_type=typ, **{ND_FIELDS[typ]: obj["id"]})
             key = index.key(target)
             if key in imported and key not in states:
-                subjects.append(dict(target_type=typ, key=key[1], nd_id=obj["id"], liked=True,
-                                     aliases=[f"nd:{obj['id']}"], provenance="import"))
+                subjects.append(
+                    dict(
+                        target_type=typ,
+                        key=key[1],
+                        nd_id=obj["id"],
+                        liked=True,
+                        aliases=[f"nd:{obj['id']}"],
+                        provenance="import",
+                    )
+                )
     refs = set(await pending_like_refs(s, user.id))
     for ref in sorted(refs):
         key = index.key(FavoriteTarget(ref=ref))
         if key not in states:
-            subjects.append(dict(target_type="track", key=key[1], ref=ref, nd_id=None, liked=True,
-                                 aliases=[f"ref:{ref}"], provenance="import"))
+            subjects.append(
+                dict(
+                    target_type="track",
+                    key=key[1],
+                    ref=ref,
+                    nd_id=None,
+                    liked=True,
+                    aliases=[f"ref:{ref}"],
+                    provenance="import",
+                )
+            )
     refs.update(x.ref for x in states.values() if x.target_type == "track" and x.liked and x.ref and not x.nd_id)
-    return StarredOut(song_ids=[x["id"] for x in body.get("song", []) if x.get("id")],
-                      album_ids=[x["id"] for x in body.get("album", []) if x.get("id")],
-                      artist_ids=[x["id"] for x in body.get("artist", []) if x.get("id")],
-                      refs=sorted(refs), subjects=subjects)
+    return StarredOut(
+        song_ids=[x["id"] for x in body.get("song", []) if x.get("id")],
+        album_ids=[x["id"] for x in body.get("album", []) if x.get("id")],
+        artist_ids=[x["id"] for x in body.get("artist", []) if x.get("id")],
+        refs=sorted(refs),
+        subjects=subjects,
+    )
 
 
 @router.post("/api/star")
-async def star(body: StarIn, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+async def star(
+    body: StarIn, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
     from app.api.schemas import FavoriteTarget
     from app.favorites import command
 
@@ -267,8 +377,12 @@ async def star(body: StarIn, user: User = Depends(current_user), s: AsyncSession
         duplicate_unlike = False
         if body.unstar and body.event_id and len(targets) == 1:
             from app.models import PlayEvent
-            duplicate_unlike = (await s.execute(select(PlayEvent.id).where(
-                PlayEvent.user_id == user.id, PlayEvent.event_id == body.event_id))).first() is not None
+
+            duplicate_unlike = (
+                await s.execute(
+                    select(PlayEvent.id).where(PlayEvent.user_id == user.id, PlayEvent.event_id == body.event_id)
+                )
+            ).first() is not None
         if body.catalog_album_ref:
             src, id_ = split_ref(body.catalog_album_ref)
             q = select(Track.nd_song_id).join(Album, Album.id == Track.album_id).where(Track.nd_song_id.is_not(None))
@@ -279,14 +393,30 @@ async def star(body: StarIn, user: User = Depends(current_user), s: AsyncSession
             song = await nd.get_song(song_id)
             if not song.get("albumId"):
                 raise HTTPException(409, "Альбом ещё не появился в Navidrome")
-            targets.append(FavoriteTarget(target_type="album", ref=body.catalog_album_ref,
-                                          nd_album_id=song["albumId"], target_data={"artist": song.get("artist")}))
-        events = await command(s, user, targets, liked=not body.unstar, operation=body.event_id,
-                               ts=body.ts, client=body.client, context=body.context, nd=nd)
+            targets.append(
+                FavoriteTarget(
+                    target_type="album",
+                    ref=body.catalog_album_ref,
+                    nd_album_id=song["albumId"],
+                    target_data={"artist": song.get("artist")},
+                )
+            )
+        events = await command(
+            s,
+            user,
+            targets,
+            liked=not body.unstar,
+            operation=body.event_id,
+            ts=body.ts,
+            client=body.client,
+            context=body.context,
+            nd=nd,
+        )
         # Telemetry may have stored the same decision before the command. Pending downloads
         # still need cancellation, but an older unlike must not cancel a newer like.
         if body.unstar and body.event_id:
             from app.favorites import clear_pending, snapshot
+
             states = await snapshot(s, user.id)
             for target in targets:
                 if target.target_type != "track" or not target.ref:

@@ -178,8 +178,9 @@ class LLMClient:
         only_rejections = True  # remember a downgrade only when the server rejected the request outright
         for mode in _MODES[start:]:
             try:
-                result, u = await self._call_mode(mode, system, user_content, tool_name, tool_description,
-                                                  parameters, max_tokens)
+                result, u = await self._call_mode(
+                    mode, system, user_content, tool_name, tool_description, parameters, max_tokens
+                )
             except _ModeUnsupported as e:
                 soft_usage = getattr(e, "usage", None)
                 if soft_usage is not None:  # the model answered, just without usable JSON (may be a one-off)
@@ -193,7 +194,12 @@ class LLMClient:
                 _mode_cache[key] = mode
             log.info(
                 "llm %s tool=%s mode=%s tokens_in=%d tokens_out=%d cost=$%.6f",
-                self.model, tool_name, mode, usage.tokens_in, usage.tokens_out, usage.cost_usd,
+                self.model,
+                tool_name,
+                mode,
+                usage.tokens_in,
+                usage.tokens_out,
+                usage.cost_usd,
             )
             return result, usage
         raise LLMError(f"Модель не вернула структурированный ответ: {last_err}")
@@ -238,16 +244,22 @@ class LLMClient:
         messages: list[dict] = [{"role": "system", "content": system}, {"role": "user", "content": user_content}]
         kwargs: dict[str, Any] = {"messages": messages, "max_tokens": max_tokens}
         if mode == "tools":
-            kwargs["tools"] = [{
-                "type": "function",
-                "function": {"name": tool_name, "description": tool_description, "parameters": parameters},
-            }]
+            kwargs["tools"] = [
+                {
+                    "type": "function",
+                    "function": {"name": tool_name, "description": tool_description, "parameters": parameters},
+                }
+            ]
             kwargs["tool_choice"] = {"type": "function", "function": {"name": tool_name}}
         elif mode == "json_schema":
             kwargs["response_format"] = {
                 "type": "json_schema",
-                "json_schema": {"name": tool_name, "description": tool_description, "schema": parameters,
-                                "strict": False},
+                "json_schema": {
+                    "name": tool_name,
+                    "description": tool_description,
+                    "schema": parameters,
+                    "strict": False,
+                },
             }
         else:
             messages[0] = {"role": "system", "content": system + _plain_json_instruction(tool_description, parameters)}

@@ -284,7 +284,9 @@ class DeezerClient:
         )
         return SearchResults(artists=res[0], albums=res[1], tracks=res[2])
 
-    async def search_track_page(self, q: str, offset: int = 0, limit: int = 25) -> tuple[list[CatalogTrack], int | None]:
+    async def search_track_page(
+        self, q: str, offset: int = 0, limit: int = 25
+    ) -> tuple[list[CatalogTrack], int | None]:
         """One page of the plain track search: the tracks from `offset` (Deezer's `index`) and the offset of the
         next page (None at the end of the results)."""
 

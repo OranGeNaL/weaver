@@ -159,9 +159,18 @@ async def tracks_for_intent(intent) -> list[CatalogTrack] | None:
 
 
 def _track_from_candidate(c: Candidate) -> TrackOut:
-    return TrackOut(ref=make_ref("hm" if c.provider == "hitmoz" else c.provider, c.provider_id), source="hm",
-                    id=c.provider_id, title=c.title, artist=c.artist, artists=[c.artist], duration_s=c.duration_s,
-                    explicit=c.explicit, cover_url=c.cover_url, album_title=c.album)
+    return TrackOut(
+        ref=make_ref("hm" if c.provider == "hitmoz" else c.provider, c.provider_id),
+        source="hm",
+        id=c.provider_id,
+        title=c.title,
+        artist=c.artist,
+        artists=[c.artist],
+        duration_s=c.duration_s,
+        explicit=c.explicit,
+        cover_url=c.cover_url,
+        album_title=c.album,
+    )
 
 
 async def _library_hit(s: AsyncSession, artist: str, title: str) -> Track | None:
@@ -170,16 +179,24 @@ async def _library_hit(s: AsyncSession, artist: str, title: str) -> Track | None
     return await find_existing(s, artist=artist, title=title)
 
 
-async def resolve_row(idx: int, item: dict[str, Any], album_tracks: list[CatalogTrack] | None,
-                      sem: asyncio.Semaphore) -> tuple[AssistantRowOut, list[dict]]:
+async def resolve_row(
+    idx: int, item: dict[str, Any], album_tracks: list[CatalogTrack] | None, sem: asyncio.Semaphore
+) -> tuple[AssistantRowOut, list[dict]]:
     """Library → album tracklist (album screenshots) → Deezer → hitmoz (needs confirmation)."""
     cfg = get_settings().cfg.matching
     artist = (item.get("artist_raw") or "").strip()
     title = (item.get("title_raw") or "").strip()
     truncated = bool(item.get("truncated"))
     guess = item.get("guess_full")
-    row = AssistantRowOut(index=idx, artist_raw=artist, title_raw=title, album_raw=item.get("album_raw"),
-                          duration=item.get("duration"), truncated=truncated, status="not_found")
+    row = AssistantRowOut(
+        index=idx,
+        artist_raw=artist,
+        title_raw=title,
+        album_raw=item.get("album_raw"),
+        duration=item.get("duration"),
+        truncated=truncated,
+        status="not_found",
+    )
     duration = _parse_duration(item.get("duration"))
     candidates_json: list[dict] = []
 
@@ -188,10 +205,19 @@ async def resolve_row(idx: int, item: dict[str, Any], album_tracks: list[Catalog
             lib = None if truncated else await _library_hit(s, artist, title)
             if lib is not None:
                 row.status, row.library_track_id, row.score = "owned", lib.id, 1.0
-                row.best = TrackOut(ref=f"lib:{lib.id}", source="dz", id=str(lib.id), title=lib.title,
-                                    artist=lib.artist, album_title=lib.album, duration_s=lib.duration_s,
-                                    explicit=lib.explicit, owned=True, library_track_id=lib.id,
-                                    nd_song_id=lib.nd_song_id)
+                row.best = TrackOut(
+                    ref=f"lib:{lib.id}",
+                    source="dz",
+                    id=str(lib.id),
+                    title=lib.title,
+                    artist=lib.artist,
+                    album_title=lib.album,
+                    duration_s=lib.duration_s,
+                    explicit=lib.explicit,
+                    owned=True,
+                    library_track_id=lib.id,
+                    nd_song_id=lib.nd_song_id,
+                )
                 return row, candidates_json
 
             pool: list[CatalogTrack] = list(album_tracks or [])
@@ -209,9 +235,14 @@ async def resolve_row(idx: int, item: dict[str, Any], album_tracks: list[Catalog
                         found = []
                     if not found:
                         continue
-                    sc = match_catalog(artist, title if not (truncated and guess) else guess, found,
-                                       album=item.get("album_raw"), duration=duration,
-                                       truncated=truncated and not guess)
+                    sc = match_catalog(
+                        artist,
+                        title if not (truncated and guess) else guess,
+                        found,
+                        album=item.get("album_raw"),
+                        duration=duration,
+                        truncated=truncated and not guess,
+                    )
                     if not scored or (sc and sc[0][1].total > scored[0][1].total):
                         scored = sc
                     if scored and scored[0][1].total >= cfg.auto_threshold:
@@ -299,8 +330,14 @@ async def handle_assistant_task(job: Job) -> None:
     if cost or tin or tout:
         async with session_scope() as s:
             s.add(AiUsage(user_id=task.user_id, kind=task.input_kind, tokens_in=tin, tokens_out=tout, cost_usd=cost))
-    await set_task(task_id, status="resolving", extraction_json=extraction, cost_usd=(task.cost_usd or 0) + cost,
-                   tokens_in=(task.tokens_in or 0) + tin, tokens_out=(task.tokens_out or 0) + tout)
+    await set_task(
+        task_id,
+        status="resolving",
+        extraction_json=extraction,
+        cost_usd=(task.cost_usd or 0) + cost,
+        tokens_in=(task.tokens_in or 0) + tin,
+        tokens_out=(task.tokens_out or 0) + tout,
+    )
 
     rows: list[AssistantRowOut] = []
     cands: dict[str, list[dict]] = {}
@@ -308,9 +345,19 @@ async def handle_assistant_task(job: Job) -> None:
         async with session_scope() as s:
             annotated = await annotate_tracks(s, ready[:MAX_ROWS])
         for i, t in enumerate(annotated):
-            rows.append(AssistantRowOut(index=i, artist_raw=t.artist, title_raw=t.title, album_raw=t.album_title,
-                                        status="owned" if t.owned else "auto", best=t, options=[t], score=1.0,
-                                        library_track_id=t.library_track_id))
+            rows.append(
+                AssistantRowOut(
+                    index=i,
+                    artist_raw=t.artist,
+                    title_raw=t.title,
+                    album_raw=t.album_title,
+                    status="owned" if t.owned else "auto",
+                    best=t,
+                    options=[t],
+                    score=1.0,
+                    library_track_id=t.library_track_id,
+                )
+            )
     else:
         items = (extraction.get("items") or [])[:MAX_ROWS]
         album_tracks = await album_context_tracks(extraction)
@@ -329,8 +376,9 @@ async def handle_assistant_task(job: Job) -> None:
         "suggested_playlist_name": suggested_name(extraction),
     }
     log.info("assistant task %s: %s rows, cost $%.5f", task_id, len(rows), cost, extra={"task_id": task_id})
-    await set_task(task_id, status="awaiting_confirmation", resolution_json=resolution,
-                   confirm_token=secrets.token_urlsafe(16))
+    await set_task(
+        task_id, status="awaiting_confirmation", resolution_json=resolution, confirm_token=secrets.token_urlsafe(16)
+    )
 
 
 @on_final_failure("assistant_task")
@@ -367,8 +415,9 @@ async def confirm_task(s: AsyncSession, user: User, task: AssistantTask, body: A
             if row.status == "owned" and row.library_track_id:
                 lib = await s.get(Track, row.library_track_id)
                 if lib:
-                    items.append(DownloadTrackIn(artist=lib.artist, title=lib.title, duration_s=lib.duration_s,
-                                                 isrc=lib.isrc))
+                    items.append(
+                        DownloadTrackIn(artist=lib.artist, title=lib.title, duration_s=lib.duration_s, isrc=lib.isrc)
+                    )
                 continue
             items.append(_item_from_option(pick, cands.get(str(row.index), [])))
         elif ch.kind == "skip":
@@ -376,11 +425,18 @@ async def confirm_task(s: AsyncSession, user: User, task: AssistantTask, body: A
         elif ch.kind == "library" and ch.track_id:
             lib = await s.get(Track, ch.track_id)
             if lib:
-                items.append(DownloadTrackIn(artist=lib.artist, title=lib.title, duration_s=lib.duration_s,
-                                             isrc=lib.isrc))
+                items.append(
+                    DownloadTrackIn(artist=lib.artist, title=lib.title, duration_s=lib.duration_s, isrc=lib.isrc)
+                )
         elif ch.kind == "candidate" and ch.candidate:
-            items.append(DownloadTrackIn(artist=ch.candidate.artist, title=ch.candidate.title,
-                                         duration_s=ch.candidate.duration_s, candidate=ch.candidate))
+            items.append(
+                DownloadTrackIn(
+                    artist=ch.candidate.artist,
+                    title=ch.candidate.title,
+                    duration_s=ch.candidate.duration_s,
+                    candidate=ch.candidate,
+                )
+            )
         elif ch.kind == "catalog" and ch.ref:
             opt = next((o for o in row.options if o.ref == ch.ref), None)
             if opt is not None:
@@ -395,7 +451,8 @@ async def confirm_task(s: AsyncSession, user: User, task: AssistantTask, body: A
         items=items,
         playlist_id=target.playlist_id if target.kind == "existing" else None,
         new_playlist_name=(target.name or res.get("suggested_playlist_name") or "Со скриншота")
-        if target.kind == "new" else None,
+        if target.kind == "new"
+        else None,
     )
     out = await create_batch(s, user, req, origin="assistant", title=req.new_playlist_name)
     task.status = "confirmed"
@@ -408,8 +465,15 @@ async def confirm_task(s: AsyncSession, user: User, task: AssistantTask, body: A
 
 def _item_from_option(opt: TrackOut, cands: list[dict]) -> DownloadTrackIn:
     if opt.source == "dz":
-        return DownloadTrackIn(artist=opt.artist, title=opt.title, album=opt.album_title, duration_s=opt.duration_s,
-                               isrc=opt.isrc, explicit=opt.explicit, catalog_ref=opt.ref)
+        return DownloadTrackIn(
+            artist=opt.artist,
+            title=opt.title,
+            album=opt.album_title,
+            duration_s=opt.duration_s,
+            isrc=opt.isrc,
+            explicit=opt.explicit,
+            catalog_ref=opt.ref,
+        )
     # hitmoz file confirmed by the user
     cand = next((Candidate(**c) for c in cands if c.get("provider_id") == opt.id), None)
     return DownloadTrackIn(artist=opt.artist, title=opt.title, duration_s=opt.duration_s, candidate=cand)

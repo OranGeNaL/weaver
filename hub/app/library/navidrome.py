@@ -32,7 +32,9 @@ class AuthError(SubsonicError):
 
 
 class NavidromeClient:
-    def __init__(self, username: str, password: str, base_url: str | None = None, client: httpx.AsyncClient | None = None):
+    def __init__(
+        self, username: str, password: str, base_url: str | None = None, client: httpx.AsyncClient | None = None
+    ):
         self.username = username
         self._password = password
         self.base_url = (base_url or get_settings().navidrome_url).rstrip("/")
@@ -54,8 +56,9 @@ class NavidromeClient:
         token = hashlib.md5((self._password + salt).encode("utf-8")).hexdigest()
         return {"u": self.username, "t": token, "s": salt, "v": API_VERSION, "c": CLIENT_NAME, "f": "json"}
 
-    async def call(self, endpoint: str, params: dict[str, Any] | list[tuple[str, Any]] | None = None,
-                   *, form: bool = False) -> dict:
+    async def call(
+        self, endpoint: str, params: dict[str, Any] | list[tuple[str, Any]] | None = None, *, form: bool = False
+    ) -> dict:
         """GET (or form POST) /rest/<endpoint>; list params repeat keys (songId=1&songId=2)."""
         items: list[tuple[str, Any]] = list(self._auth_params().items())
         if isinstance(params, dict):
@@ -69,8 +72,11 @@ class NavidromeClient:
         elif params:
             items.extend(params)
         if form:
-            r = await self._client.post(f"{self.base_url}/rest/{endpoint}", content=urlencode(items),
-                                        headers={"Content-Type": "application/x-www-form-urlencoded"})
+            r = await self._client.post(
+                f"{self.base_url}/rest/{endpoint}",
+                content=urlencode(items),
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
         else:
             r = await self._client.get(f"{self.base_url}/rest/{endpoint}", params=items)
         r.raise_for_status()
@@ -192,7 +198,7 @@ class NavidromeClient:
         added in chunks, so a long playlist does not make a too long URL."""
         await self.call("createPlaylist", {"playlistId": playlist_id, "songId": song_ids[:chunk] or None})
         for i in range(chunk, len(song_ids), chunk):
-            await self.update_playlist(playlist_id, add=song_ids[i:i + chunk])
+            await self.update_playlist(playlist_id, add=song_ids[i : i + chunk])
 
     async def delete_playlist(self, playlist_id: str) -> None:
         await self.call("deletePlaylist", {"id": playlist_id})
@@ -203,12 +209,16 @@ class NavidromeClient:
 
     # --- annotations ----------------------------------------------------------------
     async def star(self, *, song_ids: list[str] = (), album_ids: list[str] = (), artist_ids: list[str] = ()) -> None:
-        await self.call("star", {"id": list(song_ids) or None, "albumId": list(album_ids) or None,
-                                 "artistId": list(artist_ids) or None})
+        await self.call(
+            "star",
+            {"id": list(song_ids) or None, "albumId": list(album_ids) or None, "artistId": list(artist_ids) or None},
+        )
 
     async def unstar(self, *, song_ids: list[str] = (), album_ids: list[str] = (), artist_ids: list[str] = ()) -> None:
-        await self.call("unstar", {"id": list(song_ids) or None, "albumId": list(album_ids) or None,
-                                   "artistId": list(artist_ids) or None})
+        await self.call(
+            "unstar",
+            {"id": list(song_ids) or None, "albumId": list(album_ids) or None, "artistId": list(artist_ids) or None},
+        )
 
     # --- media ---------------------------------------------------------------------
     def cover_art_url_params(self, cover_id: str, size: int | None = None) -> tuple[str, list[tuple[str, Any]]]:
@@ -261,8 +271,9 @@ class NavidromeAdmin:
         cls = NavidromeAdmin
         # Navidrome's tokens live 48 h; renew well before, and its login endpoint is rate-limited
         if fresh or cls._token is None or time.monotonic() - cls._token_at > 3600:
-            r = await self._client.post(f"{self.base_url}/auth/login",
-                                        json={"username": self._user, "password": self._password})
+            r = await self._client.post(
+                f"{self.base_url}/auth/login", json={"username": self._user, "password": self._password}
+            )
             if r.status_code == 401:
                 raise AuthError(40, "admin login failed")
             r.raise_for_status()
@@ -284,9 +295,17 @@ class NavidromeAdmin:
 
     async def create_user(self, username: str, password: str, name: str = "") -> str:
         """Creates a regular (non-admin) user; returns its Navidrome id."""
-        r = await self._request("POST", "/api/user", json={
-            "userName": username, "name": name or username, "email": "", "password": password, "isAdmin": False,
-        })
+        r = await self._request(
+            "POST",
+            "/api/user",
+            json={
+                "userName": username,
+                "name": name or username,
+                "email": "",
+                "password": password,
+                "isAdmin": False,
+            },
+        )
         if r.status_code == 400 and "userName" in (r.json().get("errors") or {}):
             raise NavidromeUserExists(username)
         r.raise_for_status()
@@ -321,8 +340,9 @@ class NavidromeHistory:
     async def _login(self, fresh: bool = False) -> tuple[str, str]:
         cached = NavidromeHistory._tokens.get(self.username)
         if fresh or cached is None or time.monotonic() - cached[2] > self.TOKEN_TTL_S:
-            r = await self._client.post(f"{self.base_url}/auth/login",
-                                        json={"username": self.username, "password": self._password})
+            r = await self._client.post(
+                f"{self.base_url}/auth/login", json={"username": self.username, "password": self._password}
+            )
             if r.status_code == 401:
                 raise AuthError(40, "login failed")
             r.raise_for_status()
@@ -340,9 +360,15 @@ class NavidromeHistory:
                 token, nd_user_id = await self._login(fresh)
                 r = await self._client.get(
                     f"{self.base_url}/api/scrobble",
-                    params={"user_id": nd_user_id, "_sort": "id", "_order": "DESC", "_start": start,
-                            "_end": start + page},
-                    headers={"X-ND-Authorization": f"Bearer {token}"})
+                    params={
+                        "user_id": nd_user_id,
+                        "_sort": "id",
+                        "_order": "DESC",
+                        "_start": start,
+                        "_end": start + page,
+                    },
+                    headers={"X-ND-Authorization": f"Bearer {token}"},
+                )
                 if r.status_code != 401:
                     break
             r.raise_for_status()

@@ -25,8 +25,16 @@ from tests.test_mixes import ND, add_event, add_track, user_id
 
 def new(n: int, artist: str | None = None) -> CatalogTrack:
     a = artist or f"Новый {n}"
-    return CatalogTrack(ref=f"dz:{5000 + n}", source="dz", id=str(5000 + n), title=f"Новая {n}", artist=a, artists=[a],
-                        artist_ref=f"dz:a-{a}", duration_s=200)
+    return CatalogTrack(
+        ref=f"dz:{5000 + n}",
+        source="dz",
+        id=str(5000 + n),
+        title=f"Новая {n}",
+        artist=a,
+        artists=[a],
+        artist_ref=f"dz:a-{a}",
+        duration_s=200,
+    )
 
 
 @pytest.fixture
@@ -78,17 +86,28 @@ async def library(n: int, artists: int | None = None) -> list[str]:
     return [f"nd{i}" for i in range(1, n + 1)]
 
 
-def ev(kind: str, ref: str, position: float | None = None, *, context: str | None = None,
-       nd: str | None = None) -> dict[str, Any]:
-    e: dict[str, Any] = {"event_id": uuid.uuid4().hex, "ts": datetime.now(UTC).isoformat(), "kind": kind,
-                         "position_s": position, "duration_s": 200, "client": "pwa"}
-    e.update({"ref": ref} if ref else {}, **({"nd_song_id": nd} if nd else {}), **({"context": context} if context else {}))
+def ev(
+    kind: str, ref: str, position: float | None = None, *, context: str | None = None, nd: str | None = None
+) -> dict[str, Any]:
+    e: dict[str, Any] = {
+        "event_id": uuid.uuid4().hex,
+        "ts": datetime.now(UTC).isoformat(),
+        "kind": kind,
+        "position_s": position,
+        "duration_s": 200,
+        "client": "pwa",
+    }
+    e.update(
+        {"ref": ref} if ref else {}, **({"nd_song_id": nd} if nd else {}), **({"context": context} if context else {})
+    )
     return e
 
 
 async def start(c, songs: list[str], context: str = "playlist:pl1", current: str | None = None) -> dict[str, Any]:
-    r = await c.post("/api/smart-shuffle/start", json={"context": context, "songs": songs, "current": current,
-                                                       "title": "Мой плейлист"})
+    r = await c.post(
+        "/api/smart-shuffle/start",
+        json={"context": context, "songs": songs, "current": current, "title": "Мой плейлист"},
+    )
     assert r.status_code == 200, r.text
     return r.json()
 
@@ -128,8 +147,11 @@ async def test_a_short_playlist_gets_one_after_every_second_and_a_tiny_one_gets_
     one = await start(env["client"], ids[:1])
     two = await start(env["client"], ids[:2])
 
-    assert plan["own_per_rec"] == 2 and [r["after"] for r in plan["recs"]] == [plan["own"][1], plan["own"][3],
-                                                                              plan["own"][5]]
+    assert plan["own_per_rec"] == 2 and [r["after"] for r in plan["recs"]] == [
+        plan["own"][1],
+        plan["own"][3],
+        plan["own"][5],
+    ]
     assert len(one["recs"]) == 1 and one["recs"][0]["after"] == "nd1"  # a single song: followed by a recommendation
     assert len(two["recs"]) == 1 and two["recs"][0]["after"] == two["own"][1]
 
@@ -141,8 +163,10 @@ async def test_the_playlist_songs_and_the_disliked_are_never_recommended(env, mo
     ids = await library(10)
     me = env["admin"]
     pool = [new(i) for i in range(12)]
-    pool += [CatalogTrack(ref="dz:3", source="dz", id="3", title="Песня 3", artist="Свой 3", artists=["Свой 3"]),  # in it
-             CatalogTrack(ref="dz:9999", source="dz", id="9999", title="Песня 4", artist="Свой 4", artists=["Свой 4"])]
+    pool += [
+        CatalogTrack(ref="dz:3", source="dz", id="3", title="Песня 3", artist="Свой 3", artists=["Свой 3"]),  # in it
+        CatalogTrack(ref="dz:9999", source="dz", id="9999", title="Песня 4", artist="Свой 4", artists=["Свой 4"]),
+    ]
     fake_gens(monkeypatch, pool)
     async with session_scope() as s:
         s.add(Dislike(user_id=me, ref="dz:5000", source="app"))
@@ -253,8 +277,10 @@ async def test_events_of_a_recommendation_get_the_smart_context_and_teach_the_se
     stored_first = {**ev("start", second["ref"]), "context": "queue"}
     assert (await c.post("/api/plays/events", json={"events": [stored_first]})).status_code == 200
 
-    r = await c.post(f"/api/smart-shuffle/{sid}/next", json={
-        "played": [own_event, early, ev("skip", first["ref"], 8), stored_first], "at": plan["own"][3]})
+    r = await c.post(
+        f"/api/smart-shuffle/{sid}/next",
+        json={"played": [own_event, early, ev("skip", first["ref"], 8), stored_first], "at": plan["own"][3]},
+    )
 
     assert r.status_code == 200, r.text
     assert r.json()["recorded"]["accepted"] == 3 and r.json()["recorded"]["duplicates"] == 1
@@ -314,8 +340,20 @@ async def test_add_puts_a_library_recommendation_in_the_playlist(env, monkeypatc
     ids = await library(20)
     await add_track(101)  # the library has dz:101 as well
     env["nd"].playlists["pl1"] = {"name": "Мой", "owner": "admin", "songs": list(ids), "comment": ""}
-    fake_gens(monkeypatch, [CatalogTrack(ref="dz:101", source="dz", id="101", title="Песня 101", artist="Свой 101",
-                                        artists=["Свой 101"], duration_s=200)])
+    fake_gens(
+        monkeypatch,
+        [
+            CatalogTrack(
+                ref="dz:101",
+                source="dz",
+                id="101",
+                title="Песня 101",
+                artist="Свой 101",
+                artists=["Свой 101"],
+                duration_s=200,
+            )
+        ],
+    )
     c = env["client"]
     plan = await start(c, ids)
     rec = plan["recs"][0]
@@ -418,7 +456,9 @@ async def test_sessions_idle_for_a_week_lose_their_state_but_keep_their_rows(env
     fake_gens(monkeypatch, [new(i) for i in range(30)])
     plan = await start(env["client"], ids)
     async with session_scope() as s:
-        (await s.get(SmartSession, plan["session_id"])).updated_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=8)
+        (await s.get(SmartSession, plan["session_id"])).updated_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+            days=8
+        )
 
     assert await smart.clear_old() == 1
 
@@ -435,8 +475,6 @@ def test_the_smart_context_is_a_recommended_one_for_the_taste_and_a_source_for_t
     assert recommended("smart:abc") and not recommended("playlist") and launches.source_of("smart:abc") == "smart"
 
 
-
-
 async def test_the_v2_taste_model_learns_from_the_session_and_survives_a_restart(env, monkeypatch) -> None:
     from app.config import get_settings
     from app.db import session_scope
@@ -450,8 +488,10 @@ async def test_the_v2_taste_model_learns_from_the_session_and_survives_a_restart
     sid, first = plan["session_id"], plan["recs"][0]["ref"]
     assert (await c.post(f"/api/smart-shuffle/{sid}/add", json={"ref": plan["recs"][1]["ref"]})).status_code == 200
 
-    r = await c.post(f"/api/smart-shuffle/{sid}/next", json={
-        "played": [ev("start", first), ev("finish", first, 200)], "at": plan["own"][5]})
+    r = await c.post(
+        f"/api/smart-shuffle/{sid}/next",
+        json={"played": [ev("start", first), ev("finish", first, 200)], "at": plan["own"][5]},
+    )
 
     assert r.status_code == 200, r.text
     await smart.settle(sid)

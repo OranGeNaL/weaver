@@ -34,11 +34,46 @@ _CIS_ISRC_COUNTRIES = {"RU", "BY", "UA", "KZ"}
 # Latin -> Cyrillic for search queries only (Yandex search does not understand transliterated titles, but finds
 # "Oxxxymiron Где нас нет"). Longest match first; soft/hard signs can't be restored, the search is fuzzy enough.
 _FROM_LAT = [
-    ("shch", "щ"), ("shh", "щ"), ("sch", "щ"), ("yo", "ё"), ("yu", "ю"), ("ya", "я"), ("ye", "е"), ("zh", "ж"),
-    ("kh", "х"), ("ch", "ч"), ("sh", "ш"), ("ts", "ц"), ("iy", "ий"), ("yy", "ый"), ("x", "кс"), ("j", "й"),
-    ("a", "а"), ("b", "б"), ("v", "в"), ("w", "в"), ("g", "г"), ("d", "д"), ("e", "е"), ("z", "з"), ("i", "и"),
-    ("k", "к"), ("q", "к"), ("l", "л"), ("m", "м"), ("n", "н"), ("o", "о"), ("p", "п"), ("r", "р"), ("s", "с"),
-    ("t", "т"), ("u", "у"), ("f", "ф"), ("h", "х"), ("c", "ц"), ("'", "ь"),
+    ("shch", "щ"),
+    ("shh", "щ"),
+    ("sch", "щ"),
+    ("yo", "ё"),
+    ("yu", "ю"),
+    ("ya", "я"),
+    ("ye", "е"),
+    ("zh", "ж"),
+    ("kh", "х"),
+    ("ch", "ч"),
+    ("sh", "ш"),
+    ("ts", "ц"),
+    ("iy", "ий"),
+    ("yy", "ый"),
+    ("x", "кс"),
+    ("j", "й"),
+    ("a", "а"),
+    ("b", "б"),
+    ("v", "в"),
+    ("w", "в"),
+    ("g", "г"),
+    ("d", "д"),
+    ("e", "е"),
+    ("z", "з"),
+    ("i", "и"),
+    ("k", "к"),
+    ("q", "к"),
+    ("l", "л"),
+    ("m", "м"),
+    ("n", "н"),
+    ("o", "о"),
+    ("p", "п"),
+    ("r", "р"),
+    ("s", "с"),
+    ("t", "т"),
+    ("u", "у"),
+    ("f", "ф"),
+    ("h", "х"),
+    ("c", "ц"),
+    ("'", "ь"),
 ]
 _FROM_LAT_RE = re.compile("|".join(re.escape(a) for a, _ in _FROM_LAT) + "|y")
 _FROM_LAT_MAP = dict(_FROM_LAT)
@@ -95,7 +130,7 @@ _SUFFIX_RE = re.compile(r"^(.*?\S)(\s*[(\[].*|\s+-\s+.*)?$")
 
 
 def split_suffix(title: str) -> tuple[str, str]:
-    """"Bezumie (Remix)" -> ("Bezumie", " (Remix)"); "Chto-to eshhyo" -> ("Chto-to eshhyo", "")."""
+    """ "Bezumie (Remix)" -> ("Bezumie", " (Remix)"); "Chto-to eshhyo" -> ("Chto-to eshhyo", "")."""
     m = _SUFFIX_RE.match(title.strip())
     return (m.group(1), m.group(2) or "") if m else (title, "")
 
@@ -120,8 +155,15 @@ async def original_names(artist: str, title: str, duration_s: int | None) -> dic
             except Exception as e:  # network/API trouble: not cached, the download keeps the catalog names
                 log.warning("yandex search failed for %s: %r", text, e)
                 return None
-            scored = [(score(artist, title, r["artist"], r["title"], query_duration=duration_s,
-                             cand_duration=r["duration_s"]).total, r) for r in rows]
+            scored = [
+                (
+                    score(
+                        artist, title, r["artist"], r["title"], query_duration=duration_s, cand_duration=r["duration_s"]
+                    ).total,
+                    r,
+                )
+                for r in rows
+            ]
             best = max(scored, key=lambda x: x[0], default=(0.0, {}))
             if best[0] >= threshold:
                 return best[1]

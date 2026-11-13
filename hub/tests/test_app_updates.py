@@ -19,7 +19,9 @@ def client(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_historical_manifest_with_bom_and_legacy_download(client, tmp_path):
     (tmp_path / "HomeMusic-1.0.0-2.apk").write_bytes(b"old")
-    (tmp_path / "latest.json").write_text(json.dumps({"file": "HomeMusic-1.0.0-2.apk", "versionCode": 2}), encoding="utf-8-sig")
+    (tmp_path / "latest.json").write_text(
+        json.dumps({"file": "HomeMusic-1.0.0-2.apk", "versionCode": 2}), encoding="utf-8-sig"
+    )
     async with client:
         response = await client.get("/app/latest.json")
         assert response.json() == {"url": "/app/latest.apk", "versionCode": 2}
@@ -39,10 +41,26 @@ async def test_immutable_artifacts_and_invalid_patch_are_filtered(client, tmp_pa
     patch_hash = hashlib.sha256(patch_bytes).hexdigest()
     patch_name = f"patch-{patch_hash}.bsdiff"
     (directory / patch_name).write_bytes(patch_bytes)
-    patch = {"url": f"/app/artifacts/{patch_name}", "size": len(patch_bytes), "sha256": patch_hash,
-             "baseVersionCode": 2, "baseSha256": "a" * 64, "format": "bsdiff40-v1"}
-    (tmp_path / "latest.json").write_text(json.dumps({"file": "HomeMusic-1.0.1-3.apk", "versionCode": 3, "size": len(apk), "sha256": digest, "full": full,
-                                                      "patches": [patch, {"url": "/app/artifacts/../../secret"}]}))
+    patch = {
+        "url": f"/app/artifacts/{patch_name}",
+        "size": len(patch_bytes),
+        "sha256": patch_hash,
+        "baseVersionCode": 2,
+        "baseSha256": "a" * 64,
+        "format": "bsdiff40-v1",
+    }
+    (tmp_path / "latest.json").write_text(
+        json.dumps(
+            {
+                "file": "HomeMusic-1.0.1-3.apk",
+                "versionCode": 3,
+                "size": len(apk),
+                "sha256": digest,
+                "full": full,
+                "patches": [patch, {"url": "/app/artifacts/../../secret"}],
+            }
+        )
+    )
     async with client:
         data = (await client.get("/app/latest.json")).json()
         assert data["full"] == full
@@ -65,30 +83,49 @@ def _publish(tmp_path, *, patch_overrides=None, manifest_overrides=None, apk=b"n
     full = {"url": f"/app/artifacts/apk-{digest}.apk", "size": len(apk), "sha256": digest}
     patch_hash = hashlib.sha256(patch_bytes).hexdigest()
     (directory / f"patch-{patch_hash}.bsdiff").write_bytes(patch_bytes)
-    patch = {"url": f"/app/artifacts/patch-{patch_hash}.bsdiff", "size": len(patch_bytes), "sha256": patch_hash,
-             "baseVersionCode": 2, "baseSha256": "a" * 64, "format": "bsdiff40-v1", **(patch_overrides or {})}
+    patch = {
+        "url": f"/app/artifacts/patch-{patch_hash}.bsdiff",
+        "size": len(patch_bytes),
+        "sha256": patch_hash,
+        "baseVersionCode": 2,
+        "baseSha256": "a" * 64,
+        "format": "bsdiff40-v1",
+        **(patch_overrides or {}),
+    }
     (tmp_path / "HomeMusic-1.0.1-3.apk").write_bytes(apk)
-    manifest = {"file": "HomeMusic-1.0.1-3.apk", "versionCode": 3, "versionName": "1.0.1", "size": len(apk), "sha256": digest,
-                "full": full, "patches": [patch], **(manifest_overrides or {})}
+    manifest = {
+        "file": "HomeMusic-1.0.1-3.apk",
+        "versionCode": 3,
+        "versionName": "1.0.1",
+        "size": len(apk),
+        "sha256": digest,
+        "full": full,
+        "patches": [patch],
+        **(manifest_overrides or {}),
+    }
     (tmp_path / "latest.json").write_text(json.dumps(manifest), encoding="utf-8")
     return manifest, full, patch
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("override", [
-    {"baseVersionCode": 3},                 # not older than the release
-    {"baseVersionCode": 0},
-    {"baseSha256": "A" * 64},               # not lowercase hex
-    {"baseSha256": "abc"},
-    {"format": "bsdiff40-v2"},              # a format no client knows
-    {"size": 4},                            # size differs from the file on disk
-], ids=["base-equals-release", "base-zero", "base-uppercase", "base-short", "unknown-format", "size-mismatch"])
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"baseVersionCode": 3},  # not older than the release
+        {"baseVersionCode": 0},
+        {"baseSha256": "A" * 64},  # not lowercase hex
+        {"baseSha256": "abc"},
+        {"format": "bsdiff40-v2"},  # a format no client knows
+        {"size": 4},  # size differs from the file on disk
+    ],
+    ids=["base-equals-release", "base-zero", "base-uppercase", "base-short", "unknown-format", "size-mismatch"],
+)
 async def test_patch_that_clients_must_not_see_is_dropped(client, tmp_path, override):
     _publish(tmp_path, patch_overrides=override)
     async with client:
         data = (await client.get("/app/latest.json")).json()
     assert data["patches"] == []
-    assert "full" in data    # the full APK stays offered
+    assert "full" in data  # the full APK stays offered
 
 
 @pytest.mark.asyncio
@@ -105,7 +142,7 @@ async def test_full_that_disagrees_with_the_legacy_fields_hides_all_new_metadata
         data = (await client.get("/app/latest.json")).json()
         legacy = await client.get("/app/latest.apk")
     assert "full" not in data and "patches" not in data
-    assert data["url"] == "/app/latest.apk" and data["versionCode"] == 3   # old clients still get a complete answer
+    assert data["url"] == "/app/latest.apk" and data["versionCode"] == 3  # old clients still get a complete answer
     assert legacy.status_code == 200
 
 
@@ -121,14 +158,18 @@ async def test_old_client_fields_are_unchanged_by_new_metadata(client, tmp_path)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("name", [
-    "apk-" + "a" * 64 + ".bsdiff",          # kind and extension must agree
-    "patch-" + "a" * 64 + ".apk",
-    "apk-" + "A" * 64 + ".apk",
-    "apk-" + "a" * 63 + ".apk",
-    "..%2Flatest.json",
-    "latest.json",
-], ids=["kind-ext", "kind-ext-2", "uppercase", "short", "traversal", "plain-file"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "apk-" + "a" * 64 + ".bsdiff",  # kind and extension must agree
+        "patch-" + "a" * 64 + ".apk",
+        "apk-" + "A" * 64 + ".apk",
+        "apk-" + "a" * 63 + ".apk",
+        "..%2Flatest.json",
+        "latest.json",
+    ],
+    ids=["kind-ext", "kind-ext-2", "uppercase", "short", "traversal", "plain-file"],
+)
 async def test_artifact_route_serves_only_content_addressed_names(client, tmp_path, name):
     (tmp_path / "latest.json").write_text("{}")
     async with client:

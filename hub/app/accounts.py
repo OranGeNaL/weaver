@@ -94,8 +94,9 @@ def check_new_account(username: str, password: str) -> None:
         raise HTTPException(400, f"Пароль — не короче {MIN_PASSWORD} символов")
 
 
-async def register(s: AsyncSession, code: str, username: str, password: str,
-                   google: dict[str, Any] | None = None) -> tuple[User, str]:
+async def register(
+    s: AsyncSession, code: str, username: str, password: str, google: dict[str, Any] | None = None
+) -> tuple[User, str]:
     """Creates the Navidrome user for an unused invite and signs in. Returns (user, session token)."""
     _check_rate()
     username = username.strip()
@@ -172,28 +173,42 @@ async def send_email_code(email: str) -> int:
     now = utcnow()
     async with session_scope() as s:
         await _check_email_free(s, email)
-        recent = list((await s.execute(select(EmailCode.created_at).where(
-            EmailCode.email == email, EmailCode.created_at >= now - timedelta(hours=1)))).scalars())
+        recent = list(
+            (
+                await s.execute(
+                    select(EmailCode.created_at).where(
+                        EmailCode.email == email, EmailCode.created_at >= now - timedelta(hours=1)
+                    )
+                )
+            ).scalars()
+        )
         if recent and (wait := EMAIL_RESEND_S - int((now - max(recent)).total_seconds())) > 0:
             raise HTTPException(429, f"Письмо уже отправлено. Новое можно запросить через {wait} с")
         if len(recent) >= EMAIL_HOURLY:
             raise HTTPException(429, "Слишком много писем на этот адрес. Попробуйте через час")
-        today = (await s.execute(select(func.count(EmailCode.id))
-                                 .where(EmailCode.created_at >= now - timedelta(days=1)))).scalar_one()
+        today = (
+            await s.execute(select(func.count(EmailCode.id)).where(EmailCode.created_at >= now - timedelta(days=1)))
+        ).scalar_one()
         if today >= settings.email_daily_limit:
             log.warning("email daily limit %s reached", settings.email_daily_limit)
             raise HTTPException(503, "Сегодня сервер уже отправил все письма. Попробуйте завтра")
         # only the latest letter counts
-        await s.execute(update(EmailCode).where(EmailCode.email == email, EmailCode.used_at.is_(None))
-                        .values(used_at=now))
-        row = EmailCode(email=email, code_hash=_code_hash(email, code),
-                        expires_at=now + timedelta(minutes=settings.email_code_minutes))
+        await s.execute(
+            update(EmailCode).where(EmailCode.email == email, EmailCode.used_at.is_(None)).values(used_at=now)
+        )
+        row = EmailCode(
+            email=email,
+            code_hash=_code_hash(email, code),
+            expires_at=now + timedelta(minutes=settings.email_code_minutes),
+        )
         s.add(row)
         await s.flush()
         row_id = row.id
-    text = (f"Ваш код для регистрации в HomeMusic: {code}\n\n"
-            f"Введите его на экране регистрации. Код действует {settings.email_code_minutes} минут.\n"
-            "Если вы не регистрировались в HomeMusic, просто не обращайте внимания на это письмо.\n")
+    text = (
+        f"Ваш код для регистрации в HomeMusic: {code}\n\n"
+        f"Введите его на экране регистрации. Код действует {settings.email_code_minutes} минут.\n"
+        "Если вы не регистрировались в HomeMusic, просто не обращайте внимания на это письмо.\n"
+    )
     try:
         await mailer.send(email, f"Код HomeMusic: {code}", text)
     except mailer.MailError as e:
@@ -204,29 +219,39 @@ async def send_email_code(email: str) -> int:
     return EMAIL_RESEND_S
 
 
-async def register_by_email(s: AsyncSession, email: str, code: str, username: str, password: str
-                            ) -> tuple[User, str]:
+async def register_by_email(s: AsyncSession, email: str, code: str, username: str, password: str) -> tuple[User, str]:
     """Creates the Navidrome user for an address confirmed by the code from its letter and signs in."""
     _check_email_signup()
     _check_rate()
     email, username = normalize_email(email), username.strip()
     check_new_account(username, password)
-    row = (await s.execute(select(EmailCode).where(EmailCode.email == email, EmailCode.used_at.is_(None))
-                           .order_by(EmailCode.id.desc()).limit(1))).scalar_one_or_none()
+    row = (
+        await s.execute(
+            select(EmailCode)
+            .where(EmailCode.email == email, EmailCode.used_at.is_(None))
+            .order_by(EmailCode.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
     if row is None or row.expires_at < utcnow():
         raise _fail(400, "Код устарел или уже использован: запросите новое письмо")
     if not hmac.compare_digest(row.code_hash, _code_hash(email, re.sub(r"\D", "", code))):
         left = EMAIL_ATTEMPTS - row.attempts - 1
         async with session_scope() as w:  # counted although this request's own transaction rolls back
-            await w.execute(update(EmailCode).where(EmailCode.id == row.id).values(
-                attempts=EmailCode.attempts + 1, used_at=utcnow() if left <= 0 else None))
-        raise _fail(400, f"Неверный код: осталось попыток — {left}" if left > 0
-                    else "Неверный код. Запросите новое письмо")
+            await w.execute(
+                update(EmailCode)
+                .where(EmailCode.id == row.id)
+                .values(attempts=EmailCode.attempts + 1, used_at=utcnow() if left <= 0 else None)
+            )
+        raise _fail(
+            400, f"Неверный код: осталось попыток — {left}" if left > 0 else "Неверный код. Запросите новое письмо"
+        )
     await _check_email_free(s, email)
     await _check_name_free(s, username)
     # Taken first, as an invite is: a second registration with the same letter finds it used.
-    res = await s.execute(update(EmailCode).where(EmailCode.id == row.id, EmailCode.used_at.is_(None))
-                          .values(used_at=utcnow()))
+    res = await s.execute(
+        update(EmailCode).where(EmailCode.id == row.id, EmailCode.used_at.is_(None)).values(used_at=utcnow())
+    )
     if res.rowcount != 1:
         raise _fail(400, "Код уже использован: запросите новое письмо")
     user, token = await _create_account(s, username, password, username)
@@ -274,8 +299,7 @@ def username_from_email(email: str | None) -> str:
     return name if len(name) >= 2 else f"user{secrets.randbelow(10000):04d}"
 
 
-async def google_login(s: AsyncSession, id_token: str, code: str | None, username: str | None
-                       ) -> tuple[User, str, str]:
+async def google_login(s: AsyncSession, id_token: str, code: str | None, username: str | None) -> tuple[User, str, str]:
     """Sign-in with Google: the linked user, or a new one with an invite code. Returns (user, token, password)."""
     claims = await _google_claims(id_token)
     user = (await s.execute(select(User).where(User.google_sub == str(claims["sub"])))).scalar_one_or_none()
@@ -286,14 +310,20 @@ async def google_login(s: AsyncSession, id_token: str, code: str | None, usernam
         except HTTPException as e:
             if e.status_code != 401:
                 raise
-            raise HTTPException(401, "Пароль аккаунта сменили в Navidrome: войдите паролем и привяжите Google снова") from e
+            raise HTTPException(
+                401, "Пароль аккаунта сменили в Navidrome: войдите паролем и привяжите Google снова"
+            ) from e
         return user, token, password
     if not code:
-        raise HTTPException(409, "Этот Google-аккаунт ещё не привязан. Введите код приглашения, "
-                                 "а если аккаунт уже есть — войдите паролем и привяжите Google в настройках")
+        raise HTTPException(
+            409,
+            "Этот Google-аккаунт ещё не привязан. Введите код приглашения, "
+            "а если аккаунт уже есть — войдите паролем и привяжите Google в настройках",
+        )
     password = secrets.token_urlsafe(12)
-    user, token = await register(s, code, (username or "").strip() or username_from_email(claims.get("email")),
-                                 password, google=claims)
+    user, token = await register(
+        s, code, (username or "").strip() or username_from_email(claims.get("email")), password, google=claims
+    )
     return user, token, password
 
 

@@ -87,6 +87,7 @@ class GoogleLinkIn(BaseModel):
 
 # --- admin -------------------------------------------------------------------------------
 
+
 class InviteIn(BaseModel):
     note: str = Field("", max_length=128)
     days: int | None = Field(None, ge=1, le=90)  # default INVITE_DAYS
@@ -190,6 +191,7 @@ class LibTrackOut(BaseModel):
 
 class TrackSourceOut(BaseModel):
     """Where a library file came from: `source` is the provider (hitmoz/hitmos_fm/ytdlp) or upload/manual."""
+
     source: str | None
     source_url: str | None
     acquired_at: datetime
@@ -259,7 +261,9 @@ class FavoriteTarget(BaseModel):
 
         ids = {"track": self.nd_song_id, "album": self.nd_album_id, "artist": self.nd_artist_id}
         if not (self.ref or ids[self.target_type]) or any(v for k, v in ids.items() if k != self.target_type):
-            raise ValueError("ref or matching nd_song_id/nd_album_id/nd_artist_id is required; identifiers must name exactly one target type")
+            raise ValueError(
+                "ref or matching nd_song_id/nd_album_id/nd_artist_id is required; identifiers must name exactly one target type"
+            )
         if self.target_data is not None and len(json.dumps(self.target_data, ensure_ascii=False)) > 8192:
             raise ValueError("target_data exceeds 8192 characters")
         return self
@@ -374,8 +378,9 @@ class DownloadIn(BaseModel):
 
     @model_validator(mode="after")
     def _favorite_command(self):
-        if self.favorite_event_id and (not self.star or len(self.track_refs) != 1 or self.items or
-                                       self.album_ref or self.artist_ref or self.force):
+        if self.favorite_event_id and (
+            not self.star or len(self.track_refs) != 1 or self.items or self.album_ref or self.artist_ref or self.force
+        ):
             raise ValueError("favorite_event_id requires one track ref and star=true")
         return self
 
@@ -752,13 +757,22 @@ class HealthOut(BaseModel):
     today: date | None = None
     # id of the PWA build the Hub serves (index.html <meta name="hm-build">); pages compare it with their own
     web_build: str | None = None
-    capabilities: list[str] = ["typed_favorites_v1", "favorite_compensation_chains_v1", "catalog_favorite_download_v1",
-                               "listening_checkpoints_v1", "launch_events_v1", "wave_origin_v1", "smart_shuffle_v1"]
+    capabilities: list[str] = [
+        "typed_favorites_v1",
+        "favorite_compensation_chains_v1",
+        "catalog_favorite_download_v1",
+        "listening_checkpoints_v1",
+        "launch_events_v1",
+        "wave_origin_v1",
+        "smart_shuffle_v1",
+    ]
 
 
 # --- listening data (MIXES.md 3.2) -------------------------------------------------------------------------------
 
-PlayKind = Literal["start", "progress", "interrupted", "error", "skip", "finish", "like", "unlike", "dislike", "undislike"]
+PlayKind = Literal[
+    "start", "progress", "interrupted", "error", "skip", "finish", "like", "unlike", "dislike", "undislike"
+]
 # where in the interface a wave or a list was launched (INSIGHTS.md 6.3, 6.5): a code, unknown ones are kept as sent
 ORIGIN_PATTERN = r"^[a-z][a-z0-9_]*$"
 
@@ -879,6 +893,7 @@ MixMode = Literal["normal", "favorites", "discover"]
 
 class SoulseekStatusOut(BaseModel):
     """GET /api/system/soulseek (admin): `disabled` — no Soulseek account in .env, the source is off."""
+
     state: Literal["disabled", "unreachable", "auth_error", "connecting", "disconnected", "ready"]
     search_matches: int | None = None  # files a test search found (search=true)
     search_error: bool = False

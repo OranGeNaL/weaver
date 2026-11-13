@@ -13,12 +13,15 @@ from app.providers.reuploads import SoundcloudProvider, YtReuploadProvider
 from app.providers.ytdlp import YTM_API_URL, YoutubeAccess, YtdlpProvider, _YdlLogger
 
 
-@pytest.mark.parametrize("refusal", [
-    "Sign in to confirm you're not a bot",
-    "HTTP Error 429: Too Many Requests",
-    "This content isn't available, try again later",
-    "The provided YouTube account cookies are no longer valid. They have likely been rotated",
-])
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        "Sign in to confirm you're not a bot",
+        "HTTP Error 429: Too Many Requests",
+        "This content isn't available, try again later",
+        "The provided YouTube account cookies are no longer valid. They have likely been rotated",
+    ],
+)
 async def test_refusal_stops_both_youtube_providers_until_cooldown_expires(refusal):
     now = [100.0]
     cfg = YtdlpCfg(refusal_cooldown_s=900)
@@ -177,9 +180,18 @@ async def test_metadata_cache_keeps_stream_shortcut_for_both_youtube_providers(m
 
     def extract(url, **opts):
         calls.append(url)
-        return {"id": "test", "title": "Song", "formats": [{
-            "url": "https://audio.test/full", "ext": "m4a", "acodec": "aac", "vcodec": "none",
-        }]}
+        return {
+            "id": "test",
+            "title": "Song",
+            "formats": [
+                {
+                    "url": "https://audio.test/full",
+                    "ext": "m4a",
+                    "acodec": "aac",
+                    "vcodec": "none",
+                }
+            ],
+        }
 
     monkeypatch.setattr(first, "_extract", extract)
     monkeypatch.setattr(other, "_extract", extract)

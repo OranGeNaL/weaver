@@ -43,8 +43,12 @@ class RemoteFile:
 
     @classmethod
     def parse(cls, peer: object, filename: object, size: object, cfg: SoulseekCfg) -> RemoteFile | None:
-        if (not isinstance(peer, str) or not 0 < len(peer) <= 500 or peer in (".", "..")
-                or any(ch in peer for ch in "/\\\x00")):
+        if (
+            not isinstance(peer, str)
+            or not 0 < len(peer) <= 500
+            or peer in (".", "..")
+            or any(ch in peer for ch in "/\\\x00")
+        ):
             return None
         if not isinstance(filename, str) or not 0 < len(filename) <= 4096 or "\x00" in filename:
             return None
@@ -87,8 +91,15 @@ class SoulseekProvider:
     name = "soulseek"
     streams = False
 
-    def __init__(self, url: str, api_key: str, root: Path, cfg: SoulseekCfg, matching: MatchingCfg,
-                 client: httpx.AsyncClient | None = None):
+    def __init__(
+        self,
+        url: str,
+        api_key: str,
+        root: Path,
+        cfg: SoulseekCfg,
+        matching: MatchingCfg,
+        client: httpx.AsyncClient | None = None,
+    ):
         self.cfg = cfg
         self.matching = matching
         self.root = root
@@ -104,17 +115,19 @@ class SoulseekProvider:
         self.health_lock = asyncio.Lock()
         self.health_cache: tuple[float, str] | None = None
 
-    async def _api(self, method: str, path: str, *, allow_missing: bool = False,
-                   request_timeout: float = 8, **kwargs):
+    async def _api(self, method: str, path: str, *, allow_missing: bool = False, request_timeout: float = 8, **kwargs):
         try:
-            r = await self.client.request(method, self.api + path, headers=self.headers,
-                                          timeout=request_timeout, **kwargs)
+            r = await self.client.request(
+                method, self.api + path, headers=self.headers, timeout=request_timeout, **kwargs
+            )
         except httpx.RequestError as exc:
             raise ProviderUnavailable("slskd недоступен") from exc
         if allow_missing and r.status_code == 404:
             return None
         if not r.is_success:
-            error = ProviderUnavailable if r.status_code in (401, 403, 409, 429) or r.status_code >= 500 else ProviderError
+            error = (
+                ProviderUnavailable if r.status_code in (401, 403, 409, 429) or r.status_code >= 500 else ProviderError
+            )
             raise error(f"slskd: HTTP {r.status_code}")
         if not r.content:
             return None
@@ -159,11 +172,17 @@ class SoulseekProvider:
         route = f"/searches/{uuid4()}"
         try:
             async with self.search_start:
-                await self._api("POST", "/searches", json={
-                    "id": route.rsplit("/", 1)[-1], "searchText": term,
-                    "searchTimeout": round(window_s * 1000),
-                    "fileLimit": 500, "responseLimit": 60,
-                })
+                await self._api(
+                    "POST",
+                    "/searches",
+                    json={
+                        "id": route.rsplit("/", 1)[-1],
+                        "searchText": term,
+                        "searchTimeout": round(window_s * 1000),
+                        "fileLimit": 500,
+                        "responseLimit": 60,
+                    },
+                )
             deadline = asyncio.get_running_loop().time() + window_s + 0.5
             while asyncio.get_running_loop().time() < deadline:
                 state = await self._api("GET", route)
@@ -182,8 +201,10 @@ class SoulseekProvider:
     def _accept_quality(self, remote: RemoteFile, file: dict) -> bool:
         if remote.format == "mp3":
             return _positive(file.get("bitRate")) >= self.cfg.min_mp3_bitrate_kbps
-        return (_positive(file.get("bitDepth")) >= self.cfg.min_flac_bit_depth
-                and _positive(file.get("sampleRate")) >= self.cfg.min_flac_sample_rate_hz)
+        return (
+            _positive(file.get("bitDepth")) >= self.cfg.min_flac_bit_depth
+            and _positive(file.get("sampleRate")) >= self.cfg.min_flac_sample_rate_hz
+        )
 
     def _candidates(self, query: TrackQuery, responses: list[dict]) -> list[Candidate]:
         found: dict[str, tuple[tuple, Candidate]] = {}
@@ -197,7 +218,11 @@ class SoulseekProvider:
                 if remote is None or remote.id in found or not self._accept_quality(remote, file):
                     continue
                 duration = _positive(file.get("length")) or None
-                if query.duration_s and duration and abs(query.duration_s - duration) > self.matching.duration_tolerance_s:
+                if (
+                    query.duration_s
+                    and duration
+                    and abs(query.duration_s - duration) > self.matching.duration_tolerance_s
+                ):
                     continue
                 identity = identify(remote.filename, query, artist_min=self.matching.artist_min_ratio)
                 if identity is None:
@@ -205,17 +230,35 @@ class SoulseekProvider:
                 bit_rate = _positive(file.get("bitRate")) or None
                 free_slot = response.get("hasFreeUploadSlot") is True
                 queue = response.get("queueLength")
-                order = (-identity.confidence, not free_slot, queue if type(queue) is int and queue >= 0 else 10**6,
-                         -_positive(response.get("uploadSpeed")))
-                found[remote.id] = (order, Candidate(
-                    provider=self.name, provider_id=remote.id, artist=identity.artist, title=identity.title,
-                    duration_s=duration, bitrate_kbps=bit_rate, explicit=identity.explicit, enriched=True,
-                    page_url=f"soulseek://file/{remote.id}",
-                    extra={"peer": remote.peer, "filename": remote.filename, "size": remote.size,
-                           "format": remote.format, "bit_depth": _positive(file.get("bitDepth")) or None,
-                           "sample_rate_hz": _positive(file.get("sampleRate")) or None,
-                           "uncensored": uncensored_marker(remote_parts(remote.filename)[-1])},
-                ))
+                order = (
+                    -identity.confidence,
+                    not free_slot,
+                    queue if type(queue) is int and queue >= 0 else 10**6,
+                    -_positive(response.get("uploadSpeed")),
+                )
+                found[remote.id] = (
+                    order,
+                    Candidate(
+                        provider=self.name,
+                        provider_id=remote.id,
+                        artist=identity.artist,
+                        title=identity.title,
+                        duration_s=duration,
+                        bitrate_kbps=bit_rate,
+                        explicit=identity.explicit,
+                        enriched=True,
+                        page_url=f"soulseek://file/{remote.id}",
+                        extra={
+                            "peer": remote.peer,
+                            "filename": remote.filename,
+                            "size": remote.size,
+                            "format": remote.format,
+                            "bit_depth": _positive(file.get("bitDepth")) or None,
+                            "sample_rate_hz": _positive(file.get("sampleRate")) or None,
+                            "uncensored": uncensored_marker(remote_parts(remote.filename)[-1]),
+                        },
+                    ),
+                )
         return [candidate for _, candidate in sorted(found.values(), key=lambda pair: pair[0])]
 
     async def search(self, q: TrackQuery, limit: int = 10) -> list[Candidate]:
@@ -238,8 +281,14 @@ class SoulseekProvider:
         if not directory.is_dir() or directory.resolve() != directory:
             return None
         # slskd sanitizes the basename and may rename it. Each batch contains exactly one requested file.
-        files = [p for p in directory.iterdir() if not p.is_symlink() and p.is_file()
-                 and p.suffix.lower() == f".{remote.format}" and p.stat().st_size == remote.size]
+        files = [
+            p
+            for p in directory.iterdir()
+            if not p.is_symlink()
+            and p.is_file()
+            and p.suffix.lower() == f".{remote.format}"
+            and p.stat().st_size == remote.size
+        ]
         return files[0] if len(files) == 1 else None
 
     async def _previous(self, remote: RemoteFile) -> tuple[str, str | Path] | None:
@@ -269,11 +318,16 @@ class SoulseekProvider:
         batch = str(uuid4())
         async with self.transfer_start:
             try:
-                response = await self._api("POST", _BATCHES, json={
-                    "id": batch, "username": remote.peer,
-                    "files": [{"filename": remote.filename, "size": remote.size}],
-                    "options": {"destination": f"homemusic/{batch}"},
-                })
+                response = await self._api(
+                    "POST",
+                    _BATCHES,
+                    json={
+                        "id": batch,
+                        "username": remote.peer,
+                        "files": [{"filename": remote.filename, "size": remote.size}],
+                        "options": {"destination": f"homemusic/{batch}"},
+                    },
+                )
             except ProviderUnavailable:
                 # A lost POST response can still have created the batch. Recover by the supplied ID.
                 response = {"batch": await self._api("GET", f"{_BATCHES}/{batch}", allow_missing=True)}
@@ -284,8 +338,9 @@ class SoulseekProvider:
                 return batch, transfer_id
         raise ProviderError("slskd не поставил файл в очередь")
 
-    async def _wait(self, remote: RemoteFile, batch: str, transfer_id: str,
-                    on_progress: Callable[[float], None] | None) -> Path:
+    async def _wait(
+        self, remote: RemoteFile, batch: str, transfer_id: str, on_progress: Callable[[float], None] | None
+    ) -> Path:
         route = f"{remote.route}/{transfer_id}"
         try:
             async with asyncio.timeout(self.cfg.transfer_timeout_s):
@@ -313,8 +368,10 @@ class SoulseekProvider:
                 ok = round(MP3(source).info.bitrate / 1000) >= self.cfg.min_mp3_bitrate_kbps
             else:
                 info = FLAC(source).info
-                ok = (info.bits_per_sample >= self.cfg.min_flac_bit_depth
-                      and info.sample_rate >= self.cfg.min_flac_sample_rate_hz)
+                ok = (
+                    info.bits_per_sample >= self.cfg.min_flac_bit_depth
+                    and info.sample_rate >= self.cfg.min_flac_sample_rate_hz
+                )
         except MutagenError as exc:
             raise ProviderError("Файл Soulseek не соответствует формату") from exc
         if not ok:

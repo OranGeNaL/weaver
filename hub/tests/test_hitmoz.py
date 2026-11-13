@@ -216,10 +216,10 @@ async def test_search_uses_new_default_mirror_after_timeout():
     mirror = "https://ru.hitmox.net"
     cfg = HitmozCfg(rate_per_sec=0)
     old = respx.get(f"{BASE}/").mock(side_effect=httpx.ConnectTimeout("TLS timeout"))
-    respx.get(f"{mirror}/").mock(return_value=httpx.Response(
-        200, text=f'<link rel="canonical" href="{BASE}/"/>'))
+    respx.get(f"{mirror}/").mock(return_value=httpx.Response(200, text=f'<link rel="canonical" href="{BASE}/"/>'))
     search = respx.get(f"{mirror}/search", params={"q": "Кино Группа крови"}).mock(
-        return_value=httpx.Response(200, text=fx("search_kino.html")))
+        return_value=httpx.Response(200, text=fx("search_kino.html"))
+    )
     p = HitmozProvider(cfg)
     try:
         results = await p.search(TrackQuery(artist="Кино", title="Группа крови"), limit=1)

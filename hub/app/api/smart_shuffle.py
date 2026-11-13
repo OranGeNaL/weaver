@@ -26,31 +26,47 @@ router = APIRouter(prefix="/api/smart-shuffle", tags=["smart-shuffle"])
 
 async def plan_out(s: AsyncSession, plan: smart.Plan, user_id: int) -> SmartOut:
     tracks = await track_outs(s, [c for _, _, c in plan.recs], user_id)
-    recs = [SmartRecOut(**t.model_dump(), after=after, slot=slot)
-            for t, (slot, after, _) in zip(tracks, plan.recs, strict=True)]
+    recs = [
+        SmartRecOut(**t.model_dump(), after=after, slot=slot)
+        for t, (slot, after, _) in zip(tracks, plan.recs, strict=True)
+    ]
     recorded = None
     if plan.recorded is not None:
         r = plan.recorded
         recorded = PlayEventsOut(accepted=r.accepted, duplicates=r.duplicates, rejected=r.rejected)
-    return SmartOut(session_id=plan.session_id, context=plan.context, title=plan.title, own=plan.own, recs=recs,
-                    pending=plan.pending, own_per_rec=plan.per_rec, recorded=recorded)
+    return SmartOut(
+        session_id=plan.session_id,
+        context=plan.context,
+        title=plan.title,
+        own=plan.own,
+        recs=recs,
+        pending=plan.pending,
+        own_per_rec=plan.per_rec,
+        recorded=recorded,
+    )
 
 
 @router.post("/start", response_model=SmartOut)
-async def start(body: SmartStartIn, user: User = Depends(current_user),
-                s: AsyncSession = Depends(get_session, scope="function")):
+async def start(
+    body: SmartStartIn, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
     """A new run: the order of the context's own songs and the first recommendations between them."""
     try:
-        plan = await smart.start(user, body.context, body.songs, body.current, title=body.title, origin=body.origin,
-                                 client=body.client)
+        plan = await smart.start(
+            user, body.context, body.songs, body.current, title=body.title, origin=body.origin, client=body.client
+        )
     except smart.SmartError as e:
         raise HTTPException(e.status, str(e)) from e
     return await plan_out(s, plan, user.id)
 
 
 @router.post("/{session_id}/next", response_model=SmartOut)
-async def next_(session_id: str, body: SmartNextIn, user: User = Depends(current_user),
-                s: AsyncSession = Depends(get_session, scope="function")):
+async def next_(
+    session_id: str,
+    body: SmartNextIn,
+    user: User = Depends(current_user),
+    s: AsyncSession = Depends(get_session, scope="function"),
+):
     """The events since the last call and where the player is; the recommendations for the places ahead that are
     not filled yet (`recs`, each with the own song it goes after)."""
     try:
@@ -71,8 +87,12 @@ async def hide(session_id: str, body: SmartTrackIn, user: User = Depends(current
 
 
 @router.post("/{session_id}/add", response_model=SmartAddOut)
-async def add(session_id: str, body: SmartTrackIn, user: User = Depends(current_user),
-              s: AsyncSession = Depends(get_session, scope="function")):
+async def add(
+    session_id: str,
+    body: SmartTrackIn,
+    user: User = Depends(current_user),
+    s: AsyncSession = Depends(get_session, scope="function"),
+):
     """«+»: put the recommendation in the playlist (not in the library yet: download it, then put it in). In
     «Понравившиеся» the client likes the track itself (its own ♥ path); the Hub only notes it."""
     from app.api.downloads import create_batch

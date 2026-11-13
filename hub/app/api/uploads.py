@@ -33,8 +33,15 @@ CHUNK = 1024 * 1024
 
 
 def upload_out(u: Upload) -> UploadOut:
-    return UploadOut(id=u.id, orig_name=u.orig_name, size=u.size, status=u.status, tags=u.probed_tags_json or {},
-                     error=u.error, created_at=u.created_at)
+    return UploadOut(
+        id=u.id,
+        orig_name=u.orig_name,
+        size=u.size,
+        status=u.status,
+        tags=u.probed_tags_json or {},
+        error=u.error,
+        created_at=u.created_at,
+    )
 
 
 def _upload_dir(user_id: int) -> Path:
@@ -59,8 +66,11 @@ def _copy_limited(src, dest: Path, limit: int) -> int:
 
 
 @router.post("", response_model=list[UploadOut])
-async def upload(files: list[UploadFile] = File(...), user: User = Depends(current_user),
-                 s: AsyncSession = Depends(get_session, scope="function")):
+async def upload(
+    files: list[UploadFile] = File(...),
+    user: User = Depends(current_user),
+    s: AsyncSession = Depends(get_session, scope="function"),
+):
     cfg = get_settings().cfg.uploads
     limit = cfg.max_file_mb * 1024 * 1024
     out = []
@@ -84,8 +94,13 @@ async def upload(files: list[UploadFile] = File(...), user: User = Depends(curre
             raise HTTPException(400, f"Не удалось прочитать файл {name}: {e}") from e
         if not tags.get("title"):
             tags["title"] = name.rsplit(".", 1)[0]
-        u = Upload(user_id=user.id, staging_path=rel.as_posix(), orig_name=name, size=size,
-                   probed_tags_json=json.loads(json.dumps(tags, default=str)))
+        u = Upload(
+            user_id=user.id,
+            staging_path=rel.as_posix(),
+            orig_name=name,
+            size=size,
+            probed_tags_json=json.loads(json.dumps(tags, default=str)),
+        )
         s.add(u)
         await s.flush()
         out.append(upload_out(u))
@@ -93,8 +108,11 @@ async def upload(files: list[UploadFile] = File(...), user: User = Depends(curre
 
 
 @router.get("", response_model=list[UploadOut])
-async def list_uploads(status: str | None = "uploaded", user: User = Depends(current_user),
-                       s: AsyncSession = Depends(get_session, scope="function")):
+async def list_uploads(
+    status: str | None = "uploaded",
+    user: User = Depends(current_user),
+    s: AsyncSession = Depends(get_session, scope="function"),
+):
     stmt = select(Upload).where(Upload.user_id == user.id)
     if status:
         stmt = stmt.where(Upload.status == status)
@@ -109,7 +127,9 @@ async def _own(s: AsyncSession, user: User, upload_id: int) -> Upload:
 
 
 @router.get("/{upload_id}/cover")
-async def cover(upload_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+async def cover(
+    upload_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
     u = await _own(s, user, upload_id)
     p = _abs(u)
     data = await asyncio.to_thread(tagger.read_cover, p) if p.is_file() else None
@@ -119,7 +139,9 @@ async def cover(upload_id: int, user: User = Depends(current_user), s: AsyncSess
 
 
 @router.delete("/{upload_id}")
-async def remove(upload_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+async def remove(
+    upload_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
     u = await _own(s, user, upload_id)
     _abs(u).unlink(missing_ok=True)
     u.status = "discarded"
@@ -127,8 +149,12 @@ async def remove(upload_id: int, user: User = Depends(current_user), s: AsyncSes
 
 
 @router.post("/commit", response_model=UploadCommitOut)
-async def commit(payload: str = Form(...), cover: UploadFile | None = File(None), user: User = Depends(current_user),
-                 s: AsyncSession = Depends(get_session, scope="function")):
+async def commit(
+    payload: str = Form(...),
+    cover: UploadFile | None = File(None),
+    user: User = Depends(current_user),
+    s: AsyncSession = Depends(get_session, scope="function"),
+):
     try:
         body = UploadCommitIn.model_validate_json(payload)
     except ValidationError as e:
@@ -143,9 +169,15 @@ async def commit(payload: str = Form(...), cover: UploadFile | None = File(None)
     else:
         if not body.album.title or not body.album.album_artist:
             raise HTTPException(400, "Укажите название и исполнителя альбома")
-        album = Album(uid=str(uuid.uuid4()), title=body.album.title.strip(),
-                      album_artist=body.album.album_artist.strip(), year=body.album.year, genre=body.album.genre,
-                      release_type=body.album.release_type or "album", created_by=user.id)
+        album = Album(
+            uid=str(uuid.uuid4()),
+            title=body.album.title.strip(),
+            album_artist=body.album.album_artist.strip(),
+            year=body.album.year,
+            genre=body.album.genre,
+            release_type=body.album.release_type or "album",
+            created_by=user.id,
+        )
         s.add(album)
         await s.flush()
 

@@ -111,8 +111,10 @@ class PrioritySemaphore:
         async with self._cond:
             if in_background():
                 await self._cond.wait_for(
-                    lambda: (not in_background() and self._held < self.value)
-                    or (not self._urgent and self._held < self.value - self.reserve)
+                    lambda: (
+                        (not in_background() and self._held < self.value)
+                        or (not self._urgent and self._held < self.value - self.reserve)
+                    )
                 )
             else:
                 self._urgent += 1

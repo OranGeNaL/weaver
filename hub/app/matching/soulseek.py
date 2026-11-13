@@ -31,7 +31,8 @@ _QUALITY_SUFFIX = re.compile(
 _VERSION_SUFFIX = re.compile(
     r"\b(?:live|concert|лайв|концерт|demo|демо|remix|ремикс|acoustic|акустика|instrumental|"
     r"инструментал|karaoke|караоке|cover|кавер|remaster(?:ed)?(?:\s+\d{4})?|радио\s+версия|radio\s+edit|"
-    r"slowed|sped\s+up|nightcore|extended|clean|explicit)$", re.I,
+    r"slowed|sped\s+up|nightcore|extended|clean|explicit)$",
+    re.I,
 )
 
 
@@ -57,7 +58,7 @@ def _stem(filename: str, query: TrackQuery) -> str:
     if prefix := _TRACK_NUMBER.match(stem):
         number = prefix[1] or prefix[2]
         if not any(re.match(rf"{number}\b", field.strip()) for field in (query.artist, query.title)):
-            stem = stem[prefix.end():]
+            stem = stem[prefix.end() :]
     while (clean := _QUALITY_SUFFIX.sub("", stem)) != stem:
         stem = clean
     return stem.strip()
@@ -75,8 +76,11 @@ def _similarity(a: Norm, b: Norm, *, artist: bool = False) -> float:
     sim = (artist_sim if artist else title_sim)(a, b)
     if len(a.latin) >= 4 and a.latin.replace(" ", "") == b.latin.replace(" ", ""):
         return 1.0
-    if (len(a.latin) >= 4 and has_cyrillic(a.text) != has_cyrillic(b.text)
-            and _translit_key(a.latin) == _translit_key(b.latin)):
+    if (
+        len(a.latin) >= 4
+        and has_cyrillic(a.text) != has_cyrillic(b.text)
+        and _translit_key(a.latin) == _translit_key(b.latin)
+    ):
         return 1.0
     return sim
 
@@ -93,7 +97,7 @@ def _plain_version(stem: str, query: TrackQuery) -> str:
     suffix = " ".join(match.group().split())
     if normalize_title(query.title).text.endswith(suffix.casefold()) and not query.version:
         return stem  # e.g. a song actually named "We Live"
-    return f"{stem[:match.start()].rstrip(' -._')} ({suffix})"
+    return f"{stem[: match.start()].rstrip(' -._')} ({suffix})"
 
 
 def identify(filename: str, query: TrackQuery, *, artist_min: float) -> FileIdentity | None:
@@ -119,7 +123,7 @@ def identify(filename: str, query: TrackQuery, *, artist_min: float) -> FileIden
     title_min = 0.88 if len(qt.latin.replace(" ", "")) >= 8 else 1.0
     pairs = []
     for boundary in list(_SEPARATOR.finditer(body))[:32]:
-        left, right = body[:boundary.start()], body[boundary.end():]
+        left, right = body[: boundary.start()], body[boundary.end() :]
         pairs.extend(((left, right, title_min), (right, left, title_min)))
     # A folder cannot override an explicit credit unless the whole basename matches the requested title.
     folder_min = 1.0 if " - " in body else title_min

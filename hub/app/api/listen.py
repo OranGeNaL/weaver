@@ -50,7 +50,9 @@ async def prefetch(body: ListenPrefetchIn, user: User = Depends(current_user)):
 
 
 @router.get("/stream")
-async def stream(ref: str, request: Request, q: str | None = None, full: bool = False, user: User = Depends(current_user)):
+async def stream(
+    ref: str, request: Request, q: str | None = None, full: bool = False, user: User = Depends(current_user)
+):
     """Audio of the chosen file (Range → 206): the library file, the server copy of the picked file (read while
     it downloads), the copy of a file of a source without plain HTTP audio, or a preview proxied from its source.
     `q=mobile`: the light variant for a metered network (Opus copy of a heavy file, `app.light`); the answer says
@@ -75,5 +77,10 @@ async def stream(ref: str, request: Request, q: str | None = None, full: bool = 
     headers = {**m.headers, "accept-ranges": "bytes", "cache-control": "no-store", **variant}
     if m.body is None:
         return Response(status_code=m.status, headers=headers)
-    return StreamingResponse(m.body, status_code=m.status, headers=headers, media_type=m.media_type,
-                             background=BackgroundTask(m.close) if m.close else None)
+    return StreamingResponse(
+        m.body,
+        status_code=m.status,
+        headers=headers,
+        media_type=m.media_type,
+        background=BackgroundTask(m.close) if m.close else None,
+    )

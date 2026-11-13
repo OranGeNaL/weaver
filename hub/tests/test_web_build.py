@@ -8,7 +8,9 @@ from types import SimpleNamespace
 
 from app.api import system
 
-INDEX = '<!doctype html><html><head><meta charset="UTF-8" />\n    <meta name="hm-build" content="{id}" />\n</head></html>'
+INDEX = (
+    '<!doctype html><html><head><meta charset="UTF-8" />\n    <meta name="hm-build" content="{id}" />\n</head></html>'
+)
 
 
 def test_web_build_reads_meta(tmp_path):

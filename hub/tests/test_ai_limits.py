@@ -44,10 +44,14 @@ async def test_parallel_messages_allow_exactly_five_and_keep_users_independent(u
         assert admin.id not in rows
 
 
-@pytest.mark.parametrize(("zone", "before", "after", "expected_day"), [
-    ("Europe/Moscow", datetime(2026, 10, 29, 20, 59, 59), datetime(2026, 10, 29, 21), date(2026, 10, 30)),
-    ("America/New_York", datetime(2026, 11, 1, 3, 59, 59), datetime(2026, 11, 1, 4), date(2026, 11, 1)),
-], ids=["moscow-midnight", "dst-day-midnight"])
+@pytest.mark.parametrize(
+    ("zone", "before", "after", "expected_day"),
+    [
+        ("Europe/Moscow", datetime(2026, 10, 29, 20, 59, 59), datetime(2026, 10, 29, 21), date(2026, 10, 30)),
+        ("America/New_York", datetime(2026, 11, 1, 3, 59, 59), datetime(2026, 11, 1, 4), date(2026, 11, 1)),
+    ],
+    ids=["moscow-midnight", "dst-day-midnight"],
+)
 async def test_allowance_resets_at_local_midnight(users, monkeypatch, zone, before, after, expected_day):
     from app.config import get_settings
 

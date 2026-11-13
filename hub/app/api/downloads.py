@@ -37,16 +37,23 @@ async def resolve_playlist(user: User, playlist_id: str | None, new_name: str | 
     return pl.get("id")
 
 
-async def join_active(s: AsyncSession, user: User, refs: list[str], *, star: bool,
-                      favorite_event_id: str | None = None) -> set[str]:
+async def join_active(
+    s: AsyncSession, user: User, refs: list[str], *, star: bool, favorite_event_id: str | None = None
+) -> set[str]:
     """Catalog tracks this user is downloading already: no second download. ♥ marks the download to star the song
     after the import; an explicit download makes a quiet one (♥ only, an import's) a visible download, and one an
     import queued in the background goes first in the queue from then on. Returns the joined refs."""
     if not refs:
         return set()
-    items = (await s.execute(
-        select(DownloadItem).where(DownloadItem.user_id == user.id, DownloadItem.status.in_(ACTIVE_STATUSES))
-    )).scalars().all()
+    items = (
+        (
+            await s.execute(
+                select(DownloadItem).where(DownloadItem.user_id == user.id, DownloadItem.status.in_(ACTIVE_STATUSES))
+            )
+        )
+        .scalars()
+        .all()
+    )
     joined: set[str] = set()
     changed: list[DownloadItem] = []
     for item in items:
@@ -68,12 +75,20 @@ async def join_active(s: AsyncSession, user: User, refs: list[str], *, star: boo
         item.query_json = qj
         if star and not favorite_event_id:
             from app.favorites import download_requested
+
             await download_requested(s, item)
         changed.append(item)
     if changed:
-        await s.execute(update(Job).where(
-            Job.kind == "download_item", Job.status == "queued", Job.priority < 0,
-            cast(Job.payload_json["item_id"].astext, Integer).in_([i.id for i in changed])).values(priority=0))
+        await s.execute(
+            update(Job)
+            .where(
+                Job.kind == "download_item",
+                Job.status == "queued",
+                Job.priority < 0,
+                cast(Job.payload_json["item_id"].astext, Integer).in_([i.id for i in changed]),
+            )
+            .values(priority=0)
+        )
         await s.flush()
         links = await item_links(s, changed)
         for item in changed:
@@ -91,11 +106,26 @@ async def create_batch(
 
         ref = body.track_refs[0]
         # Acquire the SQLite write lock before checking the idempotency marker.
-        await record(s, user.id, FavoriteTarget(ref=ref), True, event_id=body.favorite_event_id,
-                     ts=body.favorite_ts, client=body.favorite_client, context=body.favorite_context, mirror_pending=True)
-        previous = (await s.execute(select(DownloadBatch).where(
-            DownloadBatch.user_id == user.id, DownloadBatch.origin == "favorite-app",
-            DownloadBatch.title == body.favorite_event_id))).scalar_one_or_none()
+        await record(
+            s,
+            user.id,
+            FavoriteTarget(ref=ref),
+            True,
+            event_id=body.favorite_event_id,
+            ts=body.favorite_ts,
+            client=body.favorite_client,
+            context=body.favorite_context,
+            mirror_pending=True,
+        )
+        previous = (
+            await s.execute(
+                select(DownloadBatch).where(
+                    DownloadBatch.user_id == user.id,
+                    DownloadBatch.origin == "favorite-app",
+                    DownloadBatch.title == body.favorite_event_id,
+                )
+            )
+        ).scalar_one_or_none()
         if previous:
             return DownloadBatchOut(batch_id=previous.id, queued=0, already_owned=0)
         favorite_events[ref] = body.favorite_event_id
@@ -111,8 +141,11 @@ async def create_batch(
     # on the phone
     playlist_id = None if body.star else await resolve_playlist(user, body.playlist_id, body.new_playlist_name)
     track_refs = list(body.track_refs)
-    joined = set() if body.force else await join_active(s, user, track_refs, star=body.star,
-                                                        favorite_event_id=body.favorite_event_id)
+    joined = (
+        set()
+        if body.force
+        else await join_active(s, user, track_refs, star=body.star, favorite_event_id=body.favorite_event_id)
+    )
     track_refs = [r for r in track_refs if r not in joined]
     items = list(body.items)
     # a provider's file listened to in the player (Files tab of the search): the file itself, as if picked there
@@ -120,28 +153,46 @@ async def create_batch(
         c = await listen.file_candidate(ref)
         if c is None:
             raise HTTPException(404, "Файл не найден: повторите поиск")
-        items.append(DownloadTrackIn(artist=c.artist, title=c.title, duration_s=c.duration_s, explicit=c.explicit,
-                                     candidate=c))
+        items.append(
+            DownloadTrackIn(artist=c.artist, title=c.title, duration_s=c.duration_s, explicit=c.explicit, candidate=c)
+        )
     track_refs = [r for r in track_refs if not listen.is_file_ref(r)]
-    batch = DownloadBatch(user_id=user.id, origin=origin, title=title or body.new_playlist_name,
-                          target_playlist_id=playlist_id)
+    batch = DownloadBatch(
+        user_id=user.id, origin=origin, title=title or body.new_playlist_name, target_playlist_id=playlist_id
+    )
     s.add(batch)
     await s.flush()
 
     entries = []
     owned = 0
     for it in items:
-        q = TrackQuery(artist=it.artist, title=it.title, album=it.album, duration_s=it.duration_s, isrc=it.isrc,
-                       explicit=it.explicit, version=it.version)
+        q = TrackQuery(
+            artist=it.artist,
+            title=it.title,
+            album=it.album,
+            duration_s=it.duration_s,
+            isrc=it.isrc,
+            explicit=it.explicit,
+            version=it.version,
+        )
         meta: dict = {}
         if it.catalog_ref:
             src, id_ = split_ref(it.catalog_ref)
             meta["track_ref"] = it.catalog_ref
             if src == "dz":
                 meta["deezer_track_id"] = id_
-        have = None if body.force else await find_existing(
-            s, artist=q.artist, title=q.title, duration_s=q.duration_s, isrc=q.isrc,
-            deezer_track_id=meta.get("deezer_track_id"))
+        have = (
+            None
+            if body.force
+            else await find_existing(
+                s,
+                artist=q.artist,
+                title=q.title,
+                duration_s=q.duration_s,
+                isrc=q.isrc,
+                deezer_track_id=meta.get("deezer_track_id"),
+            )
+        )
         # a picked file the library has not got is downloaded next to the song's older version (`jobs.downloads`)
         if have and (it.candidate is None or have.source_url == it.candidate.page_url):
             owned += 1
@@ -153,28 +204,46 @@ async def create_batch(
         if body.star and not body.favorite_event_id:
             from app.api.schemas import FavoriteTarget
             from app.favorites import record
+
             for ref in track_refs:
-                event = await record(s, user.id, FavoriteTarget(ref=ref), True, mirror_pending=True,
-                                     client="assistant" if origin == "assistant" else "hub",
-                                     context="assistant:bulk" if origin == "assistant" else "download")
+                event = await record(
+                    s,
+                    user.id,
+                    FavoriteTarget(ref=ref),
+                    True,
+                    mirror_pending=True,
+                    client="assistant" if origin == "assistant" else "hub",
+                    context="assistant:bulk" if origin == "assistant" else "download",
+                )
                 favorite_events[ref] = event.event_id
-        await enqueue(s, "expand_batch", {
-            "batch_id": batch.id,
-            "track_refs": track_refs,
-            "album_refs": [body.album_ref] if body.album_ref else [],
-            "artist_ref": body.artist_ref,
-            "record_types": body.record_types,
-            "force": body.force,
-            "star": body.star,
-            "position": len(entries),
-            "favorite_events": favorite_events,
-        })
-    return DownloadBatchOut(batch_id=batch.id, queued=queued + len(joined), already_owned=owned, playlist_id=playlist_id,
-                            expanding=expanding)
+        await enqueue(
+            s,
+            "expand_batch",
+            {
+                "batch_id": batch.id,
+                "track_refs": track_refs,
+                "album_refs": [body.album_ref] if body.album_ref else [],
+                "artist_ref": body.artist_ref,
+                "record_types": body.record_types,
+                "force": body.force,
+                "star": body.star,
+                "position": len(entries),
+                "favorite_events": favorite_events,
+            },
+        )
+    return DownloadBatchOut(
+        batch_id=batch.id,
+        queued=queued + len(joined),
+        already_owned=owned,
+        playlist_id=playlist_id,
+        expanding=expanding,
+    )
 
 
 @router.post("", response_model=DownloadBatchOut)
-async def create(body: DownloadIn, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+async def create(
+    body: DownloadIn, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
     if not (body.items or body.track_refs or body.album_ref or body.artist_ref):
         raise HTTPException(400, "Нечего скачивать")
     origin = "search" if body.items and all(i.candidate for i in body.items) else "catalog"
@@ -185,8 +254,12 @@ async def create(body: DownloadIn, user: User = Depends(current_user), s: AsyncS
 
 
 @router.get("", response_model=list[DownloadItemOut])
-async def list_items(status: str | None = None, limit: int = Query(100, le=500), user: User = Depends(current_user),
-                     s: AsyncSession = Depends(get_session, scope="function")):
+async def list_items(
+    status: str | None = None,
+    limit: int = Query(100, le=500),
+    user: User = Depends(current_user),
+    s: AsyncSession = Depends(get_session, scope="function"),
+):
     stmt = select(DownloadItem).where(DownloadItem.user_id == user.id)
     if status:
         stmt = stmt.where(DownloadItem.status.in_([x.strip() for x in status.split(",") if x.strip()]))
@@ -203,14 +276,18 @@ async def _own_item(s: AsyncSession, user: User, item_id: int) -> DownloadItem:
 
 
 @router.get("/{item_id}", response_model=DownloadItemOut)
-async def get_item(item_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+async def get_item(
+    item_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
     item = await _own_item(s, user, item_id)
     return item_out(item, detail=True, links=(await item_links(s, [item]))[item.id])
 
 
 HITMOZ_SONG = re.compile(r"https?://[^/]*hitm[a-z]*\.[a-z]+/song/(\d+)", re.I)
 HITMOS_FM_SONG = re.compile(r"https?://[^/]*hitmos\.fm/song/([\w-]+)", re.I)
-YOUTUBE = re.compile(r"(?:youtube\.com/(?:watch\?v=|shorts/)|youtu\.be/|music\.youtube\.com/watch\?v=)([\w-]{11})", re.I)
+YOUTUBE = re.compile(
+    r"(?:youtube\.com/(?:watch\?v=|shorts/)|youtu\.be/|music\.youtube\.com/watch\?v=)([\w-]{11})", re.I
+)
 SOUNDCLOUD = re.compile(r"^https?://(?:www\.|m\.)?soundcloud\.com/([\w-]+/[\w-]+)/?(?:[?#].*)?$", re.I)
 
 
@@ -221,15 +298,26 @@ async def candidate_from_url(url: str, q: TrackQuery) -> Candidate:
     elif m := HITMOZ_SONG.search(url):
         cand = Candidate(provider="hitmoz", provider_id=m.group(1), artist=q.artist, title=q.title, page_url=url)
     elif m := YOUTUBE.search(url):
-        cand = Candidate(provider="ytdlp", provider_id=m.group(1), artist=q.artist, title=q.title,
-                         page_url=f"https://www.youtube.com/watch?v={m.group(1)}")
+        cand = Candidate(
+            provider="ytdlp",
+            provider_id=m.group(1),
+            artist=q.artist,
+            title=q.title,
+            page_url=f"https://www.youtube.com/watch?v={m.group(1)}",
+        )
     elif m := SOUNDCLOUD.search(url):
         # the numeric track id comes with `enrich`; the id is a part of the downloaded file's name
-        cand = Candidate(provider="soundcloud", provider_id=m.group(1).replace("/", "-"), artist=q.artist, title=q.title,
-                         page_url=f"https://soundcloud.com/{m.group(1)}")
+        cand = Candidate(
+            provider="soundcloud",
+            provider_id=m.group(1).replace("/", "-"),
+            artist=q.artist,
+            title=q.title,
+            page_url=f"https://soundcloud.com/{m.group(1)}",
+        )
     else:
-        raise HTTPException(400, "Ссылка не поддерживается: нужна страница трека hitmoz / hitmos.fm, YouTube "
-                                 "или SoundCloud")
+        raise HTTPException(
+            400, "Ссылка не поддерживается: нужна страница трека hitmoz / hitmos.fm, YouTube или SoundCloud"
+        )
     provider = svc.providers.get(cand.provider)
     if provider is None:
         raise HTTPException(400, "Источник отключён")
@@ -241,11 +329,13 @@ async def candidate_from_url(url: str, q: TrackQuery) -> Candidate:
 
             html, _ = await provider.fetch_page(f"/song/{cand.provider_id}")  # type: ignore[attr-defined]
             obj = parse_rsc_tracks(html).get(cand.provider_id) or {}
-            enriched = enriched.model_copy(update={
-                "download_url": obj.get("download"),
-                "artist": obj.get("artist") or enriched.artist,
-                "title": obj.get("title") or enriched.title,
-            })
+            enriched = enriched.model_copy(
+                update={
+                    "download_url": obj.get("download"),
+                    "artist": obj.get("artist") or enriched.artist,
+                    "title": obj.get("title") or enriched.title,
+                }
+            )
     except HTTPException:
         raise
     except Exception as e:
@@ -256,8 +346,12 @@ async def candidate_from_url(url: str, q: TrackQuery) -> Candidate:
 
 
 @router.post("/items/{item_id}/retry", response_model=DownloadItemOut)
-async def retry(item_id: int, body: RetryIn, user: User = Depends(current_user),
-                s: AsyncSession = Depends(get_session, scope="function")):
+async def retry(
+    item_id: int,
+    body: RetryIn,
+    user: User = Depends(current_user),
+    s: AsyncSession = Depends(get_session, scope="function"),
+):
     item = await _own_item(s, user, item_id)
     if item.status in ("searching", "downloading", "tagging", "importing"):
         raise HTTPException(409, "Загрузка ещё идёт")
@@ -283,11 +377,14 @@ async def retry(item_id: int, body: RetryIn, user: User = Depends(current_user),
 
 
 @router.post("/items/{item_id}/cancel", response_model=DownloadItemOut)
-async def cancel(item_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+async def cancel(
+    item_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
     item = await _own_item(s, user, item_id)
     if item.status != "done":
         item.status = "cancelled"
         from app.favorites import download_failed
+
         await download_failed(s, item)
     await s.flush()
     out = item_out(item)
@@ -298,7 +395,8 @@ async def cancel(item_id: int, user: User = Depends(current_user), s: AsyncSessi
 @router.post("/clear")
 async def clear(user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
     res = await s.execute(
-        delete(DownloadItem).where(DownloadItem.user_id == user.id, DownloadItem.status.in_(("done", "cancelled")))
+        delete(DownloadItem)
+        .where(DownloadItem.user_id == user.id, DownloadItem.status.in_(("done", "cancelled")))
         # Keep the anchors needed to put a reviewed song back in order. They can be cleared after it is resolved.
         .where(~DownloadItem.id.in_(select(PendingPlaylistAdd.download_item_id)))
     )

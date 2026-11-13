@@ -7,8 +7,13 @@ from typing import Any, Literal
 
 CollectionKind = Literal["likes", "playlist", "albums", "artists", "dislikes"]
 # what the items of a collection are
-ITEM_KIND: dict[str, str] = {"likes": "track", "playlist": "track", "dislikes": "track", "albums": "album",
-                             "artists": "artist"}
+ITEM_KIND: dict[str, str] = {
+    "likes": "track",
+    "playlist": "track",
+    "dislikes": "track",
+    "albums": "album",
+    "artists": "artist",
+}
 
 
 class SourceError(Exception):

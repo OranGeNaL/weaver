@@ -16,28 +16,34 @@ QUERY = TrackQuery(artist="Кино", title="Группа крови", duration_
 FILENAME = r"@@music\1988 - Kino\01_Gruppa-Krovi--Kino [FLAC 24bit 96kHz].flac"
 
 
-@pytest.mark.parametrize(("filename", "artist", "title"), [
-    (FILENAME, "Кино", "Группа крови"),
-    (r"Music\Kino\Album\1-01 - Gruppa.Krovi.flac", "Кино", "Группа крови"),
-    (r"Music/Кино—Группа_крови.MP3", "Кино", "Группа крови"),
-    (r"Music/Tsoi-Pachka-Sigaret.mp3", "Цой", "Пачка сигарет"),
-    (r"Music/50 Cent - In Da Club.flac", "50 Cent", "In Da Club"),
-    (r"Music/2-Chainz - 06 - 4 AM [24-96].flac", "2 Chainz", "4 AM"),
-    (r"Music/02 - In the End - Linkin Park.mp3", "Linkin Park", "In the End"),
-])
+@pytest.mark.parametrize(
+    ("filename", "artist", "title"),
+    [
+        (FILENAME, "Кино", "Группа крови"),
+        (r"Music\Kino\Album\1-01 - Gruppa.Krovi.flac", "Кино", "Группа крови"),
+        (r"Music/Кино—Группа_крови.MP3", "Кино", "Группа крови"),
+        (r"Music/Tsoi-Pachka-Sigaret.mp3", "Цой", "Пачка сигарет"),
+        (r"Music/50 Cent - In Da Club.flac", "50 Cent", "In Da Club"),
+        (r"Music/2-Chainz - 06 - 4 AM [24-96].flac", "2 Chainz", "4 AM"),
+        (r"Music/02 - In the End - Linkin Park.mp3", "Linkin Park", "In the End"),
+    ],
+)
 def test_filename_identity(filename, artist, title):
     identity = identify(filename, TrackQuery(artist=artist, title=title), artist_min=0.9)
     assert identity is not None
     assert (identity.artist, identity.title, identity.confidence) == (artist, title, 1)
 
 
-@pytest.mark.parametrize("filename", [
-    r"Other\01 Gruppa Krovi.flac",
-    r"Kino\01 Zvezda po imeni Solntse.flac",
-    r"Kino\01 Gruppa Krovi (Cover).flac",
-    r"Kino\01 Gruppa Krovi--Kino--Live.flac",
-    r"Kino\01 Gruppa Krovi_Kino_Remix.flac",
-])
+@pytest.mark.parametrize(
+    "filename",
+    [
+        r"Other\01 Gruppa Krovi.flac",
+        r"Kino\01 Zvezda po imeni Solntse.flac",
+        r"Kino\01 Gruppa Krovi (Cover).flac",
+        r"Kino\01 Gruppa Krovi--Kino--Live.flac",
+        r"Kino\01 Gruppa Krovi_Kino_Remix.flac",
+    ],
+)
 def test_filename_rejects_wrong_recording(filename):
     assert identify(filename, QUERY, artist_min=0.9) is None
 
@@ -73,10 +79,14 @@ async def test_search_variants_rank_quality_and_clean_up(tmp_path):
             requests.append(("deleted", route.split("/")[1]))
             return httpx.Response(204)
         if route.endswith("/responses"):
-            files = [valid, valid, {**valid, "filename": "other/" + FILENAME, "length": 300},
-                     {**valid, "filename": "another/" + FILENAME, "bitDepth": 16},
-                     {**valid, "filename": FILENAME.replace(".flac", ".mp3"), "bitRate": 320},
-                     {**valid, "filename": "../" + FILENAME}]
+            files = [
+                valid,
+                valid,
+                {**valid, "filename": "other/" + FILENAME, "length": 300},
+                {**valid, "filename": "another/" + FILENAME, "bitDepth": 16},
+                {**valid, "filename": FILENAME.replace(".flac", ".mp3"), "bitRate": 320},
+                {**valid, "filename": "../" + FILENAME},
+            ]
             return httpx.Response(200, json=[{"username": "peer", "files": files}] if len(requests) > 1 else [])
         return httpx.Response(200, json={"isComplete": True})
 

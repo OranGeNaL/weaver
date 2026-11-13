@@ -41,16 +41,25 @@ def ym_client():
 # --------------------------------------------------------------------------- URL parsing / dispatch
 
 
-@pytest.mark.parametrize(("path", "expected"), [
-    ("/users/yandexmusic/playlists/1636", ("user_playlist", ("yandexmusic", "1636"))),
-    ("/users/music-blog/playlists/2131/", ("user_playlist", ("music-blog", "2131"))),
-    ("/playlists/ar.2e74f130-a3f6-481b-82e1-bc04c03d8354", ("playlist", ("ar.2e74f130-a3f6-481b-82e1-bc04c03d8354",))),
-    ("/playlists/lk.0d8a1b2c-3d4e-4f50-8a1b-2c3d4e5f6a7b", ("playlist", ("lk.0d8a1b2c-3d4e-4f50-8a1b-2c3d4e5f6a7b",))),
-    ("/playlists/ddf290f9-f730-1769-8450-1e76eb97a515", ("playlist", ("ddf290f9-f730-1769-8450-1e76eb97a515",))),
-    ("/album/10100", ("album", ("10100",))),
-    ("/album/10100/track/38634621", ("track", ("38634621",))),
-    ("/track/38634621", ("track", ("38634621",))),
-])
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("/users/yandexmusic/playlists/1636", ("user_playlist", ("yandexmusic", "1636"))),
+        ("/users/music-blog/playlists/2131/", ("user_playlist", ("music-blog", "2131"))),
+        (
+            "/playlists/ar.2e74f130-a3f6-481b-82e1-bc04c03d8354",
+            ("playlist", ("ar.2e74f130-a3f6-481b-82e1-bc04c03d8354",)),
+        ),
+        (
+            "/playlists/lk.0d8a1b2c-3d4e-4f50-8a1b-2c3d4e5f6a7b",
+            ("playlist", ("lk.0d8a1b2c-3d4e-4f50-8a1b-2c3d4e5f6a7b",)),
+        ),
+        ("/playlists/ddf290f9-f730-1769-8450-1e76eb97a515", ("playlist", ("ddf290f9-f730-1769-8450-1e76eb97a515",))),
+        ("/album/10100", ("album", ("10100",))),
+        ("/album/10100/track/38634621", ("track", ("38634621",))),
+        ("/track/38634621", ("track", ("38634621",))),
+    ],
+)
 def test_parse_yandex_path(path: str, expected: tuple) -> None:
     assert parse_yandex_path(path) == expected
 
@@ -61,16 +70,25 @@ def test_parse_yandex_path_unsupported(path: str) -> None:
         parse_yandex_path(path)
 
 
-@pytest.mark.parametrize(("url", "expected"), [
-    ("https://www.youtube.com/playlist?list=PL123", ("playlist", "https://www.youtube.com/playlist?list=PL123")),
-    ("https://music.youtube.com/playlist?list=OLAK5uy_x", ("playlist", "https://www.youtube.com/playlist?list=OLAK5uy_x")),
-    ("https://www.youtube.com/watch?v=abc&list=PL9", ("playlist", "https://www.youtube.com/playlist?list=PL9")),
-    ("https://www.youtube.com/watch?v=abc&list=RDabc", ("video", "https://www.youtube.com/watch?v=abc")),
-    ("https://youtu.be/abc?si=x", ("video", "https://www.youtube.com/watch?v=abc")),
-    ("https://m.youtube.com/watch?v=abc", ("video", "https://www.youtube.com/watch?v=abc")),
-    ("https://www.youtube.com/shorts/abc", ("video", "https://www.youtube.com/watch?v=abc")),
-    ("https://music.youtube.com/browse/MPREb_OLmD8O5IYNS", ("album", "https://music.youtube.com/browse/MPREb_OLmD8O5IYNS")),
-])
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://www.youtube.com/playlist?list=PL123", ("playlist", "https://www.youtube.com/playlist?list=PL123")),
+        (
+            "https://music.youtube.com/playlist?list=OLAK5uy_x",
+            ("playlist", "https://www.youtube.com/playlist?list=OLAK5uy_x"),
+        ),
+        ("https://www.youtube.com/watch?v=abc&list=PL9", ("playlist", "https://www.youtube.com/playlist?list=PL9")),
+        ("https://www.youtube.com/watch?v=abc&list=RDabc", ("video", "https://www.youtube.com/watch?v=abc")),
+        ("https://youtu.be/abc?si=x", ("video", "https://www.youtube.com/watch?v=abc")),
+        ("https://m.youtube.com/watch?v=abc", ("video", "https://www.youtube.com/watch?v=abc")),
+        ("https://www.youtube.com/shorts/abc", ("video", "https://www.youtube.com/watch?v=abc")),
+        (
+            "https://music.youtube.com/browse/MPREb_OLmD8O5IYNS",
+            ("album", "https://music.youtube.com/browse/MPREb_OLmD8O5IYNS"),
+        ),
+    ],
+)
 def test_youtube_target(url: str, expected: tuple) -> None:
     assert youtube_target(url) == expected
 
@@ -126,7 +144,12 @@ def test_yandex_album(ym_client) -> None:
     assert ex.context.album_title == "Группа крови" and ex.context.album_artist == "КИНО"
     first = ex.items[0]
     assert (first.artist_raw, first.title_raw, first.album_raw, first.duration, first.conf) == (
-        "КИНО", "Группа крови", "Группа крови", "4:44", 1.0)
+        "КИНО",
+        "Группа крови",
+        "Группа крови",
+        "4:44",
+        1.0,
+    )
     assert [i.title_raw for i in ex.items][:3] == ["Группа крови", "Закрой за мной дверь, я ухожу", "Война"]
 
 
@@ -242,15 +265,21 @@ def test_youtube_entry_variants() -> None:
     dashed = youtube_entry_item({"title": "Кино - Группа крови (Official Audio)", "channel": "Rock Archive"})
     assert (dashed.artist_raw, dashed.title_raw, dashed.conf) == ("Кино", "Группа крови", 0.8)
     meta = youtube_entry_item({"title": "x", "track": "Группа крови", "artist": "Кино", "album": "Группа крови"})
-    assert (meta.artist_raw, meta.title_raw, meta.album_raw, meta.conf) == ("Кино", "Группа крови", "Группа крови", 0.95)
+    assert (meta.artist_raw, meta.title_raw, meta.album_raw, meta.conf) == (
+        "Кино",
+        "Группа крови",
+        "Группа крови",
+        0.95,
+    )
     assert youtube_entry_item({"title": "[Deleted video]"}) is None
     assert clean_yt_title("01. Звезда [Official Music Video HD]") == "Звезда"
     assert clean_yt_title("Song (Remix)") == "Song (Remix)"
 
 
 def test_youtube_single_video() -> None:
-    ex = youtube_info_extraction({"id": "x", "title": "Группа крови", "track": "Группа крови", "artist": "Кино",
-                                  "duration": 284})
+    ex = youtube_info_extraction(
+        {"id": "x", "title": "Группа крови", "track": "Группа крови", "artist": "Кино", "duration": 284}
+    )
     assert ex.page_type == "other" and len(ex.items) == 1
 
 
@@ -270,7 +299,10 @@ def test_spotify_album_fixture() -> None:
     assert ex.page_type == "album" and ex.context.album_title == "Discovery"
     assert ex.context.album_artist == "Daft Punk"
     assert (ex.items[0].artist_raw, ex.items[0].title_raw, ex.items[0].album_raw) == (
-        "Daft Punk", "One More Time", "Discovery")
+        "Daft Punk",
+        "One More Time",
+        "Discovery",
+    )
 
 
 def test_spotify_bad_page() -> None:
@@ -281,14 +313,18 @@ def test_spotify_bad_page() -> None:
 
 
 def _embed_html(data: dict) -> str:
-    return ('<html><body><script id="__NEXT_DATA__" type="application/json">'
-            + json.dumps(data, ensure_ascii=False) + "</script></body></html>")
+    return (
+        '<html><body><script id="__NEXT_DATA__" type="application/json">'
+        + json.dumps(data, ensure_ascii=False)
+        + "</script></body></html>"
+    )
 
 
 @respx.mock
 async def test_spotify_fetch() -> None:
     route = respx.get("https://open.spotify.com/embed/album/2noRn2Aes5aoNVsU6iWThc").mock(
-        return_value=httpx.Response(200, text=_embed_html(load("spotify_embed_album.json"))))
+        return_value=httpx.Response(200, text=_embed_html(load("spotify_embed_album.json")))
+    )
     ex = await extract_from_link("https://open.spotify.com/intl-de/album/2noRn2Aes5aoNVsU6iWThc?si=1")
     assert route.called and ex.page_type == "album" and len(ex.items) == 6
     ex = await extract_from_link("spotify:album:2noRn2Aes5aoNVsU6iWThc")

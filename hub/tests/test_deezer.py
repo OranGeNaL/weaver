@@ -94,7 +94,7 @@ async def test_search_track_page_follows_index_until_the_end(dz: DeezerClient, r
     def side_effect(request: httpx.Request) -> httpx.Response:
         index, limit = int(request.url.params["index"]), int(request.url.params["limit"])
         seen.append((index, limit))
-        page = items[index:index + limit]
+        page = items[index : index + limit]
         body: dict[str, Any] = {"data": page, "total": len(items)}
         if index + limit < len(items):
             body["next"] = f"{BASE_URL}/search/track?index={index + limit}"

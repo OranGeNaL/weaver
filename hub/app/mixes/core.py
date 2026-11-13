@@ -58,23 +58,35 @@ FAILED = ("failed", "needs_review", "cancelled")
 async def settings_of(s: AsyncSession, user_id: int) -> MixSettings:
     row = await s.get(MixSettings, user_id)
     if row is None:
-        row = MixSettings(user_id=user_id, mode="normal", mix_hour=get_settings().cfg.mixes.default_hour,
-                          artists_json=[])
+        row = MixSettings(
+            user_id=user_id, mode="normal", mix_hour=get_settings().cfg.mixes.default_hour, artists_json=[]
+        )
         s.add(row)
         await s.flush()
     return row
 
 
 async def current_mix(s: AsyncSession, user_id: int) -> Mix | None:
-    return (await s.execute(select(Mix).where(Mix.user_id == user_id, Mix.status == "active")
-                            .order_by(Mix.id.desc()).limit(1))).scalar_one_or_none()
+    return (
+        await s.execute(
+            select(Mix).where(Mix.user_id == user_id, Mix.status == "active").order_by(Mix.id.desc()).limit(1)
+        )
+    ).scalar_one_or_none()
 
 
 async def enqueue_build(s: AsyncSession, user_id: int, *, priority: int = PRIORITY_MIX) -> bool:
     """One queued or running build per user. False: one is under way."""
-    busy = (await s.execute(select(Job.id).where(
-        Job.kind == "mix_build", Job.status.in_(("queued", "running")),
-        cast(Job.payload_json["user_id"].astext, Integer) == user_id).limit(1))).scalar_one_or_none()
+    busy = (
+        await s.execute(
+            select(Job.id)
+            .where(
+                Job.kind == "mix_build",
+                Job.status.in_(("queued", "running")),
+                cast(Job.payload_json["user_id"].astext, Integer) == user_id,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
     if busy is not None:
         return False
     await enqueue(s, "mix_build", {"user_id": user_id}, priority=priority, max_attempts=3)
@@ -82,9 +94,17 @@ async def enqueue_build(s: AsyncSession, user_id: int, *, priority: int = PRIORI
 
 
 async def enqueue_sync(s: AsyncSession, mix_id: int, *, delay_s: float = SYNC_DELAY_S) -> None:
-    pending = (await s.execute(select(Job.id).where(
-        Job.kind == "mix_sync", Job.status == "queued",
-        cast(Job.payload_json["mix_id"].astext, Integer) == mix_id).limit(1))).scalar_one_or_none()
+    pending = (
+        await s.execute(
+            select(Job.id)
+            .where(
+                Job.kind == "mix_sync",
+                Job.status == "queued",
+                cast(Job.payload_json["mix_id"].astext, Integer) == mix_id,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
     if pending is None:
         await enqueue(s, "mix_sync", {"mix_id": mix_id}, delay_s=delay_s, priority=PRIORITY_MIX)
 
@@ -123,6 +143,7 @@ async def build_for(user_id: int) -> Mix | None:
     if cfg.taste_shadow:
         try:
             from app.mixes.taste_snapshot import load_snapshot
+
             async with session_scope() as s:
                 shadow_snapshot = await load_snapshot(s, user.id, now=shadow_now)
         except Exception:
@@ -134,18 +155,31 @@ async def build_for(user_id: int) -> Mix | None:
         log.info("mix: user %s has no history and no picked artists yet", user_id)
         return None
     pool = []
-    built = await builder.build(profile, mode, shadow_pool=pool) if shadow_snapshot is not None else await builder.build(profile, mode)
+    built = (
+        await builder.build(profile, mode, shadow_pool=pool)
+        if shadow_snapshot is not None
+        else await builder.build(profile, mode)
+    )
     if cfg.taste_shadow:
         if shadow_snapshot is not None:
             try:
                 from app.mixes.shadow import compare, sound_diff
-                built.stats["taste_shadow"] = compare(shadow_snapshot, pool, now=shadow_now,
-                                                      timezone=get_settings().timezone, cfg=cfg)
+
+                built.stats["taste_shadow"] = compare(
+                    shadow_snapshot, pool, now=shadow_now, timezone=get_settings().timezone, cfg=cfg
+                )
                 built.stats["taste_shadow"]["active_seed_keys"] = built.stats.get("seed_keys", [])[:100]
                 built.stats["taste_shadow"]["pool_complete"] = built.stats.get("candidates", 0) == len(pool)
                 try:
-                    await sound_diff(built.stats["taste_shadow"], shadow_snapshot, pool, now=shadow_now,
-                                     timezone=get_settings().timezone, cfg=cfg, mode=mode)
+                    await sound_diff(
+                        built.stats["taste_shadow"],
+                        shadow_snapshot,
+                        pool,
+                        now=shadow_now,
+                        timezone=get_settings().timezone,
+                        cfg=cfg,
+                        mode=mode,
+                    )
                 except Exception:
                     built.stats["taste_shadow"]["sound_status"] = "unavailable"
                     log.warning("mix shadow sound comparison failed", exc_info=True)
@@ -171,15 +205,33 @@ async def save(s: AsyncSession, user: User, built: builder.Built) -> Mix:
     batch = DownloadBatch(user_id=user.id, origin="mix", title=PLAYLIST_NAME)
     s.add(batch)
     await s.flush()
-    mix = Mix(user_id=user.id, title=built.title, description=built.description, mode=built.stats.get("mode", "normal"),
-              status="active", batch_id=batch.id, stats_json=built.stats, created_at=utcnow())
+    mix = Mix(
+        user_id=user.id,
+        title=built.title,
+        description=built.description,
+        mode=built.stats.get("mode", "normal"),
+        status="active",
+        batch_id=batch.id,
+        stats_json=built.stats,
+        created_at=utcnow(),
+    )
     s.add(mix)
     await s.flush()
     for pos, c in enumerate(built.active + built.reserve):
-        s.add(MixItem(mix_id=mix.id, position=pos, state="active" if pos < len(built.active) else "reserve",
-                      familiar=c.familiar, ref=c.track.ref if c.track.source == "dz" else None,
-                      nd_song_id=c.nd_song_id, track_id=c.library_track_id, generator=c.generator,
-                      score=round(c.score, 4), features_json=c.features()))
+        s.add(
+            MixItem(
+                mix_id=mix.id,
+                position=pos,
+                state="active" if pos < len(built.active) else "reserve",
+                familiar=c.familiar,
+                ref=c.track.ref if c.track.source == "dz" else None,
+                nd_song_id=c.nd_song_id,
+                track_id=c.library_track_id,
+                generator=c.generator,
+                score=round(c.score, 4),
+                features_json=c.features(),
+            )
+        )
     await s.flush()
     return mix
 
@@ -189,9 +241,15 @@ async def queue_download(s: AsyncSession, mix: Mix, it: MixItem) -> None:
     download of its own (`downloaded_for_mix`)."""
     if it.track_id or it.download_item_id or not it.ref:
         return
-    active = (await s.execute(select(DownloadItem).where(
-        DownloadItem.status.in_(ACTIVE_STATUSES),
-        DownloadItem.query_json["meta"]["track_ref"].astext == it.ref).limit(1))).scalar_one_or_none()
+    active = (
+        await s.execute(
+            select(DownloadItem)
+            .where(
+                DownloadItem.status.in_(ACTIVE_STATUSES), DownloadItem.query_json["meta"]["track_ref"].astext == it.ref
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
     if active is not None:
         it.download_item_id = active.id
         it.downloaded_for_mix = bool((active.query_json or {}).get("mix")) and quiet(active.query_json)
@@ -203,8 +261,11 @@ async def queue_download(s: AsyncSession, mix: Mix, it: MixItem) -> None:
     src, id_ = split_ref(it.ref)
     if src == "dz":
         meta["deezer_track_id"] = id_
-    item = DownloadItem(batch_id=mix.batch_id, user_id=mix.user_id, query_json={
-        "query": query_from_track(t).model_dump(), "meta": meta, "mix": {"id": mix.id, "item": it.id}})
+    item = DownloadItem(
+        batch_id=mix.batch_id,
+        user_id=mix.user_id,
+        query_json={"query": query_from_track(t).model_dump(), "meta": meta, "mix": {"id": mix.id, "item": it.id}},
+    )
     s.add(item)
     await s.flush()
     await enqueue(s, "download_item", {"item_id": item.id}, priority=PRIORITY_MIX)
@@ -223,8 +284,9 @@ async def sync(mix_id: int) -> None:
         mix = await s.get(Mix, mix_id)
         if mix is None or mix.status != "active":
             return
-        items = list((await s.execute(select(MixItem).where(MixItem.mix_id == mix_id)
-                                      .order_by(MixItem.position))).scalars())
+        items = list(
+            (await s.execute(select(MixItem).where(MixItem.mix_id == mix_id).order_by(MixItem.position))).scalars()
+        )
         dl_ids = [i.download_item_id for i in items if i.download_item_id]
         dls = {d.id: d for d in (await s.execute(select(DownloadItem).where(DownloadItem.id.in_(dl_ids)))).scalars()}
         for it in items:
@@ -232,13 +294,17 @@ async def sync(mix_id: int) -> None:
             if dl is not None and dl.status == "done" and dl.track_id:
                 it.track_id = dl.track_id
             if it.track_id and not it.nd_song_id:
-                it.nd_song_id = (await s.execute(select(Track.nd_song_id).where(Track.id == it.track_id))
-                                 ).scalar_one_or_none()
+                it.nd_song_id = (
+                    await s.execute(select(Track.nd_song_id).where(Track.id == it.track_id))
+                ).scalar_one_or_none()
         reserve = [i for i in items if i.state == "reserve"]
         for it in items:
             dl = dls.get(it.download_item_id) if it.download_item_id else None
-            dead = it.state == "active" and not it.track_id and (
-                (dl is not None and dl.status in FAILED) or (dl is None and not it.ref))
+            dead = (
+                it.state == "active"
+                and not it.track_id
+                and ((dl is not None and dl.status in FAILED) or (dl is None and not it.ref))
+            )
             if not dead:
                 continue
             it.state = "failed"
@@ -298,14 +364,22 @@ async def close_previous(user_id: int, new_mix_id: int) -> None:
     """The user's older mixes close: their downloads not started yet are cancelled, and the songs downloaded only
     for closed mixes are checked for removal (a download that was still running is checked at the next closing)."""
     async with session_scope() as s:
-        old = list((await s.execute(select(Mix).where(Mix.user_id == user_id, Mix.status == "active",
-                                                      Mix.id != new_mix_id))).scalars())
+        old = list(
+            (
+                await s.execute(select(Mix).where(Mix.user_id == user_id, Mix.status == "active", Mix.id != new_mix_id))
+            ).scalars()
+        )
         for m in old:
             m.status, m.closed_at = "closed", utcnow()
         if old:
-            queued = (await s.execute(select(DownloadItem).where(
-                DownloadItem.status == "queued",
-                cast(DownloadItem.query_json["mix"]["id"].astext, Integer).in_([m.id for m in old])))).scalars()
+            queued = (
+                await s.execute(
+                    select(DownloadItem).where(
+                        DownloadItem.status == "queued",
+                        cast(DownloadItem.query_json["mix"]["id"].astext, Integer).in_([m.id for m in old]),
+                    )
+                )
+            ).scalars()
             for d in queued:
                 if quiet(d.query_json):
                     d.status = "cancelled"
@@ -315,9 +389,21 @@ async def close_previous(user_id: int, new_mix_id: int) -> None:
 async def pending_cleanup(user_id: int) -> list[int]:
     """Closed mixes of the user with songs downloaded for them not checked for removal yet."""
     async with session_scope() as s:
-        return list((await s.execute(select(Mix.id).join(MixItem, MixItem.mix_id == Mix.id).where(
-            Mix.user_id == user_id, Mix.status == "closed", MixItem.downloaded_for_mix.is_(True),
-            MixItem.features_json["cleanup"].astext.is_(None)).distinct())).scalars())
+        return list(
+            (
+                await s.execute(
+                    select(Mix.id)
+                    .join(MixItem, MixItem.mix_id == Mix.id)
+                    .where(
+                        Mix.user_id == user_id,
+                        Mix.status == "closed",
+                        MixItem.downloaded_for_mix.is_(True),
+                        MixItem.features_json["cleanup"].astext.is_(None),
+                    )
+                    .distinct()
+                )
+            ).scalars()
+        )
 
 
 async def _users_keep(users: list[User]) -> tuple[set[str], set[str]] | None:
@@ -326,8 +412,11 @@ async def _users_keep(users: list[User]) -> tuple[set[str], set[str]] | None:
     from app.auth import user_navidrome
 
     async with session_scope() as s:
-        mix_playlists = set((await s.execute(select(MixSettings.nd_playlist_id)
-                                             .where(MixSettings.nd_playlist_id.is_not(None)))).scalars())
+        mix_playlists = set(
+            (
+                await s.execute(select(MixSettings.nd_playlist_id).where(MixSettings.nd_playlist_id.is_not(None)))
+            ).scalars()
+        )
     starred: set[str] = set()
     listed: set[str] = set()
     for u in users:
@@ -353,26 +442,49 @@ async def kept_reasons(s: AsyncSession, it: MixItem, track: Track, starred: set[
     refs = [r for r in {it.ref, f"dz:{track.deezer_track_id}" if track.deezer_track_id else None} if r]
     ids = or_(*([PlayEvent.nd_song_id == song] if song else []), *([PlayEvent.ref.in_(refs)] if refs else []))
     # by anyone: the app's and the PWA's events and Navidrome's scrobbles (imported as `finish`)
-    listened = (await s.execute(select(PlayEvent.id).where(
-        ids, or_(PlayEvent.kind == "finish", (PlayEvent.kind == "skip") & (PlayEvent.position_s >= LISTENED_S)))
-        .limit(1))).scalar_one_or_none()
+    listened = (
+        await s.execute(
+            select(PlayEvent.id)
+            .where(
+                ids, or_(PlayEvent.kind == "finish", (PlayEvent.kind == "skip") & (PlayEvent.position_s >= LISTENED_S))
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
     if listened is not None:
         why.append("listened")
     if song and song in starred:
         why.append("starred")
     if song and song in listed:
         why.append("playlist")
-    explicit = [d for d in (await s.execute(select(DownloadItem).where(DownloadItem.track_id == track.id))).scalars()
-                if not quiet(d.query_json)]
+    explicit = [
+        d
+        for d in (await s.execute(select(DownloadItem).where(DownloadItem.track_id == track.id))).scalars()
+        if not quiet(d.query_json)
+    ]
     if explicit:
         why.append("requested")
-    other_mix = (await s.execute(select(MixItem.id).join(Mix, Mix.id == MixItem.mix_id).where(
-        Mix.status == "active", MixItem.state == "active", MixItem.id != it.id,
-        or_(MixItem.track_id == track.id, *([MixItem.ref.in_(refs)] if refs else []))).limit(1))).scalar_one_or_none()
+    other_mix = (
+        await s.execute(
+            select(MixItem.id)
+            .join(Mix, Mix.id == MixItem.mix_id)
+            .where(
+                Mix.status == "active",
+                MixItem.state == "active",
+                MixItem.id != it.id,
+                or_(MixItem.track_id == track.id, *([MixItem.ref.in_(refs)] if refs else [])),
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
     if other_mix is not None:
         why.append("mix")
-    imported = (await s.execute(select(ImportItem.id).where(
-        or_(ImportItem.track_id == track.id, *([ImportItem.ref.in_(refs)] if refs else []))).limit(1))
+    imported = (
+        await s.execute(
+            select(ImportItem.id)
+            .where(or_(ImportItem.track_id == track.id, *([ImportItem.ref.in_(refs)] if refs else [])))
+            .limit(1)
+        )
     ).scalar_one_or_none()
     if imported is not None:
         why.append("import")
@@ -396,8 +508,13 @@ async def remove_unheard(mix_ids: list[int]) -> int:
     starred, listed = keep
     removed = 0
     async with session_scope() as s:
-        items = list((await s.execute(select(MixItem).where(
-            MixItem.mix_id.in_(mix_ids), MixItem.downloaded_for_mix.is_(True)))).scalars())
+        items = list(
+            (
+                await s.execute(
+                    select(MixItem).where(MixItem.mix_id.in_(mix_ids), MixItem.downloaded_for_mix.is_(True))
+                )
+            ).scalars()
+        )
         for it in items:
             if (it.features_json or {}).get("cleanup"):
                 continue
@@ -434,8 +551,11 @@ async def has_history(s: AsyncSession, user_id: int) -> bool:
     ev = (await s.execute(select(PlayEvent.id).where(PlayEvent.user_id == user_id).limit(1))).scalar_one_or_none()
     if ev is not None:
         return True
-    dl = (await s.execute(select(DownloadItem.id).where(DownloadItem.user_id == user_id,
-                                                        DownloadItem.status == "done").limit(1))).scalar_one_or_none()
+    dl = (
+        await s.execute(
+            select(DownloadItem.id).where(DownloadItem.user_id == user_id, DownloadItem.status == "done").limit(1)
+        )
+    ).scalar_one_or_none()
     return dl is not None
 
 
@@ -479,5 +599,15 @@ def next_build_at(mix_hour: int, now: datetime | None = None) -> datetime:
     return nxt if nxt > local else nxt + timedelta(days=1)
 
 
-__all__ = ["PLAYLIST_NAME", "build_for", "current_mix", "downloads_changed", "due_users", "enqueue_build",
-           "remove_unheard", "schedule_loop", "settings_of", "sync"]
+__all__ = [
+    "PLAYLIST_NAME",
+    "build_for",
+    "current_mix",
+    "downloads_changed",
+    "due_users",
+    "enqueue_build",
+    "remove_unheard",
+    "schedule_loop",
+    "settings_of",
+    "sync",
+]

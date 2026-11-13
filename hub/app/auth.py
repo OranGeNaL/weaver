@@ -33,10 +33,15 @@ async def password_login(s: AsyncSession, username: str, password: str) -> tuple
     for key, (_, until) in list(_password_attempts.items()):
         if until is not None and until <= now:
             del _password_attempts[key]
-    if (len(_password_attempts) >= _PASSWORD_TOTAL_LIMIT
-            or sum(account == name for account, _ in _password_attempts.values()) >= _PASSWORD_USER_LIMIT):
-        raise HTTPException(429, "Слишком много попыток входа. Попробуйте через 30 секунд.",
-                            headers={"Retry-After": str(_PASSWORD_WINDOW_S)})
+    if (
+        len(_password_attempts) >= _PASSWORD_TOTAL_LIMIT
+        or sum(account == name for account, _ in _password_attempts.values()) >= _PASSWORD_USER_LIMIT
+    ):
+        raise HTTPException(
+            429,
+            "Слишком много попыток входа. Попробуйте через 30 секунд.",
+            headers={"Retry-After": str(_PASSWORD_WINDOW_S)},
+        )
 
     attempt = object()
     _password_attempts[attempt] = name, None

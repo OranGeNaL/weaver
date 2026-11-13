@@ -28,14 +28,33 @@ def _b64(data: bytes) -> str:
 
 def jwks() -> dict:
     n = KEY.public_key().public_numbers()
-    return {"keys": [{"kty": "RSA", "kid": "k1", "alg": "RS256", "use": "sig",
-                      "n": _b64(n.n.to_bytes((n.n.bit_length() + 7) // 8, "big")), "e": _b64(n.e.to_bytes(3, "big"))}]}
+    return {
+        "keys": [
+            {
+                "kty": "RSA",
+                "kid": "k1",
+                "alg": "RS256",
+                "use": "sig",
+                "n": _b64(n.n.to_bytes((n.n.bit_length() + 7) // 8, "big")),
+                "e": _b64(n.e.to_bytes(3, "big")),
+            }
+        ]
+    }
 
 
 def google_token(sub: str = "g-1", email: str = "anna.k@gmail.com", **over) -> str:
     now = int(time.time())
-    claims = {"iss": "https://accounts.google.com", "aud": CLIENT_ID, "sub": sub, "email": email,
-              "email_verified": True, "iat": now, "exp": now + 3600, "name": "Анна", **over}
+    claims = {
+        "iss": "https://accounts.google.com",
+        "aud": CLIENT_ID,
+        "sub": sub,
+        "email": email,
+        "email_verified": True,
+        "iat": now,
+        "exp": now + 3600,
+        "name": "Анна",
+        **over,
+    }
     head = _b64(json.dumps({"alg": "RS256", "kid": "k1", "typ": "JWT"}).encode())
     body = _b64(json.dumps(claims).encode())
     sig = KEY.sign(f"{head}.{body}".encode(), padding.PKCS1v15(), hashes.SHA256())
@@ -50,16 +69,29 @@ async def env(hub_env, monkeypatch):
     from app.main import create_app
 
     # Navidrome: users and passwords, stars per user; "boris" uses the player only and never opened the Hub
-    nd = {"users": {"admin": {"password": "adminpw", "isAdmin": True, "name": "Admin"},
-                    "boris": {"password": "borispw", "isAdmin": False, "name": "Борис"}},
-          "stars": {"admin": ["s1", "s2"]}, "logins": 0}
+    nd = {
+        "users": {
+            "admin": {"password": "adminpw", "isAdmin": True, "name": "Admin"},
+            "boris": {"password": "borispw", "isAdmin": False, "name": "Борис"},
+        },
+        "stars": {"admin": ["s1", "s2"]},
+        "logins": 0,
+    }
 
     def subsonic(request: httpx.Request) -> httpx.Response:
         p = request.url.params
         ok = {"status": "ok", "version": "1.16.1"}
         u = nd["users"].get(p.get("u", ""))
         if u is None or hashlib.md5((u["password"] + p.get("s", "")).encode()).hexdigest() != p.get("t"):
-            return httpx.Response(200, json={"subsonic-response": {"status": "failed", "error": {"code": 40, "message": "Wrong username or password"}}})
+            return httpx.Response(
+                200,
+                json={
+                    "subsonic-response": {
+                        "status": "failed",
+                        "error": {"code": 40, "message": "Wrong username or password"},
+                    }
+                },
+            )
         ep = request.url.path.rsplit("/", 1)[-1]
         if ep == "getUser":
             return httpx.Response(200, json={"subsonic-response": {**ok, "user": {"adminRole": u["isAdmin"]}}})
@@ -81,11 +113,20 @@ async def env(hub_env, monkeypatch):
         if request.headers.get("x-nd-authorization") != "Bearer jwt-admin":
             return httpx.Response(401)
         if request.method == "GET":
-            return httpx.Response(200, json=[
-                {"id": f"nd-{name}", "userName": name, "name": u["name"], "isAdmin": u["isAdmin"],
-                 "lastAccessAt": "2026-10-19T22:39:46.062261113Z" if name == "boris" else None,
-                 "createdAt": "2026-10-01T10:00:00.5Z"}
-                for name, u in nd["users"].items()])
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": f"nd-{name}",
+                        "userName": name,
+                        "name": u["name"],
+                        "isAdmin": u["isAdmin"],
+                        "lastAccessAt": "2026-10-19T22:39:46.062261113Z" if name == "boris" else None,
+                        "createdAt": "2026-10-01T10:00:00.5Z",
+                    }
+                    for name, u in nd["users"].items()
+                ],
+            )
         body = json.loads(request.content)
         if body["userName"] in nd["users"]:
             return httpx.Response(400, json={"errors": {"userName": "ra.validation.unique"}})
@@ -97,7 +138,9 @@ async def env(hub_env, monkeypatch):
         with respx.mock(assert_all_called=False) as mock:
             mock.route(host="navidrome.test", path__startswith="/rest/").mock(side_effect=subsonic)
             mock.route(host="navidrome.test").mock(side_effect=native)
-            mock.get(CERTS).mock(return_value=httpx.Response(200, json=jwks(), headers={"cache-control": "max-age=600"}))
+            mock.get(CERTS).mock(
+                return_value=httpx.Response(200, json=jwks(), headers={"cache-control": "max-age=600"})
+            )
             transport = httpx.ASGITransport(app=app)
 
             def client() -> httpx.AsyncClient:
@@ -179,8 +222,15 @@ async def test_search_history_keeps_thirty_recent_queries_and_moves_repeats_to_t
     user_id = (await admin.get("/api/auth/me")).json()["id"]
     now = utcnow()
     async with session_scope() as s:
-        s.add_all(SearchHistory(user_id=user_id, query_key=f"запрос {i}", query=f"Запрос {i}",
-                                searched_at=now - timedelta(seconds=30 - i)) for i in range(30))
+        s.add_all(
+            SearchHistory(
+                user_id=user_id,
+                query_key=f"запрос {i}",
+                query=f"Запрос {i}",
+                searched_at=now - timedelta(seconds=30 - i),
+            )
+            for i in range(30)
+        )
     r = await admin.post("/api/search/history", json={"query": "Новый запрос"})
     assert r.status_code == 200, r.text
     queries = (await admin.get("/api/search/history")).json()["queries"]
@@ -188,7 +238,8 @@ async def test_search_history_keeps_thirty_recent_queries_and_moves_repeats_to_t
     r = await admin.post("/api/search/history", json={"query": "  ЗАПРОС 15  "})
     assert r.status_code == 200, r.text
     assert (await admin.get("/api/search/history")).json()["queries"] == [
-        "ЗАПРОС 15", *[q for q in queries if q != "Запрос 15"]
+        "ЗАПРОС 15",
+        *[q for q in queries if q != "Запрос 15"],
     ]
 
 
@@ -223,8 +274,12 @@ async def test_search_history_requires_authentication(env, method):
 async def test_options_tell_about_google(env, monkeypatch):
     async with env["client"]() as c:
         r = await c.get("/api/auth/options")
-        assert r.json() == {"invites": True, "email_signup": False, "google_client_id": CLIENT_ID,
-                            "music_url": "https://music.test:8444"}
+        assert r.json() == {
+            "invites": True,
+            "email_signup": False,
+            "google_client_id": CLIENT_ID,
+            "music_url": "https://music.test:8444",
+        }
         from app import config
 
         monkeypatch.setenv("GOOGLE_CLIENT_ID", "")
@@ -239,8 +294,10 @@ async def test_register_with_invite(env):
     assert inv["status"] == "active" and len(inv["code"]) == 9 and inv["code"][4] == "-"
     async with env["client"]() as c:
         # typed by hand: lower case, spaces, no dash
-        r = await c.post("/api/auth/register",
-                         json={"code": f" {inv['code'].replace('-', ' ').lower()} ", "username": "anna", "password": "secret1"})
+        r = await c.post(
+            "/api/auth/register",
+            json={"code": f" {inv['code'].replace('-', ' ').lower()} ", "username": "anna", "password": "secret1"},
+        )
         assert r.status_code == 200, r.text
         assert r.json()["username"] == "anna" and not r.json()["is_admin"]
         assert (await c.get("/api/auth/me")).json()["username"] == "anna"
@@ -289,7 +346,9 @@ async def test_expired_and_deleted_invites(env):
     assert statuses == {"старое": "expired"}
     async with env["client"]() as c:
         for inv in (old, gone):
-            r = await c.post("/api/auth/register", json={"code": inv["code"], "username": "anna", "password": "secret1"})
+            r = await c.post(
+                "/api/auth/register", json={"code": inv["code"], "username": "anna", "password": "secret1"}
+            )
             assert r.status_code == 400
 
 
@@ -345,19 +404,30 @@ async def test_register_by_email(env, letters):
         assert letter["To"] == "anna.k@mail.test" and letter["From"] == "HomeMusic <homemusic@mail.test>"
         code = code_of(letter)
         assert code in letter["Subject"]
-        r = await c.post("/api/auth/email/register", json={"email": "anna.k@mail.test", "code": other_code(code),
-                                                           "username": "anna", "password": "secret1"})
+        r = await c.post(
+            "/api/auth/email/register",
+            json={"email": "anna.k@mail.test", "code": other_code(code), "username": "anna", "password": "secret1"},
+        )
         assert r.status_code == 400 and "осталось попыток — 4" in r.json()["detail"]
         # typed by hand: spaces in the code, the address in another case
-        r = await c.post("/api/auth/email/register", json={"email": "ANNA.K@mail.test", "code": f" {code[:3]} {code[3:]} ",
-                                                           "username": "anna", "password": "secret1"})
+        r = await c.post(
+            "/api/auth/email/register",
+            json={
+                "email": "ANNA.K@mail.test",
+                "code": f" {code[:3]} {code[3:]} ",
+                "username": "anna",
+                "password": "secret1",
+            },
+        )
         assert r.status_code == 200, r.text
         assert r.json()["username"] == "anna" and r.json()["email"] == "anna.k@mail.test"
         assert env["nd"]["users"]["anna"] == {"password": "secret1", "isAdmin": False, "name": "anna"}
         assert (await c.get("/api/auth/me")).json()["email"] == "anna.k@mail.test"
         # the letter is spent, and the address has an account now
-        r = await c.post("/api/auth/email/register",
-                         json={"email": "anna.k@mail.test", "code": code, "username": "anna2", "password": "secret1"})
+        r = await c.post(
+            "/api/auth/email/register",
+            json={"email": "anna.k@mail.test", "code": code, "username": "anna2", "password": "secret1"},
+        )
         assert r.status_code == 400
         assert (await c.post("/api/auth/email/code", json={"email": "anna.k@mail.test"})).status_code == 409
     async with env["client"]() as c:  # sign-in by the email instead of the name
@@ -381,8 +451,10 @@ async def test_email_registration_keeps_the_code_on_bad_input(env, letters):
         ]:
             r = await c.post("/api/auth/email/register", json={"email": "gleb@mail.test", "code": code, **body})
             assert r.status_code == status, (body, r.text)
-        r = await c.post("/api/auth/email/register",
-                         json={"email": "gleb@mail.test", "code": code, "username": "Глеб", "password": "secret1"})
+        r = await c.post(
+            "/api/auth/email/register",
+            json={"email": "gleb@mail.test", "code": code, "username": "Глеб", "password": "secret1"},
+        )
         assert r.status_code == 200, r.text
 
 
@@ -430,8 +502,11 @@ async def test_email_codes_are_limited(env, letters, monkeypatch):
         assert (await c.post("/api/auth/email/code", json={"email": "b@mail.test"})).status_code == 200
         code = code_of(letters[-1])
         async with session_scope() as s:
-            await s.execute(update(EmailCode).where(EmailCode.email == "b@mail.test")
-                            .values(expires_at=utcnow() - timedelta(minutes=1)))
+            await s.execute(
+                update(EmailCode)
+                .where(EmailCode.email == "b@mail.test")
+                .values(expires_at=utcnow() - timedelta(minutes=1))
+            )
         r = await c.post("/api/auth/email/register", json=reg("b@mail.test", code))
         assert r.status_code == 400 and "устарел" in r.json()["detail"]
         # a letter that did not go out: no wait for another one
@@ -450,8 +525,10 @@ async def test_email_codes_are_limited(env, letters, monkeypatch):
 async def test_email_registration_needs_smtp(env):
     async with env["client"]() as c:
         assert (await c.post("/api/auth/email/code", json={"email": "a@mail.test"})).status_code == 404
-        r = await c.post("/api/auth/email/register",
-                         json={"email": "a@mail.test", "code": "123456", "username": "aa", "password": "secret1"})
+        r = await c.post(
+            "/api/auth/email/register",
+            json={"email": "a@mail.test", "code": "123456", "username": "aa", "password": "secret1"},
+        )
         assert r.status_code == 404
 
 
@@ -498,8 +575,14 @@ async def test_google_tokens_are_checked(env):
     head, body, _ = good.split(".")
     forged = f"{head}.{body}.{_b64(other.sign(f'{head}.{body}'.encode(), padding.PKCS1v15(), hashes.SHA256()))}"
     async with env["client"]() as c:
-        for token in [forged, google_token(aud="someone-else"), google_token(exp=int(time.time()) - 3600),
-                      google_token(iss="evil.example"), google_token(email_verified=False), "not-a-token"]:
+        for token in [
+            forged,
+            google_token(aud="someone-else"),
+            google_token(exp=int(time.time()) - 3600),
+            google_token(iss="evil.example"),
+            google_token(email_verified=False),
+            "not-a-token",
+        ]:
             r = await c.post("/api/auth/google", json={"id_token": token, "code": inv["code"]})
             assert r.status_code == 401, (token, r.text)
     statuses = {i["id"]: i["status"] for i in (await env["admin"].get("/api/admin/invites")).json()}
@@ -508,7 +591,9 @@ async def test_google_tokens_are_checked(env):
 
 async def test_link_google_to_a_password_account(env):
     admin = env["admin"]
-    r = await admin.post("/api/auth/google/link", json={"id_token": google_token(sub="g-admin", email="boss@gmail.com")})
+    r = await admin.post(
+        "/api/auth/google/link", json={"id_token": google_token(sub="g-admin", email="boss@gmail.com")}
+    )
     assert r.status_code == 200 and r.json()["google_email"] == "boss@gmail.com"
     async with env["client"]() as c:
         r = await c.post("/api/auth/google", json={"id_token": google_token(sub="g-admin")})
@@ -546,21 +631,43 @@ async def test_admin_user_list_with_spending_and_songs(env):
 
         admin = (await s.execute(select(User).where(User.nd_username == "admin"))).scalar_one()
         anna = (await s.execute(select(User).where(User.nd_username == "anna"))).scalar_one()
-        s.add_all([
-            AiUsage(user_id=anna.id, kind="chat", tokens_in=1000, tokens_out=100, cost_usd=0.0015),
-            AiUsage(user_id=anna.id, kind="images", tokens_in=5000, tokens_out=300, cost_usd=0.002),
-            AiUsage(user_id=anna.id, kind="chat", tokens_in=10, tokens_out=10, cost_usd=0.5,
-                    created_at=utcnow() - timedelta(days=45)),
-            AiUsage(user_id=admin.id, kind="chat", tokens_in=10, tokens_out=10, cost_usd=0.01),
-        ])
+        s.add_all(
+            [
+                AiUsage(user_id=anna.id, kind="chat", tokens_in=1000, tokens_out=100, cost_usd=0.0015),
+                AiUsage(user_id=anna.id, kind="images", tokens_in=5000, tokens_out=300, cost_usd=0.002),
+                AiUsage(
+                    user_id=anna.id,
+                    kind="chat",
+                    tokens_in=10,
+                    tokens_out=10,
+                    cost_usd=0.5,
+                    created_at=utcnow() - timedelta(days=45),
+                ),
+                AiUsage(user_id=admin.id, kind="chat", tokens_in=10, tokens_out=10, cost_usd=0.01),
+            ]
+        )
         batch = DownloadBatch(user_id=anna.id, origin="search")
         s.add(batch)
         await s.flush()
         for status in ("done", "done", "failed", "queued"):
-            s.add(DownloadItem(batch_id=batch.id, user_id=anna.id, status=status,
-                               query_json={"query": {"artist": "Кино", "title": "Группа крови"}}))
-        s.add(Track(uid="t1", path="a/1.mp3", artist="Кино", title="Группа крови", fingerprint="кино|группа крови",
-                    added_by=anna.id))
+            s.add(
+                DownloadItem(
+                    batch_id=batch.id,
+                    user_id=anna.id,
+                    status=status,
+                    query_json={"query": {"artist": "Кино", "title": "Группа крови"}},
+                )
+            )
+        s.add(
+            Track(
+                uid="t1",
+                path="a/1.mp3",
+                artist="Кино",
+                title="Группа крови",
+                fingerprint="кино|группа крови",
+                added_by=anna.id,
+            )
+        )
 
     out = (await env["admin"].get("/api/admin/users")).json()
     by = {u["username"]: u for u in out["users"]}
@@ -605,15 +712,22 @@ async def test_chat_turn_records_spending(env, monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
     config.get_settings.cache_clear()
-    reply = {"id": "x", "object": "chat.completion", "created": 0, "model": "m",
-             "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "Привет"}}],
-             "usage": {"prompt_tokens": 1200, "completion_tokens": 40, "total_tokens": 1240, "cost": 0.00042}}
-    route = env["mock"].post("https://openrouter.ai/api/v1/chat/completions").mock(
-        return_value=httpx.Response(200, json=reply))
+    reply = {
+        "id": "x",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "m",
+        "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "Привет"}}],
+        "usage": {"prompt_tokens": 1200, "completion_tokens": 40, "total_tokens": 1240, "cost": 0.00042},
+    }
+    route = (
+        env["mock"]
+        .post("https://openrouter.ai/api/v1/chat/completions")
+        .mock(return_value=httpx.Response(200, json=reply))
+    )
     r = await env["admin"].post("/api/assistant/chat", json={"messages": [{"role": "user", "content": "привет"}]})
     assert r.status_code == 200, r.text
     assert r.json()["cost_usd"] == pytest.approx(0.00042)  # OpenRouter's own figure, not the configured price
     assert json.loads(route.calls[0].request.content)["usage"] == {"include": True}
     me = next(u for u in (await env["admin"].get("/api/admin/users")).json()["users"] if u["username"] == "admin")
     assert me["ai_requests"] == 1 and me["ai_cost_usd"] == pytest.approx(0.00042)
-

@@ -116,8 +116,14 @@ async def get_or_create_album(s: AsyncSession, spec: ImportSpec) -> Album:
     return a
 
 
-def tagdata_for(track: Track, album: Album, *, cover: bytes | None = None, artists: list[str] | None = None,
-                track_total: int | None = None) -> tagger.TagData:
+def tagdata_for(
+    track: Track,
+    album: Album,
+    *,
+    cover: bytes | None = None,
+    artists: list[str] | None = None,
+    track_total: int | None = None,
+) -> tagger.TagData:
     return tagger.TagData(
         title=track.title,
         artist=track.artist,
@@ -204,8 +210,9 @@ async def import_file(s: AsyncSession, src: Path, spec: ImportSpec) -> Track:
         )
 
         await asyncio.to_thread(
-            tagger.write_tags, src, tagdata_for(track, album, cover=cover, artists=spec.artists,
-                                                track_total=spec.track_total)
+            tagger.write_tags,
+            src,
+            tagdata_for(track, album, cover=cover, artists=spec.artists, track_total=spec.track_total),
         )
 
         ext = src.suffix.lstrip(".").lower() or "mp3"

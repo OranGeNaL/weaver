@@ -36,15 +36,27 @@ def cover_url(cover_id: str | None, size: int = SMALL_COVER) -> str | None:
 
 
 def album_out(a: dict) -> NdAlbumOut:
-    return NdAlbumOut(id=a["id"], title=a.get("name") or a.get("title") or "", artist=a.get("artist") or "",
-                      artist_id=a.get("artistId"), year=a.get("year") or None, song_count=a.get("songCount") or 0,
-                      duration_s=a.get("duration") or 0, cover_url=cover_url(a.get("coverArt")),
-                      starred=bool(a.get("starred")))
+    return NdAlbumOut(
+        id=a["id"],
+        title=a.get("name") or a.get("title") or "",
+        artist=a.get("artist") or "",
+        artist_id=a.get("artistId"),
+        year=a.get("year") or None,
+        song_count=a.get("songCount") or 0,
+        duration_s=a.get("duration") or 0,
+        cover_url=cover_url(a.get("coverArt")),
+        starred=bool(a.get("starred")),
+    )
 
 
 def artist_out(a: dict) -> NdArtistOut:
-    return NdArtistOut(id=a["id"], name=a.get("name") or "", album_count=a.get("albumCount") or 0,
-                       cover_url=cover_url(a.get("coverArt")), starred=bool(a.get("starred")))
+    return NdArtistOut(
+        id=a["id"],
+        name=a.get("name") or "",
+        album_count=a.get("albumCount") or 0,
+        cover_url=cover_url(a.get("coverArt")),
+        starred=bool(a.get("starred")),
+    )
 
 
 async def songs_out(s: AsyncSession, songs: list[dict]) -> list[NdSongOut]:
@@ -53,7 +65,7 @@ async def songs_out(s: AsyncSession, songs: list[dict]) -> list[NdSongOut]:
     ids = [x["id"] for x in songs if x.get("id")]
     rows: dict[str, Track] = {}
     for i in range(0, len(ids), 500):
-        q = select(Track).where(Track.nd_song_id.in_(ids[i:i + 500]))
+        q = select(Track).where(Track.nd_song_id.in_(ids[i : i + 500]))
         rows.update((t.nd_song_id, t) for t in (await s.execute(q)).scalars())
     out = []
     for x in songs:
@@ -64,16 +76,30 @@ async def songs_out(s: AsyncSession, songs: list[dict]) -> list[NdSongOut]:
         ref = library_track(t).ref if t is not None else f"nd:{sid}"
         artist = x.get("artist") or ""
         names = [a["name"] for a in x.get("artists") or [] if a.get("name")] or ([artist] if artist else [])
-        out.append(NdSongOut(
-            ref=ref, source="dz" if ref.startswith("dz:") else "nd", id=ref.split(":", 1)[1], title=x.get("title") or "",
-            artist=artist, artists=names, album_title=x.get("album"), album_artist=x.get("displayAlbumArtist"),
-            duration_s=x.get("duration"), track_no=x.get("track"), disc_no=x.get("discNumber"),
-            isrc=(x.get("isrc") or [None])[0] if isinstance(x.get("isrc"), list) else x.get("isrc"),
-            explicit=t.explicit if t is not None else None,
-            cover_url=cover_url(x.get("coverArt"), BIG_COVER), cover_small_url=cover_url(x.get("coverArt")),
-            owned=True, library_track_id=t.id if t is not None else None, nd_song_id=sid,
-            nd_album_id=x.get("albumId"), nd_artist_id=x.get("artistId"),
-        ))
+        out.append(
+            NdSongOut(
+                ref=ref,
+                source="dz" if ref.startswith("dz:") else "nd",
+                id=ref.split(":", 1)[1],
+                title=x.get("title") or "",
+                artist=artist,
+                artists=names,
+                album_title=x.get("album"),
+                album_artist=x.get("displayAlbumArtist"),
+                duration_s=x.get("duration"),
+                track_no=x.get("track"),
+                disc_no=x.get("discNumber"),
+                isrc=(x.get("isrc") or [None])[0] if isinstance(x.get("isrc"), list) else x.get("isrc"),
+                explicit=t.explicit if t is not None else None,
+                cover_url=cover_url(x.get("coverArt"), BIG_COVER),
+                cover_small_url=cover_url(x.get("coverArt")),
+                owned=True,
+                library_track_id=t.id if t is not None else None,
+                nd_song_id=sid,
+                nd_album_id=x.get("albumId"),
+                nd_artist_id=x.get("artistId"),
+            )
+        )
     return out
 
 
@@ -97,32 +123,46 @@ async def nd_call(user: User, fn, not_found: str = "Не найдено в би�
 
 def _radio(artists: list[dict]) -> list[NdArtistOut]:
     """«Радиостанции»: every artist, the liked ones first, then those with more albums."""
-    ranked = sorted(artists, key=lambda a: (not a.get("starred"), -(a.get("albumCount") or 0), (a.get("name") or "").casefold()))
+    ranked = sorted(
+        artists, key=lambda a: (not a.get("starred"), -(a.get("albumCount") or 0), (a.get("name") or "").casefold())
+    )
     return [artist_out(a) for a in ranked]
 
 
 @router.get("/home", response_model=NdHomeOut)
 async def home(user: User = Depends(current_user)):
     async def load(nd: NavidromeClient):
-        return await asyncio.gather(*(nd.get_album_list2(t, size=HOME_ROW) for t in ("recent", "frequent", "newest", "starred")),
-                                    nd.get_artists())
+        return await asyncio.gather(
+            *(nd.get_album_list2(t, size=HOME_ROW) for t in ("recent", "frequent", "newest", "starred")),
+            nd.get_artists(),
+        )
 
     recent, frequent, newest, starred, artists = await nd_call(user, load)
-    return NdHomeOut(recent=[album_out(a) for a in recent], frequent=[album_out(a) for a in frequent],
-                     newest=[album_out(a) for a in newest], starred=[album_out(a) for a in starred],
-                     radio=_radio(artists)[:HOME_RADIO])
+    return NdHomeOut(
+        recent=[album_out(a) for a in recent],
+        frequent=[album_out(a) for a in frequent],
+        newest=[album_out(a) for a in newest],
+        starred=[album_out(a) for a in starred],
+        radio=_radio(artists)[:HOME_RADIO],
+    )
 
 
 @router.get("/albums", response_model=list[NdAlbumOut])
-async def albums(type: str = "alphabeticalByName", offset: int = Query(0, ge=0), size: int = Query(50, ge=1, le=500),
-                 user: User = Depends(current_user)):
+async def albums(
+    type: str = "alphabeticalByName",
+    offset: int = Query(0, ge=0),
+    size: int = Query(50, ge=1, le=500),
+    user: User = Depends(current_user),
+):
     if type not in ALBUM_LISTS:
         raise HTTPException(422, f"type: one of {', '.join(ALBUM_LISTS)}")
     return [album_out(a) for a in await nd_call(user, lambda nd: nd.get_album_list2(type, size=size, offset=offset))]
 
 
 @router.get("/albums/{album_id}", response_model=NdAlbumOut)
-async def album(album_id: str, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+async def album(
+    album_id: str, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
     a = await nd_call(user, lambda nd: nd.get_album(album_id))
     if not a.get("id"):
         raise HTTPException(404, "Альбом не найден")
@@ -142,8 +182,15 @@ async def artist(artist_id: str, user: User = Depends(current_user)):
     if not a.get("id"):
         raise HTTPException(404, "Исполнитель не найден")
     # newest year first, albums without a year last, ties by title
-    albums_ = sorted(a.get("album") or [], key=lambda x: (not x.get("year"), -(x.get("year") or 0),
-                                                          (x.get("name") or x.get("title") or "").casefold(), x.get("id") or ""))
+    albums_ = sorted(
+        a.get("album") or [],
+        key=lambda x: (
+            not x.get("year"),
+            -(x.get("year") or 0),
+            (x.get("name") or x.get("title") or "").casefold(),
+            x.get("id") or "",
+        ),
+    )
     return NdArtistPageOut(artist=artist_out(a), albums=[album_out(x) for x in albums_])
 
 
@@ -183,27 +230,47 @@ async def liked(user: User = Depends(current_user), s: AsyncSession = Depends(ge
 
     # Read stored metadata in batches. Listing likes must never depend on a catalog
     # request or start a download; old likes can recover names from playback caches.
-    cache_keys = {key for ref in pending for key in (f"listen:{ref}", f"mix:track:{ref}",
-                  f"dz:track:{ref[3:]}" if ref.startswith("dz:") else "") if key}
+    cache_keys = {
+        key
+        for ref in pending
+        for key in (f"listen:{ref}", f"mix:track:{ref}", f"dz:track:{ref[3:]}" if ref.startswith("dz:") else "")
+        if key
+    }
     cached = {}
     keys = sorted(cache_keys)
     for start in range(0, len(keys), 500):
-        for row in (await s.execute(select(CatalogCache).where(CatalogCache.key.in_(keys[start:start + 500])))).scalars():
+        for row in (
+            await s.execute(select(CatalogCache).where(CatalogCache.key.in_(keys[start : start + 500])))
+        ).scalars():
             cached[row.key] = row.payload_json.get("v") or {}
     for ref, (data, since, nd_id, links) in pending.items():
         aliases = {f"ref:{ref}", *links, *([f"nd:{nd_id}"] if nd_id else [])}
         if seen.intersection(aliases):
             continue
-        meta = {**cached.get(f"listen:{ref}", {}), **cached.get(f"mix:track:{ref}", {}),
-                **cached.get(f"dz:track:{ref[3:]}", {}), **data}
+        meta = {
+            **cached.get(f"listen:{ref}", {}),
+            **cached.get(f"mix:track:{ref}", {}),
+            **cached.get(f"dz:track:{ref[3:]}", {}),
+            **data,
+        }
         src, _, ident = ref.partition(":")
         if src not in ("dz", "hm", "mb", "nd", "file") or not ident:
             continue
-        song = NdSongOut(ref=ref, source=src, id=ident, title=meta.get("title") or ref,
-                         artist=meta.get("artist") or "", duration_s=meta.get("duration_s") or meta.get("duration"),
-                         album_title=meta.get("album_title"), artist_ref=meta.get("artist_ref"),
-                         album_ref=meta.get("album_ref"), cover_url=meta.get("cover_url"),
-                         cover_small_url=meta.get("cover_small_url"), nd_song_id=nd_id, owned=bool(nd_id))
+        song = NdSongOut(
+            ref=ref,
+            source=src,
+            id=ident,
+            title=meta.get("title") or ref,
+            artist=meta.get("artist") or "",
+            duration_s=meta.get("duration_s") or meta.get("duration"),
+            album_title=meta.get("album_title"),
+            artist_ref=meta.get("artist_ref"),
+            album_ref=meta.get("album_ref"),
+            cover_url=meta.get("cover_url"),
+            cover_small_url=meta.get("cover_small_url"),
+            nd_song_id=nd_id,
+            owned=bool(nd_id),
+        )
         ranked.append((since or parse_time(meta.get("liked_at")), song))
         seen.update(aliases)
 
@@ -212,10 +279,15 @@ async def liked(user: User = Depends(current_user), s: AsyncSession = Depends(ge
         return st is None or st.liked
 
     ranked.sort(key=lambda pair: pair[0] or datetime.min.replace(tzinfo=UTC), reverse=True)
-    return NdLikedOut(songs=[song for _, song in ranked],
-                      albums=[album_out(a) for a in sorted(body.get("album") or [], key=lambda x: x.get("starred") or "", reverse=True)
-                              if visible("album", a)],
-                      artists=[artist_out(a) for a in body.get("artist") or [] if visible("artist", a)])
+    return NdLikedOut(
+        songs=[song for _, song in ranked],
+        albums=[
+            album_out(a)
+            for a in sorted(body.get("album") or [], key=lambda x: x.get("starred") or "", reverse=True)
+            if visible("album", a)
+        ],
+        artists=[artist_out(a) for a in body.get("artist") or [] if visible("artist", a)],
+    )
 
 
 @router.get("/cover/{cover_id}")

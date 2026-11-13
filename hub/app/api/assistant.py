@@ -25,7 +25,9 @@ IMAGE_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "ima
 
 
 @router.post("/tasks", response_model=AssistantTaskOut)
-async def create_task(request: Request, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+async def create_task(
+    request: Request, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
     ctype = request.headers.get("content-type", "")
     images: list[tuple[bytes, str]] = []
     body: AssistantTextIn | None = None
@@ -79,10 +81,17 @@ async def create_task(request: Request, user: User = Depends(current_user), s: A
 @router.get("/tasks", response_model=list[AssistantTaskOut])
 async def list_tasks(user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
     rows = (
-        await s.execute(
-            select(AssistantTask).where(AssistantTask.user_id == user.id).order_by(AssistantTask.id.desc()).limit(50)
+        (
+            await s.execute(
+                select(AssistantTask)
+                .where(AssistantTask.user_id == user.id)
+                .order_by(AssistantTask.id.desc())
+                .limit(50)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return [task_out(t, with_rows=False) for t in rows]
 
 
@@ -94,13 +103,19 @@ async def _own(s: AsyncSession, user: User, task_id: int) -> AssistantTask:
 
 
 @router.get("/tasks/{task_id}", response_model=AssistantTaskOut)
-async def get_task(task_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+async def get_task(
+    task_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
     return task_out(await _own(s, user, task_id))
 
 
 @router.post("/tasks/{task_id}/confirm", response_model=AssistantTaskOut)
-async def confirm(task_id: int, body: AssistantConfirmIn, user: User = Depends(current_user),
-                  s: AsyncSession = Depends(get_session, scope="function")):
+async def confirm(
+    task_id: int,
+    body: AssistantConfirmIn,
+    user: User = Depends(current_user),
+    s: AsyncSession = Depends(get_session, scope="function"),
+):
     task = await _own(s, user, task_id)
     task = await confirm_task(s, user, task, body)
     await s.commit()
@@ -145,8 +160,9 @@ def _chat_title(text: str, images: int) -> str:
     return text if len(text) <= 80 else text[:79].rstrip() + "…"
 
 
-async def _save_turn(s: AsyncSession, user: User, chat_id: int | None, text: str, images: int,
-                     out: dict) -> AssistantChat:
+async def _save_turn(
+    s: AsyncSession, user: User, chat_id: int | None, text: str, images: int, out: dict
+) -> AssistantChat:
     chat = await _own_chat(s, user, chat_id) if chat_id else None
     if chat is None:
         chat = AssistantChat(user_id=user.id, title=_chat_title(text, images), messages=[])
@@ -154,11 +170,20 @@ async def _save_turn(s: AsyncSession, user: User, chat_id: int | None, text: str
     mine: dict = {"role": "user", "content": text}
     if images:
         mine["images"] = images
-    reply: dict = {"role": "assistant", "content": out.get("reply") or "", "cost": out.get("cost_usd") or 0,
-                   "done": out.get("done") or []}
+    reply: dict = {
+        "role": "assistant",
+        "content": out.get("reply") or "",
+        "cost": out.get("cost_usd") or 0,
+        "done": out.get("done") or [],
+    }
     if out.get("task_id"):
-        reply["proposal"] = {"task_id": out["task_id"], "token": out["confirm_token"], "summary": out.get("summary", ""),
-                             "actions": out.get("actions") or [], "state": "pending"}
+        reply["proposal"] = {
+            "task_id": out["task_id"],
+            "token": out["confirm_token"],
+            "summary": out.get("summary", ""),
+            "actions": out.get("actions") or [],
+            "state": "pending",
+        }
     chat.messages = [*(chat.messages or []), mine, reply]  # a new list: JSON columns do not track in-place changes
     chat.updated_at = utcnow()
     await s.flush()
@@ -177,36 +202,53 @@ async def _set_proposal(s: AsyncSession, user: User, chat_id: int | None, task_i
 
 
 def _chat_brief(c: AssistantChat) -> dict:
-    return {"id": c.id, "title": c.title, "messages": len(c.messages or []),
-            "created_at": c.created_at, "updated_at": c.updated_at}
+    return {
+        "id": c.id,
+        "title": c.title,
+        "messages": len(c.messages or []),
+        "created_at": c.created_at,
+        "updated_at": c.updated_at,
+    }
 
 
 @router.get("/chats")
 async def list_chats(user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
     rows = (
-        await s.execute(
-            select(AssistantChat).where(AssistantChat.user_id == user.id)
-            .order_by(AssistantChat.updated_at.desc(), AssistantChat.id.desc()).limit(100)
+        (
+            await s.execute(
+                select(AssistantChat)
+                .where(AssistantChat.user_id == user.id)
+                .order_by(AssistantChat.updated_at.desc(), AssistantChat.id.desc())
+                .limit(100)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return [_chat_brief(c) for c in rows]
 
 
 @router.get("/chats/{chat_id}")
-async def get_chat(chat_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+async def get_chat(
+    chat_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
     c = await _own_chat(s, user, chat_id)
     return {**_chat_brief(c), "messages": c.messages or []}
 
 
 @router.delete("/chats/{chat_id}")
-async def delete_chat(chat_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+async def delete_chat(
+    chat_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
     await s.delete(await _own_chat(s, user, chat_id))
     await s.commit()
     return {"ok": True}
 
 
 @router.post("/chat")
-async def chat(request: Request, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+async def chat(
+    request: Request, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
     from app.ai.agent import run_chat
 
     images: list[tuple[bytes, str]] = []
@@ -217,7 +259,10 @@ async def chat(request: Request, user: User = Depends(current_user), s: AsyncSes
             if not isinstance(raw_messages, str):
                 raise ValueError("messages field is missing")
             raw_chat = form.get("chat_id")
-            body = ChatIn(messages=json.loads(raw_messages), chat_id=int(raw_chat) if isinstance(raw_chat, str) and raw_chat else None)
+            body = ChatIn(
+                messages=json.loads(raw_messages),
+                chat_id=int(raw_chat) if isinstance(raw_chat, str) and raw_chat else None,
+            )
         except Exception as e:
             raise HTTPException(400, "Некорректная история чата") from e
         if body.messages:
@@ -257,8 +302,12 @@ async def chat(request: Request, user: User = Depends(current_user), s: AsyncSes
 
 
 @router.post("/chat/{task_id}/confirm")
-async def chat_confirm(task_id: int, body: ChatConfirmIn, user: User = Depends(current_user),
-                       s: AsyncSession = Depends(get_session, scope="function")):
+async def chat_confirm(
+    task_id: int,
+    body: ChatConfirmIn,
+    user: User = Depends(current_user),
+    s: AsyncSession = Depends(get_session, scope="function"),
+):
     from app.ai.agent import confirm_chat
 
     task = await _own(s, user, task_id)
@@ -270,8 +319,12 @@ async def chat_confirm(task_id: int, body: ChatConfirmIn, user: User = Depends(c
 
 
 @router.post("/chat/{task_id}/dismiss")
-async def chat_dismiss(task_id: int, body: ChatDismissIn, user: User = Depends(current_user),
-                       s: AsyncSession = Depends(get_session, scope="function")):
+async def chat_dismiss(
+    task_id: int,
+    body: ChatDismissIn,
+    user: User = Depends(current_user),
+    s: AsyncSession = Depends(get_session, scope="function"),
+):
     task = await _own(s, user, task_id)
     if task.input_kind == "chat" and task.status == "awaiting_confirmation":
         task.status, task.confirm_token = "cancelled", None

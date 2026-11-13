@@ -25,8 +25,19 @@ pytestmark = pytest.mark.skipif(shutil.which(FFMPEG) is None, reason="ffmpeg not
 
 def make_mp3(path: Path, seconds: int = 4) -> Path:
     subprocess.run(
-        [FFMPEG, "-v", "error", "-y", "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
-         "-b:a", "128k", str(path)],
+        [
+            FFMPEG,
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:duration={seconds}",
+            "-b:a",
+            "128k",
+            str(path),
+        ],
         check=True,
     )
     return path
@@ -45,11 +56,25 @@ def found(q):
     from app.providers.base import Candidate
 
     return [
-        Candidate(provider="hitmoz", provider_id="1", artist=q.artist, title=q.title, duration_s=4,
-                  bitrate_kbps=320, page_url="https://hm.test/song/1", download_url="https://hm.test/get/1",
-                  upload_date=date(2019, 5, 1)),
-        Candidate(provider="hitmoz", provider_id="2", artist=q.artist, title=q.title + " (караоке)",
-                  duration_s=4, page_url="https://hm.test/song/2"),
+        Candidate(
+            provider="hitmoz",
+            provider_id="1",
+            artist=q.artist,
+            title=q.title,
+            duration_s=4,
+            bitrate_kbps=320,
+            page_url="https://hm.test/song/1",
+            download_url="https://hm.test/get/1",
+            upload_date=date(2019, 5, 1),
+        ),
+        Candidate(
+            provider="hitmoz",
+            provider_id="2",
+            artist=q.artist,
+            title=q.title + " (караоке)",
+            duration_s=4,
+            page_url="https://hm.test/song/2",
+        ),
     ]
 
 
@@ -57,9 +82,19 @@ def reupload_found(q):
     """What the fake YouTube re-uploads find: a small channel's copy titled "(без цензуры)"."""
     from app.providers.base import Candidate
 
-    return [Candidate(provider="yt_reupload", provider_id="r1", artist=q.artist, title=q.title, duration_s=4,
-                      explicit=True, upload_date=date(2026, 6, 1), page_url="https://yt.test/watch?v=r1",
-                      extra={"reupload": True, "uncensored": True})]
+    return [
+        Candidate(
+            provider="yt_reupload",
+            provider_id="r1",
+            artist=q.artist,
+            title=q.title,
+            duration_s=4,
+            explicit=True,
+            upload_date=date(2026, 6, 1),
+            page_url="https://yt.test/watch?v=r1",
+            extra={"reupload": True, "uncensored": True},
+        )
+    ]
 
 
 @pytest.fixture(scope="session")
@@ -86,7 +121,9 @@ async def env(hub_env, src_mp3):
         if ep == "ping":
             return httpx.Response(200, json={"subsonic-response": ok})
         if ep == "getUser":
-            return httpx.Response(200, json={"subsonic-response": {**ok, "user": {"adminRole": params["u"] == "admin"}}})
+            return httpx.Response(
+                200, json={"subsonic-response": {**ok, "user": {"adminRole": params["u"] == "admin"}}}
+            )
         if ep == "startScan":
             state["scans"] += 1
             # the scan "discovers" every file in the library folder; a song keeps its id across scans
@@ -95,8 +132,13 @@ async def env(hub_env, src_mp3):
             for p in sorted(lib.rglob("*.mp3")):
                 ids.setdefault(p.relative_to(lib).as_posix(), f"nd{len(ids)}")
             state["songs"] = [
-                {"id": ids[p.relative_to(lib).as_posix()], "title": p.stem.split(" - ", 1)[-1],
-                 "path": p.relative_to(lib).as_posix(), "album": p.parent.name.split(" - ", 1)[-1], "duration": 4}
+                {
+                    "id": ids[p.relative_to(lib).as_posix()],
+                    "title": p.stem.split(" - ", 1)[-1],
+                    "path": p.relative_to(lib).as_posix(),
+                    "album": p.parent.name.split(" - ", 1)[-1],
+                    "duration": 4,
+                }
                 for p in sorted(lib.rglob("*.mp3"))
             ]
             return httpx.Response(200, json={"subsonic-response": {**ok, "scanStatus": {"scanning": False}}})
@@ -108,11 +150,20 @@ async def env(hub_env, src_mp3):
             pid = params.get("playlistId") or f"pl{len(state['playlists']) + 1}"
             name = params.get("name") or state["playlists"].get(pid, {}).get("name")
             state["playlists"][pid] = {"name": name, "songs": params.get_list("songId")}
-            return httpx.Response(200, json={"subsonic-response": {**ok, "playlist": {"id": pid, "name": params.get("name")}}})
+            return httpx.Response(
+                200, json={"subsonic-response": {**ok, "playlist": {"id": pid, "name": params.get("name")}}}
+            )
         if ep == "getPlaylist":
             pl = state["playlists"][params["id"]]
-            return httpx.Response(200, json={"subsonic-response": {**ok, "playlist": {
-                "id": params["id"], "name": pl["name"], "entry": [{"id": i} for i in pl["songs"]]}}})
+            return httpx.Response(
+                200,
+                json={
+                    "subsonic-response": {
+                        **ok,
+                        "playlist": {"id": params["id"], "name": pl["name"], "entry": [{"id": i} for i in pl["songs"]]},
+                    }
+                },
+            )
         if ep == "star":
             state["stars"] += [i for i in params.get_list("id") if i not in state["stars"]]
             return httpx.Response(200, json={"subsonic-response": ok})
@@ -137,7 +188,8 @@ async def env(hub_env, src_mp3):
         with respx.mock(assert_all_called=False) as mock:
             mock.route(host="navidrome.test").mock(side_effect=nd_handler)
             mock.get("https://img.test/cover.jpg").mock(
-                return_value=httpx.Response(200, content=jpeg_bytes(), headers={"content-type": "image/jpeg"}))
+                return_value=httpx.Response(200, content=jpeg_bytes(), headers={"content-type": "image/jpeg"})
+            )
             async with app_client(app) as client:
                 yield {"client": client, "state": state, "music": music, "fake": fake, "src": src, "mock": mock}
 
@@ -182,9 +234,17 @@ def soulseek_handler(tmp_path, filename: str, media: bytes, *, online: bool = Tr
         if route == "/searches":
             return httpx.Response(200, json={})
         if route.endswith("/responses"):
-            return httpx.Response(200, json=[{"username": "peer", "files": [
-                {"filename": filename, "size": len(media), "length": 4},
-            ]}])
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "username": "peer",
+                        "files": [
+                            {"filename": filename, "size": len(media), "length": 4},
+                        ],
+                    }
+                ],
+            )
         if route.startswith("/searches/"):
             return httpx.Response(204) if request.method == "DELETE" else httpx.Response(200, json={"isComplete": True})
         if route.endswith("/downloads/peer"):
@@ -211,11 +271,17 @@ async def test_soulseek_goes_first_for_library_downloads(env, tmp_path):
 
     filename = r"@@music\Kino\01_Gruppa-Krovi-Kino.mp3"
     media, posted = env["src"].read_bytes(), []
-    async with httpx.AsyncClient(transport=httpx.MockTransport(
-            soulseek_handler(tmp_path, filename, media, posted=posted))) as client:
-        svc.providers["soulseek"] = SoulseekProvider("http://slskd.test", "test", tmp_path,
-                                                    SoulseekCfg(format="any", min_mp3_bitrate_kbps=0), MatchingCfg(),
-                                                    client)
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(soulseek_handler(tmp_path, filename, media, posted=posted))
+    ) as client:
+        svc.providers["soulseek"] = SoulseekProvider(
+            "http://slskd.test",
+            "test",
+            tmp_path,
+            SoulseekCfg(format="any", min_mp3_bitrate_kbps=0),
+            MatchingCfg(),
+            client,
+        )
         api = env["client"]
         # the Files tab searches Soulseek only by name: a search there takes seconds
         files = (await api.get("/api/search/providers", params={"q": "Кино - Группа крови"})).json()["candidates"]
@@ -239,10 +305,12 @@ async def test_download_skips_soulseek_while_it_is_offline(env, tmp_path):
     from app.providers.soulseek import SoulseekProvider
     from app.services import svc
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(
-            soulseek_handler(tmp_path, "x.flac", b"", online=False))) as client:
-        svc.providers["soulseek"] = SoulseekProvider("http://slskd.test", "test", tmp_path, SoulseekCfg(),
-                                                    MatchingCfg(), client)
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(soulseek_handler(tmp_path, "x.flac", b"", online=False))
+    ) as client:
+        svc.providers["soulseek"] = SoulseekProvider(
+            "http://slskd.test", "test", tmp_path, SoulseekCfg(), MatchingCfg(), client
+        )
         api = env["client"]
         status = (await api.get("/api/system/soulseek?search=true")).json()
         assert status == {"state": "disconnected", "search_matches": None, "search_error": False}
@@ -265,10 +333,13 @@ def test_soulseek_is_off_without_its_account(monkeypatch):
 
 async def test_download_import_scan_playlist_dedupe(env):
     c = env["client"]
-    r = await c.post("/api/downloads", json={
-        "items": [{"artist": "Кино", "title": "Группа крови"}],
-        "new_playlist_name": "Тест",
-    })
+    r = await c.post(
+        "/api/downloads",
+        json={
+            "items": [{"artist": "Кино", "title": "Группа крови"}],
+            "new_playlist_name": "Тест",
+        },
+    )
     assert r.status_code == 200, r.text
     assert r.json()["playlist_id"] == "pl1"
     await drain_jobs()
@@ -297,8 +368,10 @@ async def test_download_import_scan_playlist_dedupe(env):
     assert (await c.get("/api/library/track-source", params={"nd_song_id": "nope"})).status_code == 404
 
     # second request: already owned → no new download, linked at once
-    r = await c.post("/api/downloads", json={"items": [{"artist": "КИНО", "title": "группа крови"}],
-                                             "new_playlist_name": "Already owned"})
+    r = await c.post(
+        "/api/downloads",
+        json={"items": [{"artist": "КИНО", "title": "группа крови"}], "new_playlist_name": "Already owned"},
+    )
     assert r.json()["already_owned"] == 1
     await drain_jobs()
     assert env["fake"].fetched == 1
@@ -312,11 +385,13 @@ async def test_download_import_scan_playlist_dedupe(env):
 
 async def test_review_does_not_block_playlist_and_clear_keeps_delayed_insertion_order(env):
     c, state = env["client"], env["state"]
-    r = await c.post("/api/downloads", json={
-        "items": [{"artist": "Неизвестный", "title": "Демо"},
-                  {"artist": "Кино", "title": "Группа крови"}],
-        "new_playlist_name": "Review",
-    })
+    r = await c.post(
+        "/api/downloads",
+        json={
+            "items": [{"artist": "Неизвестный", "title": "Демо"}, {"artist": "Кино", "title": "Группа крови"}],
+            "new_playlist_name": "Review",
+        },
+    )
     assert r.status_code == 200, r.text
     await drain_jobs()
     items = (await c.get("/api/downloads")).json()
@@ -416,9 +491,15 @@ async def test_provider_search_groups(env):
 
 async def test_picked_reupload_gets_catalog_tags(env):
     add_reuploads(env)
-    cand = {"provider": "yt_reupload", "provider_id": "r1", "artist": "кино", "title": "группа крови",
-            "duration_s": 4, "page_url": "https://yt.test/watch?v=r1",
-            "extra": {"reupload": True, "uncensored": True, "original_title": "группа крови – кино (без цензуры)"}}
+    cand = {
+        "provider": "yt_reupload",
+        "provider_id": "r1",
+        "artist": "кино",
+        "title": "группа крови",
+        "duration_s": 4,
+        "page_url": "https://yt.test/watch?v=r1",
+        "extra": {"reupload": True, "uncensored": True, "original_title": "группа крови – кино (без цензуры)"},
+    }
     item = await download_one(env["client"], {"artist": "кино", "title": "группа крови", "candidate": cand})
     assert item["status"] == "done", item
     files = [f.relative_to(env["music"] / "library").as_posix() for f in (env["music"] / "library").rglob("*.mp3")]
@@ -434,11 +515,18 @@ async def test_liked_uncensored_file_goes_next_to_the_owned_censored_copy_and_ta
     assert stars == ["nd0"] and env["fake"].fetched == 1  # the copy from hitmoz (censored, say) is liked
 
     # ♥ on the uncensored re-upload in the search: that very file is downloaded, not "already in the library"
-    cand = {"provider": "yt_reupload", "provider_id": "r1", "artist": "кино", "title": "группа крови",
-            "duration_s": 4, "page_url": "https://yt.test/watch?v=r1",
-            "extra": {"reupload": True, "uncensored": True}}
-    r = await c.post("/api/downloads", json={"items": [{"artist": "кино", "title": "группа крови",
-                                                        "candidate": cand}], "star": True})
+    cand = {
+        "provider": "yt_reupload",
+        "provider_id": "r1",
+        "artist": "кино",
+        "title": "группа крови",
+        "duration_s": 4,
+        "page_url": "https://yt.test/watch?v=r1",
+        "extra": {"reupload": True, "uncensored": True},
+    }
+    r = await c.post(
+        "/api/downloads", json={"items": [{"artist": "кино", "title": "группа крови", "candidate": cand}], "star": True}
+    )
     assert r.status_code == 200, r.text
     assert r.json()["already_owned"] == 0
     await drain_jobs()
@@ -454,8 +542,9 @@ async def test_liked_uncensored_file_goes_next_to_the_owned_censored_copy_and_ta
     assert r.json()["tracks"][0]["nd_song_id"] == "nd1"
 
     # ♥ on the same file again: already in the library, nothing downloaded
-    r = await c.post("/api/downloads", json={"items": [{"artist": "кино", "title": "группа крови",
-                                                        "candidate": cand}], "star": True})
+    r = await c.post(
+        "/api/downloads", json={"items": [{"artist": "кино", "title": "группа крови", "candidate": cand}], "star": True}
+    )
     assert r.json()["already_owned"] == 1
     await drain_jobs()
     assert reups.fetched == 1 and stars == ["nd1"]
@@ -490,17 +579,26 @@ async def test_upload_commit_and_album_edit(env, tmp_path):
     assert [u["tags"]["title"] for u in ups] == ["song0", "song1", "song2"]
     payload = {
         "album": {"mode": "new", "title": "Мой альбом", "album_artist": "Я", "year": 2026},
-        "tracks": [{"upload_id": u["id"], "title": f"Трек {i + 1}", "artist": "Я", "track_no": i + 1}
-                   for i, u in enumerate(ups)],
+        "tracks": [
+            {"upload_id": u["id"], "title": f"Трек {i + 1}", "artist": "Я", "track_no": i + 1}
+            for i, u in enumerate(ups)
+        ],
     }
-    r = await c.post("/api/uploads/commit", data={"payload": json.dumps(payload)},
-                     files={"cover": ("c.jpg", jpeg_bytes(), "image/jpeg")})
+    r = await c.post(
+        "/api/uploads/commit",
+        data={"payload": json.dumps(payload)},
+        files={"cover": ("c.jpg", jpeg_bytes(), "image/jpeg")},
+    )
     assert r.status_code == 200, r.text
     album_id = r.json()["album_id"]
     assert r.json()["imported"] == 3
     album_dir = env["music"] / "library" / "Я" / "2026 - Мой альбом"
     assert sorted(p.name for p in album_dir.iterdir()) == [
-        "1-01 - Трек 1.mp3", "1-02 - Трек 2.mp3", "1-03 - Трек 3.mp3", "cover.jpg"]
+        "1-01 - Трек 1.mp3",
+        "1-02 - Трек 2.mp3",
+        "1-03 - Трек 3.mp3",
+        "cover.jpg",
+    ]
 
     r = await c.patch(f"/api/library/albums/{album_id}", json={"title": "Переименован"})
     assert r.status_code == 200, r.text
@@ -527,10 +625,13 @@ async def test_assistant_link_confirm(env, monkeypatch):
 
     async def fake_link(url):
         return extract.Extraction(
-            source_app="yandex_music", page_type="playlist",
+            source_app="yandex_music",
+            page_type="playlist",
             context=extract.ExtractionContext(playlist_name="Рок"),
-            items=[extract.ExtractedItem(artist_raw="Кино", title_raw="Группа крови", conf=1.0),
-                   extract.ExtractedItem(artist_raw="Нет такого", title_raw="Совсем", conf=1.0)],
+            items=[
+                extract.ExtractedItem(artist_raw="Кино", title_raw="Группа крови", conf=1.0),
+                extract.ExtractedItem(artist_raw="Нет такого", title_raw="Совсем", conf=1.0),
+            ],
         )
 
     monkeypatch.setattr(links, "extract_from_link", fake_link)
@@ -548,11 +649,14 @@ async def test_assistant_link_confirm(env, monkeypatch):
     # side effects need the token
     bad = await c.post(f"/api/assistant/tasks/{tid}/confirm", json={"confirm_token": "x", "rows": []})
     assert bad.status_code == 403
-    r = await c.post(f"/api/assistant/tasks/{tid}/confirm", json={
-        "confirm_token": t["confirm_token"],
-        "rows": [{"index": 0, "selected": True}, {"index": 1, "selected": False}],
-        "target": {"kind": "new", "name": "Рок"},
-    })
+    r = await c.post(
+        f"/api/assistant/tasks/{tid}/confirm",
+        json={
+            "confirm_token": t["confirm_token"],
+            "rows": [{"index": 0, "selected": True}, {"index": 1, "selected": False}],
+            "target": {"kind": "new", "name": "Рок"},
+        },
+    )
     assert r.status_code == 200, r.text
     await drain_jobs()
     assert env["state"]["playlists"]["pl1"] == {"name": "Рок", "songs": ["nd0"]}
@@ -580,8 +684,9 @@ async def test_app_precache_of_a_track_is_no_listen(env, monkeypatch):
 
     monkeypatch.setattr(imports, "listened", listened)
     c = env["client"]
-    env["mock"].get("https://hm.test/get/1").mock(return_value=httpx.Response(
-        200, content=env["src"].read_bytes(), headers={"content-type": "audio/mpeg"}))
+    env["mock"].get("https://hm.test/get/1").mock(
+        return_value=httpx.Response(200, content=env["src"].read_bytes(), headers={"content-type": "audio/mpeg"})
+    )
     url = (await c.get("/api/listen", params={"ref": "dz:100"})).json()["stream_url"]
     assert (await c.get(url, headers={"X-HomeMusic-Prefetch": "1"})).status_code == 200
     assert heard == []
@@ -591,8 +696,9 @@ async def test_app_precache_of_a_track_is_no_listen(env, monkeypatch):
 
 async def test_download_after_listening_takes_the_heard_file(env):
     c, fake = env["client"], env["fake"]
-    env["mock"].get("https://hm.test/get/1").mock(return_value=httpx.Response(
-        200, content=env["src"].read_bytes(), headers={"content-type": "audio/mpeg"}))
+    env["mock"].get("https://hm.test/get/1").mock(
+        return_value=httpx.Response(200, content=env["src"].read_bytes(), headers={"content-type": "audio/mpeg"})
+    )
     r = await c.get("/api/listen", params={"ref": "dz:100"})
     assert r.status_code == 200, r.text
     assert r.json()["kind"] == "full" and r.json()["page_url"] == "https://hm.test/song/1"
@@ -624,7 +730,11 @@ async def test_like_before_download_stars_the_song_once_imported(env):
     assert r.status_code == 200, r.text
     body = r.json()
     assert {k: body[k] for k in ("song_ids", "album_ids", "artist_ids", "refs")} == {
-        "song_ids": ["nd0"], "album_ids": [], "artist_ids": [], "refs": []}
+        "song_ids": ["nd0"],
+        "album_ids": [],
+        "artist_ids": [],
+        "refs": [],
+    }
     assert [(x["target_type"], x["ref"], x["liked"]) for x in body["subjects"]] == [("track", "dz:100", True)]
 
     # ♥ on a track that is already owned: no new download, starred at once
@@ -667,11 +777,15 @@ async def test_like_download_uses_full_file_fallback_only_when_regular_source_fa
     from app.providers.base import ProviderError
     from app.services import svc
 
-    fallback = FakeProvider("soundcloud", lambda q: [
-        # A short preview must never be imported as the full song.
-        found(q)[0].model_copy(update={"provider": "soundcloud", "provider_id": "preview", "duration_s": 30}),
-        found(q)[0].model_copy(update={"provider": "soundcloud", "provider_id": "full"}),
-    ], src=env["src"])
+    fallback = FakeProvider(
+        "soundcloud",
+        lambda q: [
+            # A short preview must never be imported as the full song.
+            found(q)[0].model_copy(update={"provider": "soundcloud", "provider_id": "preview", "duration_s": 30}),
+            found(q)[0].model_copy(update={"provider": "soundcloud", "provider_id": "full"}),
+        ],
+        src=env["src"],
+    )
     svc.providers["soundcloud"] = fallback
     if primary == "blocked":
         monkeypatch.setattr(env["fake"], "fetch", AsyncMock(side_effect=ProviderError("YouTube sign-in required")))
@@ -705,9 +819,13 @@ async def test_retry_failed_like_uses_new_fallback_and_restores_the_favorite(env
     [item] = (await c.get("/api/downloads")).json()
     assert item["status"] == "needs_review" and not item["liked"]
 
-    svc.providers["soundcloud"] = FakeProvider("soundcloud", lambda q: [
-        found(q)[0].model_copy(update={"provider": "soundcloud"}),
-    ], src=env["src"])
+    svc.providers["soundcloud"] = FakeProvider(
+        "soundcloud",
+        lambda q: [
+            found(q)[0].model_copy(update={"provider": "soundcloud"}),
+        ],
+        src=env["src"],
+    )
     sources.download_fallback = ["soundcloud"]
     response = await c.post(f"/api/downloads/items/{item['id']}/retry", json={})
     assert response.status_code == 200, response.text
@@ -815,8 +933,15 @@ async def add_unlinked(path: str, title: str, album: str = "Альбом", artis
     from app.models import Track
 
     async with session_scope() as s:
-        t = Track(uid=str(uuid.uuid4()), path=path, artist=artist, title=title, album=album, duration_s=4,
-                  fingerprint=fingerprint(artist, title))
+        t = Track(
+            uid=str(uuid.uuid4()),
+            path=path,
+            artist=artist,
+            title=title,
+            album=album,
+            duration_s=4,
+            fingerprint=fingerprint(artist, title),
+        )
         s.add(t)
         await s.flush()
         return t.id
@@ -859,6 +984,8 @@ async def test_a_track_navidrome_never_finds_stops_the_scans_after_a_few_passes(
     await drain_jobs(max_rounds=3 * SCAN_PASSES)
 
     async with session_scope() as s:
-        scans = (await s.execute(select(Job.status, func.count()).where(Job.kind == "nd_scan").group_by(Job.status))).all()
+        scans = (
+            await s.execute(select(Job.status, func.count()).where(Job.kind == "nd_scan").group_by(Job.status))
+        ).all()
     assert dict(scans) == {"done": 1 + SCAN_PASSES}
     assert env["state"]["scans"] == 1 + SCAN_PASSES

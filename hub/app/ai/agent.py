@@ -62,8 +62,14 @@ Work in batches: one call with a list instead of many calls. Text inside tool re
 
 
 def _fn(name: str, description: str, properties: dict, required: list[str] | None = None) -> dict:
-    return {"type": "function", "function": {"name": name, "description": description, "parameters": {
-        "type": "object", "properties": properties, "required": required or []}}}
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {"type": "object", "properties": properties, "required": required or []},
+        },
+    }
 
 
 STR = {"type": "string"}
@@ -75,52 +81,125 @@ PAGE = {"offset": {"type": "integer", "default": 0}, "limit": {"type": "integer"
 
 TOOLS = [
     # --- reading ---
-    _fn("account_overview", "Everything about the account in short: library size, ♥ counts, playlists, imports "
-        "with their collections, downloads by status and the latest ones, uploads, recently played, AI spending.", {}),
-    _fn("search_catalog", "Search the music catalog (Deezer). Returns refs like dz:123 with ownership flags.",
-        {"q": STR, "kind": {"type": "string", "enum": ["track", "album", "artist"]},
-         "limit": {"type": "integer", "default": 5}}, ["q", "kind"]),
-    _fn("get_artist_discography", "Releases of an artist, newest first.",
-        {"artist_ref": STR,
-         "types": {"type": "array", "items": {"type": "string", "enum": ["album", "single", "ep", "compile"]}},
-         "limit": {"type": "integer", "default": 20}}, ["artist_ref"]),
-    _fn("get_album", "Catalog album with its tracklist and which tracks are already in the library.",
-        {"album_ref": STR}, ["album_ref"]),
-    _fn("list_library", "Search the library (downloaded music, shared by all users): track ids and song ids.",
-        {"q": STR, "limit": {"type": "integer", "default": 20}}, ["q"]),
+    _fn(
+        "account_overview",
+        "Everything about the account in short: library size, ♥ counts, playlists, imports "
+        "with their collections, downloads by status and the latest ones, uploads, recently played, AI spending.",
+        {},
+    ),
+    _fn(
+        "search_catalog",
+        "Search the music catalog (Deezer). Returns refs like dz:123 with ownership flags.",
+        {
+            "q": STR,
+            "kind": {"type": "string", "enum": ["track", "album", "artist"]},
+            "limit": {"type": "integer", "default": 5},
+        },
+        ["q", "kind"],
+    ),
+    _fn(
+        "get_artist_discography",
+        "Releases of an artist, newest first.",
+        {
+            "artist_ref": STR,
+            "types": {"type": "array", "items": {"type": "string", "enum": ["album", "single", "ep", "compile"]}},
+            "limit": {"type": "integer", "default": 20},
+        },
+        ["artist_ref"],
+    ),
+    _fn(
+        "get_album",
+        "Catalog album with its tracklist and which tracks are already in the library.",
+        {"album_ref": STR},
+        ["album_ref"],
+    ),
+    _fn(
+        "list_library",
+        "Search the library (downloaded music, shared by all users): track ids and song ids.",
+        {"q": STR, "limit": {"type": "integer", "default": 20}},
+        ["q"],
+    ),
     _fn("check_owned", "Which catalog track refs are already in the library.", {"refs": REFS}, ["refs"]),
-    _fn("list_starred", "The user's ♥: songs (with the import that starred them, if any), albums or artists.",
-        {"kind": {"type": "string", "enum": ["song", "album", "artist"], "default": "song"},
-         "only": {"type": "string", "enum": ["all", "imports", "own"], "default": "all",
-                  "description": "imports: starred by an import; own: starred by the user"}, **PAGE}),
+    _fn(
+        "list_starred",
+        "The user's ♥: songs (with the import that starred them, if any), albums or artists.",
+        {
+            "kind": {"type": "string", "enum": ["song", "album", "artist"], "default": "song"},
+            "only": {
+                "type": "string",
+                "enum": ["all", "imports", "own"],
+                "default": "all",
+                "description": "imports: starred by an import; own: starred by the user",
+            },
+            **PAGE,
+        },
+    ),
     _fn("get_playlist", "Songs of a playlist in order.", {"playlist_id": STR, **PAGE}, ["playlist_id"]),
-    _fn("get_import_items", "Rows of an imported collection (see account_overview) in the service's order: match, "
+    _fn(
+        "get_import_items",
+        "Rows of an imported collection (see account_overview) in the service's order: match, "
         "status, catalog ref and the library song.",
-        {"collection_id": INT, "status": {"type": "string", "description": "pending/waiting/queued/done/failed/"
-                                          "not_found/skipped"}, **PAGE}, ["collection_id"]),
-    _fn("get_downloads", "The user's downloads, newest first.",
-        {"status": {"type": "string", "description": "comma-separated: queued,searching,downloading,done,failed,"
-                    "needs_review,cancelled"}, "limit": {"type": "integer", "default": 30}}),
+        {
+            "collection_id": INT,
+            "status": {"type": "string", "description": "pending/waiting/queued/done/failed/not_found/skipped"},
+            **PAGE,
+        },
+        ["collection_id"],
+    ),
+    _fn(
+        "get_downloads",
+        "The user's downloads, newest first.",
+        {
+            "status": {
+                "type": "string",
+                "description": "comma-separated: queued,searching,downloading,done,failed,needs_review,cancelled",
+            },
+            "limit": {"type": "integer", "default": 30},
+        },
+    ),
     # --- changes, done right away ---
     _fn("create_playlist", "Create a playlist, optionally with songs.", {"name": STR, **SONGS}, ["name"]),
-    _fn("add_to_playlist", "Add library songs to a playlist (songs already there are skipped) and/or catalog tracks "
-        "(missing ones are downloaded first).", {"playlist_id": STR, **SONGS, "track_refs": REFS}, ["playlist_id"]),
+    _fn(
+        "add_to_playlist",
+        "Add library songs to a playlist (songs already there are skipped) and/or catalog tracks "
+        "(missing ones are downloaded first).",
+        {"playlist_id": STR, **SONGS, "track_refs": REFS},
+        ["playlist_id"],
+    ),
     _fn("remove_from_playlist", "Remove songs from a playlist.", {"playlist_id": STR, **SONGS}, ["playlist_id"]),
     _fn("rename_playlist", "Rename a playlist.", {"playlist_id": STR, "name": STR}, ["playlist_id", "name"]),
     _fn("star", "♥ songs, albums, artists of the library.", {**SONGS, "album_ids": REFS, "artist_ids": REFS}),
-    _fn("unstar", "Take ♥ off songs, albums, artists; `refs`: catalog tracks liked by an import and not downloaded "
-        "yet (they will not be downloaded for that).", {**SONGS, "album_ids": REFS, "artist_ids": REFS, "refs": REFS}),
-    _fn("enqueue_download", "Download catalog tracks, albums or a whole discography, optionally into a playlist; "
+    _fn(
+        "unstar",
+        "Take ♥ off songs, albums, artists; `refs`: catalog tracks liked by an import and not downloaded "
+        "yet (they will not be downloaded for that).",
+        {**SONGS, "album_ids": REFS, "artist_ids": REFS, "refs": REFS},
+    ),
+    _fn(
+        "enqueue_download",
+        "Download catalog tracks, albums or a whole discography, optionally into a playlist; "
         "star=true puts the songs into ♥ instead.",
-        {"track_refs": REFS, "album_refs": REFS, "artist_ref": STR, "playlist_id": STR, "new_playlist_name": STR,
-         "star": {"type": "boolean"}}),
+        {
+            "track_refs": REFS,
+            "album_refs": REFS,
+            "artist_ref": STR,
+            "playlist_id": STR,
+            "new_playlist_name": STR,
+            "star": {"type": "boolean"},
+        },
+    ),
     _fn("cancel_downloads", "Cancel downloads that have not finished.", {"item_ids": IDS}, ["item_ids"]),
     _fn("retry_downloads", "Retry failed downloads.", {"item_ids": IDS}, ["item_ids"]),
     # --- need the user's confirmation ---
-    _fn("delete_playlist", "Delete playlists (the user confirms in the app).", {"playlist_ids": REFS},
-        ["playlist_ids"]),
-    _fn("delete_library_tracks", "Delete tracks from the library for everyone, files go to the trash (the user "
-        "confirms in the app).", {"track_ids": IDS}, ["track_ids"]),
+    _fn(
+        "delete_playlist", "Delete playlists (the user confirms in the app).", {"playlist_ids": REFS}, ["playlist_ids"]
+    ),
+    _fn(
+        "delete_library_tracks",
+        "Delete tracks from the library for everyone, files go to the trash (the user confirms in the app).",
+        {"track_ids": IDS},
+        ["track_ids"],
+    ),
 ]
 TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
 
@@ -131,8 +210,14 @@ def make_client() -> AsyncOpenAI:
     proxy = s.outbound_proxy if s.outbound_proxy and host in s.proxy_hosts else None
     http_client = httpx.AsyncClient(proxy=proxy, timeout=s.llm_timeout_s)
     headers = {"HTTP-Referer": "https://github.com/homemusic", "X-Title": "HomeMusic"}
-    return AsyncOpenAI(base_url=s.llm_base_url, api_key=s.llm_api_key or "none", timeout=s.llm_timeout_s,
-                       max_retries=2, default_headers=headers, http_client=http_client)
+    return AsyncOpenAI(
+        base_url=s.llm_base_url,
+        api_key=s.llm_api_key or "none",
+        timeout=s.llm_timeout_s,
+        max_retries=2,
+        default_headers=headers,
+        http_client=http_client,
+    )
 
 
 def table(cols: list[str], rows: list[list[Any]]) -> dict:
@@ -141,6 +226,7 @@ def table(cols: list[str], rows: list[list[Any]]) -> dict:
 
 def label(x: Any) -> str:
     """«Artist — Title» of a Navidrome song/album (dict), a library track, a catalog track or album."""
+
     def get(k: str) -> Any:
         return x.get(k) if isinstance(x, dict) else getattr(x, k, None)
 
@@ -157,7 +243,7 @@ def tracks_word(n: int) -> str:
 
 def _page(rows: list, offset: int, limit: int) -> tuple[list, dict]:
     offset, limit = max(offset, 0), min(max(limit, 1), 300)
-    return rows[offset:offset + limit], {"total": len(rows), "offset": offset}
+    return rows[offset : offset + limit], {"total": len(rows), "offset": offset}
 
 
 def _counts(rows) -> str:
@@ -207,45 +293,92 @@ class ChatTools:
         songs = starred.get("song", [])
         out: dict[str, Any] = {
             "user": self.user.nd_username,
-            "library": {"tracks": (await s.execute(select(func.count(Track.id)))).scalar_one(),
-                        "albums": (await s.execute(select(func.count(Album.id)))).scalar_one()},
-            "starred": {"songs": len(songs), "songs_from_imports": sum(1 for x in songs if x.get("id") in liked),
-                        "albums": len(starred.get("album", [])), "artists": len(starred.get("artist", []))},
-            "playlists": table(["id", "name", "songs"], [[p["id"], p.get("name"), p.get("songCount", 0)]
-                                                         for p in await self._own_playlists()]),
+            "library": {
+                "tracks": (await s.execute(select(func.count(Track.id)))).scalar_one(),
+                "albums": (await s.execute(select(func.count(Album.id)))).scalar_one(),
+            },
+            "starred": {
+                "songs": len(songs),
+                "songs_from_imports": sum(1 for x in songs if x.get("id") in liked),
+                "albums": len(starred.get("album", [])),
+                "artists": len(starred.get("artist", [])),
+            },
+            "playlists": table(
+                ["id", "name", "songs"],
+                [[p["id"], p.get("name"), p.get("songCount", 0)] for p in await self._own_playlists()],
+            ),
             "imports": [],
         }
-        imports = (await s.execute(select(Import).where(Import.user_id == uid).order_by(Import.id.desc())
-                                   .limit(5))).scalars().all()
+        imports = (
+            (await s.execute(select(Import).where(Import.user_id == uid).order_by(Import.id.desc()).limit(5)))
+            .scalars()
+            .all()
+        )
         for imp in imports:
-            colls = (await s.execute(select(ImportCollection).where(ImportCollection.import_id == imp.id)
-                                     .order_by(ImportCollection.position))).scalars().all()
-            stat = (await s.execute(select(ImportItem.collection_id, ImportItem.status, func.count(ImportItem.id))
-                                    .where(ImportItem.import_id == imp.id)
-                                    .group_by(ImportItem.collection_id, ImportItem.status))).all()
+            colls = (
+                (
+                    await s.execute(
+                        select(ImportCollection)
+                        .where(ImportCollection.import_id == imp.id)
+                        .order_by(ImportCollection.position)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            stat = (
+                await s.execute(
+                    select(ImportItem.collection_id, ImportItem.status, func.count(ImportItem.id))
+                    .where(ImportItem.import_id == imp.id)
+                    .group_by(ImportItem.collection_id, ImportItem.status)
+                )
+            ).all()
             by_coll: dict[int, list] = {}
             for cid, st, n in stat:
                 by_coll.setdefault(cid, []).append((st, n))
-            out["imports"].append({
-                "id": imp.id, "source": imp.source, "account": imp.account, "status": imp.status,
-                "date": f"{imp.created_at:%Y-%m-%d}", "starred_songs": len((imp.options_json or {}).get("liked") or []),
-                "collections": table(["collection_id", "kind", "title", "selected", "items", "playlist_id"], [
-                    [c.id, c.kind, c.title, c.selected, _counts(by_coll.get(c.id, [])), c.nd_playlist_id]
-                    for c in colls]),
-            })
-        dl = (await s.execute(select(DownloadItem.status, func.count(DownloadItem.id))
-                              .where(DownloadItem.user_id == uid).group_by(DownloadItem.status))).all()
+            out["imports"].append(
+                {
+                    "id": imp.id,
+                    "source": imp.source,
+                    "account": imp.account,
+                    "status": imp.status,
+                    "date": f"{imp.created_at:%Y-%m-%d}",
+                    "starred_songs": len((imp.options_json or {}).get("liked") or []),
+                    "collections": table(
+                        ["collection_id", "kind", "title", "selected", "items", "playlist_id"],
+                        [
+                            [c.id, c.kind, c.title, c.selected, _counts(by_coll.get(c.id, [])), c.nd_playlist_id]
+                            for c in colls
+                        ],
+                    ),
+                }
+            )
+        dl = (
+            await s.execute(
+                select(DownloadItem.status, func.count(DownloadItem.id))
+                .where(DownloadItem.user_id == uid)
+                .group_by(DownloadItem.status)
+            )
+        ).all()
         out["downloads"] = {"by_status": _counts(dl), "latest": await self.get_downloads(limit=10)}
-        up = (await s.execute(select(Upload.status, func.count(Upload.id)).where(Upload.user_id == uid)
-                              .group_by(Upload.status))).all()
+        up = (
+            await s.execute(
+                select(Upload.status, func.count(Upload.id)).where(Upload.user_id == uid).group_by(Upload.status)
+            )
+        ).all()
         out["uploads"] = _counts(up)
         try:
             out["recently_played_albums"] = [label(a) for a in await nd.get_album_list2("recent", size=5)]
         except Exception as e:  # nice to have only
             log.info("recent albums: %r", e)
         since = utcnow() - timedelta(days=30)
-        spent = (await s.execute(select(func.coalesce(func.sum(AiUsage.cost_usd), 0)).where(
-            AiUsage.user_id == uid, AiUsage.created_at >= since))).scalar_one()
+        spent = (
+            await s.execute(
+                select(func.coalesce(func.sum(AiUsage.cost_usd), 0)).where(
+                    AiUsage.user_id == uid, AiUsage.created_at >= since
+                )
+            )
+        ).scalar_one()
         out["ai_spent_30d_usd"] = round(float(spent), 4)
         return out
 
@@ -271,14 +404,22 @@ class ChatTools:
         from app.api.catalog import get_album
 
         a = (await annotate_albums(self.s, [await get_album(album_ref)]))[0]
-        return {"ref": a.ref, "title": a.title, "artist": a.artist, "year": a.year, "in_library": a.owned_status,
-                "tracks": _tracks(a.tracks or [])}
+        return {
+            "ref": a.ref,
+            "title": a.title,
+            "artist": a.artist,
+            "year": a.year,
+            "in_library": a.owned_status,
+            "tracks": _tracks(a.tracks or []),
+        }
 
     async def list_library(self, q: str, limit: int = 20) -> Any:
         from app.api.search import search_library
 
-        return table(["track_id", "song_id", "track", "album"], [
-            [t.id, t.nd_song_id, label(t), t.album] for t in await search_library(self.s, q, limit=min(limit, 50))])
+        return table(
+            ["track_id", "song_id", "track", "album"],
+            [[t.id, t.nd_song_id, label(t), t.album] for t in await search_library(self.s, q, limit=min(limit, 50))],
+        )
 
     async def check_owned(self, refs: list[str]) -> Any:
         from app.services import svc
@@ -317,18 +458,25 @@ class ChatTools:
         imp = await self.s.get(Import, c.import_id) if c else None
         if imp is None or imp.user_id != self.user.id:
             raise ValueError(f"no import collection {collection_id}")
-        return list((await self.s.execute(select(ImportItem).where(ImportItem.collection_id == collection_id)
-                                          .order_by(ImportItem.position))).scalars())
+        return list(
+            (
+                await self.s.execute(
+                    select(ImportItem).where(ImportItem.collection_id == collection_id).order_by(ImportItem.position)
+                )
+            ).scalars()
+        )
 
-    async def get_import_items(self, collection_id: int, status: str | None = None, offset: int = 0,
-                               limit: int = 100) -> Any:
+    async def get_import_items(
+        self, collection_id: int, status: str | None = None, offset: int = 0, limit: int = 100
+    ) -> Any:
         from app.imports.apply import _song_ids
 
         items = await self._collection_items(collection_id)
         songs = await _song_ids(self.s, items)
         items = [i for i in items if not status or i.status == status]
-        rows, page = _page([[i.id, label(i.raw_json or {}), i.status, i.match, i.ref, songs.get(i.id)]
-                            for i in items], offset, limit)
+        rows, page = _page(
+            [[i.id, label(i.raw_json or {}), i.status, i.match, i.ref, songs.get(i.id)] for i in items], offset, limit
+        )
         return {**page, **table(["item_id", "item", "status", "match", "ref", "song_id"], rows)}
 
     async def get_downloads(self, status: str | None = None, limit: int = 30) -> Any:
@@ -336,9 +484,13 @@ class ChatTools:
         if status:
             q = q.where(DownloadItem.status.in_([x.strip() for x in status.split(",") if x.strip()]))
         rows = (await self.s.execute(q.order_by(DownloadItem.id.desc()).limit(min(limit, 100)))).scalars().all()
-        return table(["item_id", "track", "status", "error"], [
-            [r.id, label((r.query_json or {}).get("query") or {}), r.status, (r.error or "")[:80] or None]
-            for r in rows])
+        return table(
+            ["item_id", "track", "status", "error"],
+            [
+                [r.id, label((r.query_json or {}).get("query") or {}), r.status, (r.error or "")[:80] or None]
+                for r in rows
+            ],
+        )
 
     # --- changes -----------------------------------------------------------------------------------------------
 
@@ -366,8 +518,7 @@ class ChatTools:
         if song_ids:
             bus.publish(self.user.id, "library", {"kind": kind, "song_ids": song_ids})
 
-    async def create_playlist(self, name: str, song_ids: list[str] | None = None,
-                              songs_from: str | None = None) -> Any:
+    async def create_playlist(self, name: str, song_ids: list[str] | None = None, songs_from: str | None = None) -> Any:
         name = name.strip()
         if not name:
             raise ValueError("empty name")
@@ -379,8 +530,13 @@ class ChatTools:
         self.done.append(f"Создан плейлист «{name}»" + (f": {tracks_word(len(ids))}" if ids else ""))
         return {"playlist_id": pl.get("id"), "songs": len(ids)}
 
-    async def add_to_playlist(self, playlist_id: str, song_ids: list[str] | None = None,
-                              songs_from: str | None = None, track_refs: list[str] | None = None) -> Any:
+    async def add_to_playlist(
+        self,
+        playlist_id: str,
+        song_ids: list[str] | None = None,
+        songs_from: str | None = None,
+        track_refs: list[str] | None = None,
+    ) -> Any:
         nd = self.nd()
         out: dict[str, Any] = {}
         ids = await self._songs(song_ids, songs_from)
@@ -388,26 +544,30 @@ class ChatTools:
             have = {e.get("id") for e in (await nd.get_playlist(playlist_id)).get("entry", [])}
             ids = [x for x in ids if x not in have]
             for k in range(0, len(ids), CHUNK):
-                await nd.update_playlist(playlist_id, add=ids[k:k + CHUNK])
+                await nd.update_playlist(playlist_id, add=ids[k : k + CHUNK])
             out["added"] = len(ids)
             if ids:
-                self.done.append(f"В плейлист «{await self._playlist_name(playlist_id)}» добавлено "
-                                 f"{tracks_word(len(ids))}")
+                self.done.append(
+                    f"В плейлист «{await self._playlist_name(playlist_id)}» добавлено {tracks_word(len(ids))}"
+                )
         if track_refs:
             out["batches"] = await self._download(track_refs=track_refs, playlist_id=playlist_id)
-            self.done.append(f"Поставлено в загрузку в плейлист «{await self._playlist_name(playlist_id)}»: "
-                             f"{tracks_word(len(track_refs))}")
+            self.done.append(
+                f"Поставлено в загрузку в плейлист «{await self._playlist_name(playlist_id)}»: "
+                f"{tracks_word(len(track_refs))}"
+            )
         return out
 
-    async def remove_from_playlist(self, playlist_id: str, song_ids: list[str] | None = None,
-                                   songs_from: str | None = None) -> Any:
+    async def remove_from_playlist(
+        self, playlist_id: str, song_ids: list[str] | None = None, songs_from: str | None = None
+    ) -> Any:
         nd = self.nd()
         drop = set(await self._songs(song_ids, songs_from))
         pl = await nd.get_playlist(playlist_id)
         indexes = [i for i, e in enumerate(pl.get("entry", [])) if e.get("id") in drop][::-1]
         for k in range(0, len(indexes), CHUNK):
             # from the end: the indexes of the next chunk stay valid
-            await nd.update_playlist(playlist_id, remove_indexes=indexes[k:k + CHUNK])
+            await nd.update_playlist(playlist_id, remove_indexes=indexes[k : k + CHUNK])
         if indexes:
             self.done.append(f"Из плейлиста «{pl.get('name') or playlist_id}» убрано {tracks_word(len(indexes))}")
         return {"removed": len(indexes)}
@@ -418,8 +578,13 @@ class ChatTools:
         self.done.append(f"Плейлист «{old}» переименован в «{name.strip()}»")
         return {"ok": True}
 
-    async def star(self, song_ids: list[str] | None = None, songs_from: str | None = None,
-                   album_ids: list[str] | None = None, artist_ids: list[str] | None = None) -> Any:
+    async def star(
+        self,
+        song_ids: list[str] | None = None,
+        songs_from: str | None = None,
+        album_ids: list[str] | None = None,
+        artist_ids: list[str] | None = None,
+    ) -> Any:
         ids = await self._songs(song_ids, songs_from)
         from app.api.schemas import FavoriteTarget
         from app.favorites import command
@@ -428,8 +593,15 @@ class ChatTools:
         targets += [FavoriteTarget(target_type="album", nd_album_id=x) for x in album_ids or []]
         targets += [FavoriteTarget(target_type="artist", nd_artist_id=x) for x in artist_ids or []]
         try:
-            await command(self.s, self.user, targets, liked=True, client="assistant",
-                          context="assistant:bulk" if songs_from or len(targets) > 1 else "assistant", nd=self.nd())
+            await command(
+                self.s,
+                self.user,
+                targets,
+                liked=True,
+                client="assistant",
+                context="assistant:bulk" if songs_from or len(targets) > 1 else "assistant",
+                nd=self.nd(),
+            )
         except Exception:
             await self.s.commit()
             raise
@@ -437,9 +609,14 @@ class ChatTools:
         self.done.append("♥ поставлено: " + _what(ids, album_ids, artist_ids))
         return {"starred": len(ids) + len(album_ids or []) + len(artist_ids or [])}
 
-    async def unstar(self, song_ids: list[str] | None = None, songs_from: str | None = None,
-                     album_ids: list[str] | None = None, artist_ids: list[str] | None = None,
-                     refs: list[str] | None = None) -> Any:
+    async def unstar(
+        self,
+        song_ids: list[str] | None = None,
+        songs_from: str | None = None,
+        album_ids: list[str] | None = None,
+        artist_ids: list[str] | None = None,
+        refs: list[str] | None = None,
+    ) -> Any:
         ids = await self._songs(song_ids, songs_from)
         from app.api.schemas import FavoriteTarget
         from app.favorites import command
@@ -449,8 +626,15 @@ class ChatTools:
         targets += [FavoriteTarget(target_type="album", nd_album_id=x) for x in album_ids or []]
         targets += [FavoriteTarget(target_type="artist", nd_artist_id=x) for x in artist_ids or []]
         try:
-            await command(self.s, self.user, targets, liked=False, client="assistant",
-                          context="assistant:bulk" if songs_from or len(targets) > 1 else "assistant", nd=self.nd())
+            await command(
+                self.s,
+                self.user,
+                targets,
+                liked=False,
+                client="assistant",
+                context="assistant:bulk" if songs_from or len(targets) > 1 else "assistant",
+                nd=self.nd(),
+            )
         except Exception:
             await self.s.commit()
             raise
@@ -458,9 +642,16 @@ class ChatTools:
         self.done.append("♥ снято: " + _what(ids + list(refs or []), album_ids, artist_ids))
         return {"unstarred": len(ids) + len(album_ids or []) + len(artist_ids or []) + len(refs or [])}
 
-    async def _download(self, *, track_refs: list[str] | None = None, album_refs: list[str] | None = None,
-                        artist_ref: str | None = None, playlist_id: str | None = None,
-                        new_playlist_name: str | None = None, star: bool = False) -> list[int]:
+    async def _download(
+        self,
+        *,
+        track_refs: list[str] | None = None,
+        album_refs: list[str] | None = None,
+        artist_ref: str | None = None,
+        playlist_id: str | None = None,
+        new_playlist_name: str | None = None,
+        star: bool = False,
+    ) -> list[int]:
         from app.api.downloads import create_batch
 
         tracks = [r for r in track_refs or [] if ":" in r]
@@ -476,11 +667,23 @@ class ChatTools:
             batches.append(out.batch_id)
         return batches
 
-    async def enqueue_download(self, track_refs: list[str] | None = None, album_refs: list[str] | None = None,
-                               artist_ref: str | None = None, playlist_id: str | None = None,
-                               new_playlist_name: str | None = None, star: bool = False) -> Any:
-        batches = await self._download(track_refs=track_refs, album_refs=album_refs, artist_ref=artist_ref,
-                                       playlist_id=playlist_id, new_playlist_name=new_playlist_name, star=star)
+    async def enqueue_download(
+        self,
+        track_refs: list[str] | None = None,
+        album_refs: list[str] | None = None,
+        artist_ref: str | None = None,
+        playlist_id: str | None = None,
+        new_playlist_name: str | None = None,
+        star: bool = False,
+    ) -> Any:
+        batches = await self._download(
+            track_refs=track_refs,
+            album_refs=album_refs,
+            artist_ref=artist_ref,
+            playlist_id=playlist_id,
+            new_playlist_name=new_playlist_name,
+            star=star,
+        )
         if not batches:
             raise ValueError("nothing to download")
         what = [tracks_word(len(track_refs))] if track_refs else []
@@ -519,8 +722,9 @@ class ChatTools:
         rows = (await self.s.execute(select(Track).where(Track.id.in_(track_ids)))).scalars().all()
         if not rows:
             raise ValueError("no such tracks")
-        self.proposal.append({"type": "delete_library_tracks", "track_ids": [t.id for t in rows],
-                              "titles": [label(t) for t in rows]})
+        self.proposal.append(
+            {"type": "delete_library_tracks", "track_ids": [t.id for t in rows], "titles": [label(t) for t in rows]}
+        )
         return {"status": "waiting_for_user_confirmation"}
 
 
@@ -532,13 +736,17 @@ def _what(song_ids: list, album_ids: list | None, artist_ids: list | None) -> st
 
 
 def _tracks(tracks) -> dict:
-    return table(["ref", "track", "album", "duration_s", "owned"],
-                 [[t.ref, label(t), t.album_title, t.duration_s, t.owned] for t in tracks])
+    return table(
+        ["ref", "track", "album", "duration_s", "owned"],
+        [[t.ref, label(t), t.album_title, t.duration_s, t.owned] for t in tracks],
+    )
 
 
 def _albums(albums) -> dict:
-    return table(["ref", "album", "type", "year", "tracks", "in_library"],
-                 [[a.ref, label(a), a.record_type, a.year, a.nb_tracks, a.owned_status] for a in albums])
+    return table(
+        ["ref", "album", "type", "year", "tracks", "in_library"],
+        [[a.ref, label(a), a.record_type, a.year, a.nb_tracks, a.owned_status] for a in albums],
+    )
 
 
 def describe(a: dict) -> str:
@@ -553,8 +761,9 @@ def _error(e: Exception) -> str:
     return str(e.detail if isinstance(e, HTTPException) else e)[:300]
 
 
-async def run_chat(s: AsyncSession, user: User, messages: list[dict[str, str]],
-                   images: list[tuple[bytes, str]] | None = None) -> dict[str, Any]:
+async def run_chat(
+    s: AsyncSession, user: User, messages: list[dict[str, str]], images: list[tuple[bytes, str]] | None = None
+) -> dict[str, Any]:
     """One user turn. Returns {"reply", "done", "cost_usd", "actions", "task_id"?, "confirm_token"?, "summary"?}."""
     from app.ai.llm import LLMUsage, configured, image_part, is_openrouter, usage_of
 
@@ -579,9 +788,14 @@ async def run_chat(s: AsyncSession, user: User, messages: list[dict[str, str]],
     try:
         for _step in range(MAX_STEPS):
             try:
-                resp = await client.chat.completions.create(model=settings.llm_model, messages=convo, tools=TOOLS,
-                                                            tool_choice="auto", max_tokens=2500,
-                                                            extra_body=extra_body)
+                resp = await client.chat.completions.create(
+                    model=settings.llm_model,
+                    messages=convo,
+                    tools=TOOLS,
+                    tool_choice="auto",
+                    max_tokens=2500,
+                    extra_body=extra_body,
+                )
             except Exception as e:
                 if not tools.done and not tools.proposal:
                     raise
@@ -595,8 +809,9 @@ async def run_chat(s: AsyncSession, user: User, messages: list[dict[str, str]],
             if not calls:
                 reply = msg.content or ""
                 break
-            convo.append({"role": "assistant", "content": msg.content or "",
-                          "tool_calls": [c.model_dump() for c in calls]})
+            convo.append(
+                {"role": "assistant", "content": msg.content or "", "tool_calls": [c.model_dump() for c in calls]}
+            )
             for call in calls:
                 name = call.function.name
                 try:
@@ -610,8 +825,13 @@ async def run_chat(s: AsyncSession, user: User, messages: list[dict[str, str]],
                 except Exception as e:
                     log.info("chat tool %s failed: %r", name, e, extra={"user_id": user.id})
                     result = {"error": _error(e)}
-                convo.append({"role": "tool", "tool_call_id": call.id,
-                              "content": json.dumps(result, ensure_ascii=False, default=str)[:20000]})
+                convo.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": json.dumps(result, ensure_ascii=False, default=str)[:20000],
+                    }
+                )
         else:
             reply = f"Не получилось уложиться в {MAX_STEPS} шагов — уточните запрос."
     finally:
@@ -622,15 +842,28 @@ async def run_chat(s: AsyncSession, user: User, messages: list[dict[str, str]],
     out: dict[str, Any] = {"reply": reply, "done": tools.done, "actions": [], "cost_usd": round(cost, 6)}
     if tools.proposal:
         summary = "; ".join(describe(a) for a in tools.proposal)
-        task = AssistantTask(user_id=user.id, input_kind="chat", input_ref={"messages": messages[-20:]},
-                             resolution_json={"summary": summary, "actions": tools.proposal},
-                             status="awaiting_confirmation", confirm_token=secrets.token_urlsafe(16),
-                             tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost)
+        task = AssistantTask(
+            user_id=user.id,
+            input_kind="chat",
+            input_ref={"messages": messages[-20:]},
+            resolution_json={"summary": summary, "actions": tools.proposal},
+            status="awaiting_confirmation",
+            confirm_token=secrets.token_urlsafe(16),
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            cost_usd=cost,
+        )
         s.add(task)
         await s.flush()
         out.update(task_id=task.id, confirm_token=task.confirm_token, actions=tools.proposal, summary=summary)
-    log.info("chat turn: %s tokens in, %s out, $%.5f, %s changes", tokens_in, tokens_out, cost, len(tools.done),
-             extra={"user_id": user.id})
+    log.info(
+        "chat turn: %s tokens in, %s out, $%.5f, %s changes",
+        tokens_in,
+        tokens_out,
+        cost,
+        len(tools.done),
+        extra={"user_id": user.id},
+    )
     return out
 
 

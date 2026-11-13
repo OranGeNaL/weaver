@@ -116,7 +116,14 @@ async def probe(path: Path | str, timeout: float = 60) -> ProbeInfo:  # noqa: AS
     if not path.is_file():
         raise ProbeError(f"file not found: {path}")
     code, out, err = await _run(
-        ffprobe_bin(), "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path),
+        ffprobe_bin(),
+        "-v",
+        "error",
+        "-print_format",
+        "json",
+        "-show_format",
+        "-show_streams",
+        str(path),
         timeout=timeout,
     )
     if code != 0:
@@ -147,12 +154,25 @@ def parse_silencedetect(stderr: str) -> list[tuple[float, float]]:
 
 
 async def detect_silences(
-    path: Path | str, min_s: float = 0.7, noise_db: float = -50, timeout: float = 300  # noqa: ASYNC109
+    path: Path | str,
+    min_s: float = 0.7,
+    noise_db: float = -50,
+    timeout: float = 300,  # noqa: ASYNC109
 ) -> list[tuple[float, float]]:
     """(start_s, end_s) of every silence at least `min_s` long and quieter than `noise_db`."""
     code, _, err = await _run(
-        ffmpeg_bin(), "-hide_banner", "-nostats", "-nostdin", "-i", str(path),
-        "-vn", "-af", f"silencedetect=noise={noise_db}dB:d={min_s}", "-f", "null", "-",
+        ffmpeg_bin(),
+        "-hide_banner",
+        "-nostats",
+        "-nostdin",
+        "-i",
+        str(path),
+        "-vn",
+        "-af",
+        f"silencedetect=noise={noise_db}dB:d={min_s}",
+        "-f",
+        "null",
+        "-",
         timeout=timeout,
     )
     text = err.decode("utf-8", "replace")

@@ -22,10 +22,19 @@ def songs(n: int, artists: int | None = None) -> list[OwnSong]:
 # --- where the recommendations go -----------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(("n", "per", "recs", "after"), [
-    (1, 2, 1, [0]), (2, 2, 1, [1]), (3, 2, 1, [1]), (4, 2, 2, [1, 3]), (15, 2, 7, [1, 3, 5, 7, 9, 11, 13]),
-    (16, 3, 5, [2, 5, 8, 11, 14]), (30, 3, 10, [2, 5, 8, 11, 14, 17, 20, 23, 26, 29]),
-], ids=lambda x: str(x) if isinstance(x, int) else "")
+@pytest.mark.parametrize(
+    ("n", "per", "recs", "after"),
+    [
+        (1, 2, 1, [0]),
+        (2, 2, 1, [1]),
+        (3, 2, 1, [1]),
+        (4, 2, 2, [1, 3]),
+        (15, 2, 7, [1, 3, 5, 7, 9, 11, 13]),
+        (16, 3, 5, [2, 5, 8, 11, 14]),
+        (30, 3, 10, [2, 5, 8, 11, 14, 17, 20, 23, 26, 29]),
+    ],
+    ids=lambda x: str(x) if isinstance(x, int) else "",
+)
 def test_one_recommendation_per_three_own_songs_over_fifteen_else_per_two(n, per, recs, after) -> None:
     assert so.own_per_rec(n) == per
     assert so.rec_count(n) == recs

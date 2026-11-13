@@ -72,10 +72,17 @@ def _free_bytes() -> int | None:
 
 async def stats(s: AsyncSession, imp: Import, colls: list[ImportCollection]) -> ImportStatsOut:
     selected = {c.id for c in colls if c.selected and c.kind in TRACK_KINDS}
-    rows = (await s.execute(
-        select(ImportItem.collection_id, ImportItem.external_id, ImportItem.match, ImportItem.status,
-               ImportItem.raw_json)
-        .where(ImportItem.import_id == imp.id))).all()
+    rows = (
+        await s.execute(
+            select(
+                ImportItem.collection_id,
+                ImportItem.external_id,
+                ImportItem.match,
+                ImportItem.status,
+                ImportItem.raw_json,
+            ).where(ImportItem.import_id == imp.id)
+        )
+    ).all()
     out = ImportStatsOut(free_bytes=_free_bytes())
     tracks: dict[str, tuple[str | None, str, dict]] = {}
     for cid, ext, match, status, raw in rows:
@@ -102,10 +109,13 @@ async def stats(s: AsyncSession, imp: Import, colls: list[ImportCollection]) -> 
             out.probable += 1
         elif match == "not_found":
             out.not_found += 1
-    for status, n in (await s.execute(
-        select(DownloadItem.status, func.count(DownloadItem.id))
-        .where(cast(DownloadItem.query_json["import"]["id"].astext, Integer) == imp.id)
-        .group_by(DownloadItem.status))).all():
+    for status, n in (
+        await s.execute(
+            select(DownloadItem.status, func.count(DownloadItem.id))
+            .where(cast(DownloadItem.query_json["import"]["id"].astext, Integer) == imp.id)
+            .group_by(DownloadItem.status)
+        )
+    ).all():
         if status == "done":
             out.done += n
         elif status in ("failed", "needs_review", "cancelled"):
@@ -116,40 +126,86 @@ async def stats(s: AsyncSession, imp: Import, colls: list[ImportCollection]) -> 
 
 
 async def import_out(s: AsyncSession, imp: Import) -> ImportOut:
-    colls = (await s.execute(select(ImportCollection).where(ImportCollection.import_id == imp.id)
-                             .order_by(ImportCollection.position))).scalars().all()
+    colls = (
+        (
+            await s.execute(
+                select(ImportCollection).where(ImportCollection.import_id == imp.id).order_by(ImportCollection.position)
+            )
+        )
+        .scalars()
+        .all()
+    )
     counts: dict[int, tuple[int, int]] = {}
-    for cid, n, owned in (await s.execute(
-        select(ImportItem.collection_id, func.count(ImportItem.id),
-               func.sum(case((ImportItem.match == "owned", 1), else_=0)))
-        .where(ImportItem.import_id == imp.id, ImportItem.status != "skipped")
-        .group_by(ImportItem.collection_id))).all():
+    for cid, n, owned in (
+        await s.execute(
+            select(
+                ImportItem.collection_id,
+                func.count(ImportItem.id),
+                func.sum(case((ImportItem.match == "owned", 1), else_=0)),
+            )
+            .where(ImportItem.import_id == imp.id, ImportItem.status != "skipped")
+            .group_by(ImportItem.collection_id)
+        )
+    ).all():
         counts[cid] = (n, int(owned or 0))
     auth = None
     a = imp.auth_json or {}
     if imp.status == "auth" and a.get("user_code"):
-        auth = ImportAuthOut(user_code=a["user_code"], verification_url=a["verification_url"],
-                             expires_at=a["expires_at"])
+        auth = ImportAuthOut(
+            user_code=a["user_code"], verification_url=a["verification_url"], expires_at=a["expires_at"]
+        )
     return ImportOut(
-        id=imp.id, source=imp.source, method=imp.method, status=imp.status, mode=imp.mode, account=imp.account,
-        has_token=bool(imp.token_enc), keep_token=imp.keep_token,
-        download_albums=bool((imp.options_json or {}).get("download_albums")), auth=auth, error=imp.error,
+        id=imp.id,
+        source=imp.source,
+        method=imp.method,
+        status=imp.status,
+        mode=imp.mode,
+        account=imp.account,
+        has_token=bool(imp.token_enc),
+        keep_token=imp.keep_token,
+        download_albums=bool((imp.options_json or {}).get("download_albums")),
+        auth=auth,
+        error=imp.error,
         stats=await stats(s, imp, list(colls)),
-        collections=[ImportCollectionOut(id=c.id, kind=c.kind, title=c.title, selected=c.selected,
-                                         count=counts.get(c.id, (0, 0))[0], owned=counts.get(c.id, (0, 0))[1],
-                                         cover_url=c.cover_url, nd_playlist_id=c.nd_playlist_id) for c in colls],
-        created_at=imp.created_at, started_at=imp.started_at, finished_at=imp.finished_at,
+        collections=[
+            ImportCollectionOut(
+                id=c.id,
+                kind=c.kind,
+                title=c.title,
+                selected=c.selected,
+                count=counts.get(c.id, (0, 0))[0],
+                owned=counts.get(c.id, (0, 0))[1],
+                cover_url=c.cover_url,
+                nd_playlist_id=c.nd_playlist_id,
+            )
+            for c in colls
+        ],
+        created_at=imp.created_at,
+        started_at=imp.started_at,
+        finished_at=imp.finished_at,
     )
 
 
 def item_out(it: ImportItem, kind: str, nd_song_id: str | None = None, dl: DownloadItem | None = None) -> ImportItemOut:
     raw = it.raw_json or {}
     return ImportItemOut(
-        id=it.id, collection_id=it.collection_id, position=it.position, kind=ITEM_KIND.get(kind, "track"),
-        artist=raw.get("artist") or raw.get("name") or "", title=raw.get("title") or raw.get("name") or "",
-        album=raw.get("album"), duration_s=raw.get("duration_s"), cover_url=raw.get("cover_url"), ref=it.ref,
-        match=it.match, score=it.score, status=it.status, nd_song_id=nd_song_id, download_item_id=it.download_item_id,
-        download_status=dl.status if dl else None, error=dl.error if dl else None,
+        id=it.id,
+        collection_id=it.collection_id,
+        position=it.position,
+        kind=ITEM_KIND.get(kind, "track"),
+        artist=raw.get("artist") or raw.get("name") or "",
+        title=raw.get("title") or raw.get("name") or "",
+        album=raw.get("album"),
+        duration_s=raw.get("duration_s"),
+        cover_url=raw.get("cover_url"),
+        ref=it.ref,
+        match=it.match,
+        score=it.score,
+        status=it.status,
+        nd_song_id=nd_song_id,
+        download_item_id=it.download_item_id,
+        download_status=dl.status if dl else None,
+        error=dl.error if dl else None,
     )
 
 
@@ -171,10 +227,17 @@ async def set_status(import_id: int, status: str, **fields: Any) -> Import | Non
 
 async def enqueue_once(s: AsyncSession, kind: str, import_id: int, *, delay_s: float = 0) -> None:
     """One queued job of this kind per import (a batch of downloads coming in asks for one rewrite)."""
-    pending = (await s.execute(
-        select(Job.id).where(Job.kind == kind, Job.status == "queued",
-                             cast(Job.payload_json["import_id"].astext, Integer) == import_id).limit(1)
-    )).scalar_one_or_none()
+    pending = (
+        await s.execute(
+            select(Job.id)
+            .where(
+                Job.kind == kind,
+                Job.status == "queued",
+                cast(Job.payload_json["import_id"].astext, Integer) == import_id,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
     if pending is None:
         await enqueue(s, kind, {"import_id": import_id}, delay_s=delay_s, priority=PRIORITY_IMPORT)
 
@@ -182,8 +245,9 @@ async def enqueue_once(s: AsyncSession, kind: str, import_id: int, *, delay_s: f
 # --- creating an import ------------------------------------------------------------------------------------
 
 
-async def create(s: AsyncSession, user_id: int, *, source: str, method: str, token: str | None = None,
-                 url: str | None = None) -> Import:
+async def create(
+    s: AsyncSession, user_id: int, *, source: str, method: str, token: str | None = None, url: str | None = None
+) -> Import:
     if source != "yandex":
         raise SourceError("Этот сервис пока не поддерживается")
     imp = Import(user_id=user_id, source=source, method=method, status="fetching", auth_json={}, options_json={})
@@ -193,11 +257,16 @@ async def create(s: AsyncSession, user_id: int, *, source: str, method: str, tok
         code = await yandex.device_start(f"homemusic-{user_id}-{imp.id}")
         expires = utcnow() + timedelta(seconds=int(code.get("expires_in") or 300))
         imp.status = "auth"
-        imp.auth_json = {"device_code": encrypt(code["device_code"]), "user_code": code["user_code"],
-                         "verification_url": code.get("verification_url") or "https://ya.ru/device",
-                         "interval": int(code.get("interval") or 5), "expires_at": expires.isoformat()}
-        await enqueue(s, "import_auth", {"import_id": imp.id}, delay_s=imp.auth_json["interval"],
-                      priority=PRIORITY_IMPORT)
+        imp.auth_json = {
+            "device_code": encrypt(code["device_code"]),
+            "user_code": code["user_code"],
+            "verification_url": code.get("verification_url") or "https://ya.ru/device",
+            "interval": int(code.get("interval") or 5),
+            "expires_at": expires.isoformat(),
+        }
+        await enqueue(
+            s, "import_auth", {"import_id": imp.id}, delay_s=imp.auth_json["interval"], priority=PRIORITY_IMPORT
+        )
         return imp
     if method == "token":
         if not (token or "").strip():
@@ -257,31 +326,50 @@ async def store_snapshot(s: AsyncSession, imp: Import, snap: Snapshot) -> int:
     the new order and drops what left the service. Returns the number of new rows."""
     if snap.account and imp.method != "profile":
         imp.account = snap.account
-    colls = {c.external_id: c for c in (await s.execute(
-        select(ImportCollection).where(ImportCollection.import_id == imp.id))).scalars()}
+    colls = {
+        c.external_id: c
+        for c in (await s.execute(select(ImportCollection).where(ImportCollection.import_id == imp.id))).scalars()
+    }
     fresh = 0
     for pos, sc in enumerate(snap.collections):
         coll = colls.get(sc.external_id)
         if coll is None:
-            coll = ImportCollection(import_id=imp.id, kind=sc.kind, external_id=sc.external_id, title=sc.title,
-                                    selected=sc.selected, nd_song_ids=[])
+            coll = ImportCollection(
+                import_id=imp.id,
+                kind=sc.kind,
+                external_id=sc.external_id,
+                title=sc.title,
+                selected=sc.selected,
+                nd_song_ids=[],
+            )
             s.add(coll)
             await s.flush()
         coll.title, coll.position, coll.cover_url = sc.title, pos, sc.cover_url
-        old = {i.external_id: i for i in (await s.execute(
-            select(ImportItem).where(ImportItem.collection_id == coll.id))).scalars()}
+        old = {
+            i.external_id: i
+            for i in (await s.execute(select(ImportItem).where(ImportItem.collection_id == coll.id))).scalars()
+        }
         seen: set[str] = set()
         for ipos, si in enumerate(sc.items):
             seen.add(si.external_id)
             it = old.get(si.external_id)
             if it is None:
-                it = ImportItem(import_id=imp.id, collection_id=coll.id, external_id=si.external_id, raw_json=si.raw,
-                                status="pending")
+                it = ImportItem(
+                    import_id=imp.id,
+                    collection_id=coll.id,
+                    external_id=si.external_id,
+                    raw_json=si.raw,
+                    status="pending",
+                )
                 s.add(it)
                 fresh += 1
                 if sc.kind in ("likes", "playlist", "dislikes"):
-                    lib = await find_existing(s, artist=si.raw.get("artist") or "", title=si.raw.get("title") or "",
-                                              duration_s=si.raw.get("duration_s"))
+                    lib = await find_existing(
+                        s,
+                        artist=si.raw.get("artist") or "",
+                        title=si.raw.get("title") or "",
+                        duration_s=si.raw.get("duration_s"),
+                    )
                     if lib is not None:
                         it.match, it.track_id, it.score = "owned", lib.id, 1.0
             elif it.status == "skipped" and (it.raw_json or {}).get("removed"):
@@ -330,8 +418,9 @@ async def _fetch_failed(job: Job, exc: Exception) -> None:
 # --- start, matching ----------------------------------------------------------------------------------------
 
 
-async def start(s: AsyncSession, imp: Import, *, collection_ids: list[int], mode: str, download_albums: bool,
-                keep_token: bool) -> None:
+async def start(
+    s: AsyncSession, imp: Import, *, collection_ids: list[int], mode: str, download_albums: bool, keep_token: bool
+) -> None:
     if imp.status != "preview":
         raise PermanentError("Импорт уже запущен")
     for c in (await s.execute(select(ImportCollection).where(ImportCollection.import_id == imp.id))).scalars():
@@ -345,14 +434,22 @@ async def start(s: AsyncSession, imp: Import, *, collection_ids: list[int], mode
 
 
 async def _next_batch(s: AsyncSession, imp: Import) -> list[tuple[ImportItem, ImportCollection]]:
-    rows = (await s.execute(
-        select(ImportItem, ImportCollection)
-        .join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
-        .where(ImportItem.import_id == imp.id, ImportItem.status == "pending", ImportCollection.selected.is_(True))
-    )).all()
+    rows = (
+        await s.execute(
+            select(ImportItem, ImportCollection)
+            .join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
+            .where(ImportItem.import_id == imp.id, ImportItem.status == "pending", ImportCollection.selected.is_(True))
+        )
+    ).all()
     # likes from the oldest: each downloaded one then lands on top of «Понравившиеся» (`apply.sync_likes`)
-    rows = sorted(rows, key=lambda r: (KIND_ORDER.get(r[1].kind, 9), r[1].position,
-                                       -r[0].position if r[1].kind == "likes" else r[0].position))
+    rows = sorted(
+        rows,
+        key=lambda r: (
+            KIND_ORDER.get(r[1].kind, 9),
+            r[1].position,
+            -r[0].position if r[1].kind == "likes" else r[0].position,
+        ),
+    )
     return [(it, c) for it, c in rows[:RESOLVE_BATCH]]
 
 
@@ -454,9 +551,13 @@ async def handle_finish(job: Job) -> None:
 async def download_all(s: AsyncSession, imp: Import) -> int:
     """Economy → full: what waits for a listen is downloaded now."""
     imp.mode = "full"
-    rows = (await s.execute(
-        select(ImportItem, ImportCollection).join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
-        .where(ImportItem.import_id == imp.id, ImportItem.status == "waiting"))).all()
+    rows = (
+        await s.execute(
+            select(ImportItem, ImportCollection)
+            .join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
+            .where(ImportItem.import_id == imp.id, ImportItem.status == "waiting")
+        )
+    ).all()
     n = 0
     for it, coll in rows:
         if coll.kind == "albums":
@@ -474,12 +575,14 @@ async def download_all(s: AsyncSession, imp: Import) -> int:
 async def listened(user_id: int, ref: str) -> None:
     """A track of an economy import was listened to: download it (the user's own work, not background)."""
     async with session_scope() as s:
-        rows = (await s.execute(
-            select(ImportItem, ImportCollection, Import)
-            .join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
-            .join(Import, Import.id == ImportItem.import_id)
-            .where(Import.user_id == user_id, ImportItem.ref == ref, ImportItem.status == "waiting")
-        )).all()
+        rows = (
+            await s.execute(
+                select(ImportItem, ImportCollection, Import)
+                .join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
+                .join(Import, Import.id == ImportItem.import_id)
+                .where(Import.user_id == user_id, ImportItem.ref == ref, ImportItem.status == "waiting")
+            )
+        ).all()
         for it, coll, imp in rows:
             await apply.queue_track(s, imp, it, coll.kind, priority=0)
     if rows:
@@ -501,5 +604,15 @@ async def remove(s: AsyncSession, imp: Import) -> None:
     await s.delete(imp)
 
 
-__all__ = ["ACTIVE", "create", "download_all", "downloads_done", "get_import", "import_out", "item_out", "listened",
-           "remove", "start"]
+__all__ = [
+    "ACTIVE",
+    "create",
+    "download_all",
+    "downloads_done",
+    "get_import",
+    "import_out",
+    "item_out",
+    "listened",
+    "remove",
+    "start",
+]

@@ -1,4 +1,5 @@
 """V2 consumer math and geometry operations: pure state/HTTP mocks, no external services."""
+
 import json
 from collections import Counter
 from datetime import timedelta
@@ -24,30 +25,50 @@ def fresh_settings():
 
 def vp(*tracks, maturity=1):
     base = profile(*tracks)
-    return V2Profile(**{k: getattr(base, k) for k in Profile.__dataclass_fields__},
-                     timezone="Europe/Moscow", maturity=maturity)
+    return V2Profile(
+        **{k: getattr(base, k) for k in Profile.__dataclass_fields__}, timezone="Europe/Moscow", maturity=maturity
+    )
 
 
 def signal(eid, kind, ref="dz:1", position=None, **kw):
-    return PlayEvent(user_id=kw.pop("user_id", 1), event_id=eid, ts=NOW, received_at=NOW,
-                     kind=kind, ref=ref, position_s=position, duration_s=200, client="pwa", target_type="track", **kw)
+    return PlayEvent(
+        user_id=kw.pop("user_id", 1),
+        event_id=eid,
+        ts=NOW,
+        received_at=NOW,
+        kind=kind,
+        ref=ref,
+        position_s=position,
+        duration_s=200,
+        client="pwa",
+        target_type="track",
+        **kw,
+    )
 
 
 def seed_track(i, artist=None, score=2, age=1):
     track = tr(i, artist or f"A{i}")
-    return TasteTrack(track.ref, ref=track.ref, artist=track.artist, title=track.title, score=score,
-                      last_positive=NOW, positive_age=age, track=track)
+    return TasteTrack(
+        track.ref,
+        ref=track.ref,
+        artist=track.artist,
+        title=track.title,
+        score=score,
+        last_positive=NOW,
+        positive_age=age,
+        track=track,
+    )
 
 
 def test_early_skip_is_penalty_not_filter_rest_or_familiarity_and_penalties_are_bounded():
     t = seed_track(1, score=-100)
     t.last_played = NOW
-    p = vp(t, maturity=.25)
+    p = vp(t, maturity=0.25)
     p.artists[artist_key(t.artist)] = -100
     c = cand(1, t.artist)
-    c.sim = .8
+    c.sim = 0.8
     assert build.keep(c, p, get_settings().cfg.mixes) and not c.familiar
-    assert build.score(c, {"ytm_radio": 1}, p) == pytest.approx(1 + 1.5 * .25 * .8 - 2 - .9)
+    assert build.score(c, {"ytm_radio": 1}, p) == pytest.approx(1 + 1.5 * 0.25 * 0.8 - 2 - 0.9)
     p.explicit_negative_keys.add(t.key)
     assert not build.keep(c, p, get_settings().cfg.mixes)
 
@@ -83,8 +104,10 @@ def test_facet_seeds_are_daily_deterministic_cover_minority_and_limit_artists():
     tracks = [seed_track(i, "Major" if i < 4 else None, score=20 - i) for i in range(16)]
     p = vp(*tracks)
     data = profile_body()
-    data["facets"] = [{"id": "major", "weight": .8, "members": [t.key for t in tracks[:12]], "center": [1, 0]},
-                      {"id": "minor", "weight": .2, "members": [t.key for t in tracks[12:]], "center": [0, 1]}]
+    data["facets"] = [
+        {"id": "major", "weight": 0.8, "members": [t.key for t in tracks[:12]], "center": [1, 0]},
+        {"id": "minor", "weight": 0.2, "members": [t.key for t in tracks[12:]], "center": [0, 1]},
+    ]
     p.geometry = embedder.GeometryProfile(**data)
     selected = p.seeds(8)
     assert [t.key for t in selected] == [t.key for t in p.seeds(8)]
@@ -98,7 +121,7 @@ def test_facet_seeds_are_daily_deterministic_cover_minority_and_limit_artists():
 
 
 def test_fallback_is_blocked_by_recent_positive_even_below_score_or_missing_names():
-    weak = seed_track(1, score=.2)
+    weak = seed_track(1, score=0.2)
     weak.artist = weak.title = ""
     saved = seed_track(2, score=0)
     saved.downloaded, saved.last_positive, saved.positive_age = True, None, None
@@ -113,11 +136,12 @@ def test_fallback_is_blocked_by_recent_positive_even_below_score_or_missing_name
 async def test_cold_start_reserves_onboarding_and_redistributes_empty_slots(monkeypatch):
     own = [seed_track(i) for i in range(8)]
     cold = [seed_track(100 + i) for i in range(8)]
-    p = vp(*own, maturity=.5)
+    p = vp(*own, maturity=0.5)
     p.picked_artists = [{"ref": "dz:artist", "name": "Cold"}]
 
     async def cold_seeds(p, n):
         return cold[:n]
+
     monkeypatch.setattr(build, "cold_seeds", cold_seeds)
     result = await taste_select.seeds(p, 8)
     assert len(result) == 8 and len([t for t in result if t.key.startswith("dz:10")]) == 4
@@ -143,6 +167,7 @@ async def test_saved_album_and_own_artist_can_seed_without_fabricated_track_scor
     async def cold(p, n):
         assert p.picked_artists == [{"ref": "dz:artist", "name": "Own artist"}]
         return [seed_track(2)]
+
     monkeypatch.setattr(build, "cold_seeds", cold)
     assert [t.key for t in await taste_select.seeds(p, 8)] == ["dz:2"]
     assert not p.tracks and not p.picked_artists
@@ -153,24 +178,56 @@ async def test_stale_space_discards_partial_similarity_and_all_old_vectors(monke
     monkeypatch.setenv("EMBEDDER_URL", "http://embedder.test")
     get_settings.cache_clear()
     p, c = vp(seed_track(1)), cand(2)
-    profiles = respx_mock.post("http://embedder.test/v2/profile").mock(side_effect=[
-        httpx.Response(200, json={**profile_body(), "space_id": "old"}),
-        httpx.Response(200, json={**profile_body(), "space_id": "new"})])
+    profiles = respx_mock.post("http://embedder.test/v2/profile").mock(
+        side_effect=[
+            httpx.Response(200, json={**profile_body(), "space_id": "old"}),
+            httpx.Response(200, json={**profile_body(), "space_id": "new"}),
+        ]
+    )
 
     def similarity(request):
         space = json.loads(request.content)["space_id"]
-        return httpx.Response(200, json={**SPACE, "space_id": space, "results": [
-            {"key": c.key, "pos": .9 if space == "old" else .2, "neg": 0, "score": .9 if space == "old" else .2}],
-            "missing": [], "diagnostics": DIAGNOSTICS})
+        return httpx.Response(
+            200,
+            json={
+                **SPACE,
+                "space_id": space,
+                "results": [
+                    {
+                        "key": c.key,
+                        "pos": 0.9 if space == "old" else 0.2,
+                        "neg": 0,
+                        "score": 0.9 if space == "old" else 0.2,
+                    }
+                ],
+                "missing": [],
+                "diagnostics": DIAGNOSTICS,
+            },
+        )
+
     respx_mock.post("http://embedder.test/v2/similarity").mock(side_effect=similarity)
     response = httpx.Response(409, json={"detail": {"code": "stale_space", "space_id": "new"}})
-    vectors = respx_mock.post("http://embedder.test/v2/vectors").mock(side_effect=[response,
-        response if fail_twice else httpx.Response(200, json={**SPACE, "space_id": "new", "vectors": {c.key: [0, 1]},
-                                                            "missing": [], "diagnostics": DIAGNOSTICS})])
+    vectors = respx_mock.post("http://embedder.test/v2/vectors").mock(
+        side_effect=[
+            response,
+            response
+            if fail_twice
+            else httpx.Response(
+                200,
+                json={
+                    **SPACE,
+                    "space_id": "new",
+                    "vectors": {c.key: [0, 1]},
+                    "missing": [],
+                    "diagnostics": DIAGNOSTICS,
+                },
+            ),
+        ]
+    )
     result = await taste_select.geometry_scores(p, [c])
     assert profiles.call_count == vectors.call_count == 2
     assert result == ({} if fail_twice else {c.key: [0, 1]})
-    assert c.sim == (None if fail_twice else .2)
+    assert c.sim == (None if fail_twice else 0.2)
     assert (p.geometry.space_id if p.geometry else None) == (None if fail_twice else "new")
 
 
@@ -189,15 +246,33 @@ async def test_wave_rebuilds_session_coordinates_and_drops_cached_raw_vectors(mo
     monkeypatch.setenv("EMBEDDER_URL", "http://embedder.test")
     get_settings.cache_clear()
     p, candidate = vp(seed_track(1)), cand(2)
-    rt = wave.Runtime(1, "normal", wave.State(taste_model="v2", pos=["dz:1"], positive_weights={"dz:1": 2}),
-                      profile=p, vectors={"old-only": [1, 0], candidate.key: [1, 0]})
+    rt = wave.Runtime(
+        1,
+        "normal",
+        wave.State(taste_model="v2", pos=["dz:1"], positive_weights={"dz:1": 2}),
+        profile=p,
+        vectors={"old-only": [1, 0], candidate.key: [1, 0]},
+    )
     rt.state.pool[candidate.track.ref] = candidate
     respx_mock.post("http://embedder.test/v2/profile").respond(json={**profile_body(), "space_id": "changed"})
-    respx_mock.post("http://embedder.test/v2/similarity").respond(json={**SPACE, "space_id": "changed",
-        "results": [{"key": candidate.key, "pos": .5, "neg": 0, "score": .5}], "missing": [],
-        "diagnostics": DIAGNOSTICS})
-    respx_mock.post("http://embedder.test/v2/vectors").respond(json={**SPACE, "space_id": "changed",
-        "vectors": {candidate.key: [0, 1], "dz:1": [0, 1]}, "missing": [], "diagnostics": DIAGNOSTICS})
+    respx_mock.post("http://embedder.test/v2/similarity").respond(
+        json={
+            **SPACE,
+            "space_id": "changed",
+            "results": [{"key": candidate.key, "pos": 0.5, "neg": 0, "score": 0.5}],
+            "missing": [],
+            "diagnostics": DIAGNOSTICS,
+        }
+    )
+    respx_mock.post("http://embedder.test/v2/vectors").respond(
+        json={
+            **SPACE,
+            "space_id": "changed",
+            "vectors": {candidate.key: [0, 1], "dz:1": [0, 1]},
+            "missing": [],
+            "diagnostics": DIAGNOSTICS,
+        }
+    )
     vectors = await wave._vectors(rt)
     assert "old-only" not in vectors and vectors[candidate.key] == [0, 1]
     assert rt.state.space == {"model": "fake", "space_id": "changed", "dim": 2}
@@ -207,6 +282,7 @@ async def test_wave_rebuilds_session_coordinates_and_drops_cached_raw_vectors(mo
 async def test_v2_session_weights_like_unlike_late_skip_and_restart_idempotence(monkeypatch):
     async def no_io(*a, **kw):
         return None
+
     monkeypatch.setattr(wave, "_download", no_io)
     monkeypatch.setattr(wave, "_gather", no_io)
     rt = wave.Runtime(1, "normal", wave.State(taste_model="v2"), profile=vp())
@@ -235,6 +311,7 @@ async def test_v2_session_weights_like_unlike_late_skip_and_restart_idempotence(
 async def test_v2_compensation_chains_and_other_users_do_not_add_session_weight(monkeypatch):
     async def no_io(*a, **kw):
         return None
+
     monkeypatch.setattr(wave, "_gather", no_io)
     rt = wave.Runtime(1, "normal", wave.State(taste_model="v2"), profile=vp())
     rt.state.out["dz:1"] = cand(1)
@@ -253,6 +330,7 @@ async def test_external_unlike_removes_session_like_only_preserving_finish(monke
 
     async def no_io(*a, **kw):
         return None
+
     monkeypatch.setattr(wave, "_download", no_io)
     monkeypatch.setattr(wave, "_gather", no_io)
     p = vp(seed_track(1))
@@ -266,6 +344,7 @@ async def test_external_unlike_removes_session_like_only_preserving_finish(monke
 async def test_future_session_signal_is_not_consumed_before_its_time(monkeypatch):
     async def no_io(*a, **kw):
         return None
+
     now = [NOW]
     monkeypatch.setattr(wave, "utcnow", lambda: now[0])
     monkeypatch.setattr(wave, "_download", no_io)
@@ -286,10 +365,10 @@ def test_nearest_session_negative_preserves_unrelated_cluster_and_m4_weighted_ce
     vectors = {"n1": [1, 0], "n2": [-1, 0], "p1": [0, 1], "p2": [1, 0]}
     c = cand(1)
     vectors[c.key] = [1, 0]
-    assert wave.value(c, st, vectors, None, None) == pytest.approx(c.score - .5)
+    assert wave.value(c, st, vectors, None, None) == pytest.approx(c.score - 0.5)
     vectors[c.key] = [0, -1]
     assert wave.value(c, st, vectors, None, None) == c.score
-    assert wave._weighted_center(st.positive_weights, vectors) == pytest.approx([1 / 5 ** .5, 2 / 5 ** .5])
+    assert wave._weighted_center(st.positive_weights, vectors) == pytest.approx([1 / 5**0.5, 2 / 5**0.5])
 
 
 def test_unversioned_session_is_always_v1_even_after_config_change():
@@ -299,7 +378,7 @@ def test_unversioned_session_is_always_v1_even_after_config_change():
 
 def score_case(model, *, s=None, artist_score=None, sim=None, rank=None):
     t = seed_track(1, "A1", score=s) if s is not None else None
-    p = vp(*([t] if t else []), maturity=.4) if model == "v2" else profile(*([t] if t else []))
+    p = vp(*([t] if t else []), maturity=0.4) if model == "v2" else profile(*([t] if t else []))
     if artist_score is not None:
         p.artists[artist_key("A1")] = artist_score
     c = cand(1, "A1")
@@ -308,11 +387,18 @@ def score_case(model, *, s=None, artist_score=None, sim=None, rank=None):
     return c, p
 
 
-@pytest.mark.parametrize("model,kw", [
-    ("v1", dict(sim=.6, rank=10_000)), ("v1", dict()),
-    ("v2", dict(s=-3, artist_score=-5, sim=.7, rank=500)), ("v2", dict(s=-9, artist_score=-1)),
-    ("v2", dict(s=2, artist_score=4, sim=-.2)), ("v2", dict()),
-], ids=["v1_sound", "v1_no_sim", "v2_negative_track_and_artist", "v2_no_sim", "v2_positive", "v2_unknown"])
+@pytest.mark.parametrize(
+    "model,kw",
+    [
+        ("v1", dict(sim=0.6, rank=10_000)),
+        ("v1", dict()),
+        ("v2", dict(s=-3, artist_score=-5, sim=0.7, rank=500)),
+        ("v2", dict(s=-9, artist_score=-1)),
+        ("v2", dict(s=2, artist_score=4, sim=-0.2)),
+        ("v2", dict()),
+    ],
+    ids=["v1_sound", "v1_no_sim", "v2_negative_track_and_artist", "v2_no_sim", "v2_positive", "v2_unknown"],
+)
 def test_score_parts_add_up_to_the_same_score(model, kw):
     c, p = score_case(model, **kw)
     weights = get_settings().cfg.mixes.weights
@@ -320,15 +406,17 @@ def test_score_parts_add_up_to_the_same_score(model, kw):
     parts = build.score_parts(c, weights, p)
 
     assert parts["total"] == build.score(c, weights, p)
-    assert parts["total"] == pytest.approx(sum(parts[k] for k in ("generators", "sound", "popularity", "track_penalty",
-                                                                  "artist_penalty")))
+    assert parts["total"] == pytest.approx(
+        sum(parts[k] for k in ("generators", "sound", "popularity", "track_penalty", "artist_penalty"))
+    )
     if model == "v1":
         assert parts["maturity"] is None and parts["sound"] == pytest.approx(1.5 * (kw.get("sim") or 0))
     else:
-        assert parts["maturity"] == .4 and parts["sound"] == pytest.approx(1.5 * .4 * (kw.get("sim") or 0))
-        assert parts["track_penalty"] == pytest.approx(.5 * max(kw["s"], -4) if kw.get("s", 0) < 0 else 0)
-        assert parts["artist_penalty"] == pytest.approx(.3 * max(kw["artist_score"], -3)
-                                                        if kw.get("artist_score", 0) < 0 else 0)
+        assert parts["maturity"] == 0.4 and parts["sound"] == pytest.approx(1.5 * 0.4 * (kw.get("sim") or 0))
+        assert parts["track_penalty"] == pytest.approx(0.5 * max(kw["s"], -4) if kw.get("s", 0) < 0 else 0)
+        assert parts["artist_penalty"] == pytest.approx(
+            0.3 * max(kw["artist_score"], -3) if kw.get("artist_score", 0) < 0 else 0
+        )
 
 
 def test_the_known_track_snapshot_names_what_the_profile_knew():
@@ -336,6 +424,12 @@ def test_the_known_track_snapshot_names_what_the_profile_knew():
     t = p.tracks["dz:1"]
     t.positive_raw, t.negative = 1.5, 4.5
 
-    assert build.known_of(c, p) == {"key": "dz:1", "s": -3, "positive": 1.5, "negative": 4.5, "artist_score": -5,
-                                    "familiar": False}
+    assert build.known_of(c, p) == {
+        "key": "dz:1",
+        "s": -3,
+        "positive": 1.5,
+        "negative": 4.5,
+        "artist_score": -5,
+        "familiar": False,
+    }
     assert build.known_of(cand(2, "A2"), p) is None

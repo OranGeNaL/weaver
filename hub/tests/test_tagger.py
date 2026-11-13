@@ -47,7 +47,9 @@ def make_wav(path: Path, seconds: float = 1.0, rate: int = 8000) -> Path:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(rate)
-        w.writeframes(b"".join(struct.pack("<h", int(12000 * math.sin(2 * math.pi * 440 * i / rate))) for i in range(n)))
+        w.writeframes(
+            b"".join(struct.pack("<h", int(12000 * math.sin(2 * math.pi * 440 * i / rate))) for i in range(n))
+        )
     return path
 
 
@@ -58,8 +60,20 @@ def audio_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     d = tmp_path_factory.mktemp("audio")
     for ext, args in FORMATS.items():
         subprocess.run(
-            [FFMPEG, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
-             "-ar", "48000" if ext == "opus" else "44100", *args, str(d / f"sine.{ext}")],
+            [
+                FFMPEG,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=3",
+                "-ar",
+                "48000" if ext == "opus" else "44100",
+                *args,
+                str(d / f"sine.{ext}"),
+            ],
             check=True,
         )
     return d
@@ -166,10 +180,18 @@ def test_canonical_roundtrip() -> None:
 
 
 def test_from_canonical_foreign_values() -> None:
-    v = _from_canonical({
-        "TRACKNUMBER": ["3/12"], "DISCNUMBER": ["2"], "DATE": ["1999-07-01T00:00:00"], "ITUNESADVISORY": ["2"],
-        "RELEASETYPE": ["Album"], "ARTIST": ["A", "B"], "DEEZER_TRACK_ID": ["abc"], "HOMEMUSIC_ACQUIRED": ["junk"],
-    })
+    v = _from_canonical(
+        {
+            "TRACKNUMBER": ["3/12"],
+            "DISCNUMBER": ["2"],
+            "DATE": ["1999-07-01T00:00:00"],
+            "ITUNESADVISORY": ["2"],
+            "RELEASETYPE": ["Album"],
+            "ARTIST": ["A", "B"],
+            "DEEZER_TRACK_ID": ["abc"],
+            "HOMEMUSIC_ACQUIRED": ["junk"],
+        }
+    )
     assert v["track_no"] == 3 and v["track_total"] == 12 and v["disc_no"] == 2
     assert v["date"] == "1999-07-01"
     assert v["explicit"] is False

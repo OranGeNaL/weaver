@@ -222,8 +222,17 @@ def kaifograd(**kw) -> Candidate:
         (kaifograd(upload_date=date(2026, 6, 1), extra={"uncensored": True}), True),
         (kaifograd(upload_date=date(2024, 6, 1), extra={"uncensored": False}), False),
     ],
-    ids=["old", "old-explicit", "new", "no-date", "old-clean", "ytmusic", "old-youtube", "titled-uncensored",
-         "titled-clean"],
+    ids=[
+        "old",
+        "old-explicit",
+        "new",
+        "no-date",
+        "old-clean",
+        "ytmusic",
+        "old-youtube",
+        "titled-uncensored",
+        "titled-clean",
+    ],
 )
 def test_trusted_original(c, trusted):
     assert trusted_original(c, CFG) is trusted

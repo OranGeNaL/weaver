@@ -28,8 +28,16 @@ NOW = datetime(2026, 10, 23, 12, 0)
 
 def tr(n: int, artist: str | None = None) -> CatalogTrack:
     a = artist or f"Артист {n}"
-    return CatalogTrack(ref=f"dz:{n}", source="dz", id=str(n), title=f"Песня {n}", artist=a, artists=[a],
-                        artist_ref=f"dz:a-{a}", duration_s=200)
+    return CatalogTrack(
+        ref=f"dz:{n}",
+        source="dz",
+        id=str(n),
+        title=f"Песня {n}",
+        artist=a,
+        artists=[a],
+        artist_ref=f"dz:a-{a}",
+        duration_s=200,
+    )
 
 
 def cand(n: int, artist: str | None = None, *, score: float = 1.0, familiar: bool = False) -> build.Cand:
@@ -61,12 +69,15 @@ def test_an_artist_plays_at_most_once_in_eight_tracks() -> None:
 
     seq = ["Арт A", "Арт B", *(c.track.artist for c in got)]
     assert len(got) == 5
-    assert all(len(set(seq[i:i + 8])) == len(seq[i:i + 8]) for i in range(len(seq)))  # no artist twice in 8
+    assert all(len(set(seq[i : i + 8])) == len(seq[i : i + 8]) for i in range(len(seq)))  # no artist twice in 8
 
 
 def test_the_gap_gives_way_when_nothing_else_is_left() -> None:
-    st = state(*(cand(i, "Арт A", score=5 - i / 10) for i in range(3)), *(cand(10 + i, "Арт B") for i in range(3)),
-               played=["Арт A"])
+    st = state(
+        *(cand(i, "Арт A", score=5 - i / 10) for i in range(3)),
+        *(cand(10 + i, "Арт B") for i in range(3)),
+        played=["Арт A"],
+    )
 
     got = [c.track.artist for c in wave.pick(st, profile(), "discover", {}, n=5)]
 
@@ -139,13 +150,22 @@ def test_the_pool_comes_from_the_seed_or_the_mix_generators() -> None:
     seed = tr(1)
 
     assert set(wave.generators(p, seed, None, [])) == {"ytm_radio", "lastfm_similar", "yandex_similar", "deezer_radio"}
-    assert set(wave.generators(p, None, {"ref": "dz:1", "name": "Кино"}, [])) == {"deezer_radio", "favorites",
-                                                                                   "ytm_radio"}
+    assert set(wave.generators(p, None, {"ref": "dz:1", "name": "Кино"}, [])) == {
+        "deezer_radio",
+        "favorites",
+        "ytm_radio",
+    }
     songs = [tr(5, "Кино")]
     assert set(wave.generators(p, None, {"ref": "dz:1", "name": "Кино", "songs": songs}, [])) == {
-        "deezer_radio", "favorites", "artist_songs", "ytm_radio"}
+        "deezer_radio",
+        "favorites",
+        "artist_songs",
+        "ytm_radio",
+    }
     assert set(wave.generators(p, None, {"ref": None, "name": "Кино", "songs": songs}, [])) == {
-        "artist_songs", "ytm_radio"}  # no Deezer artist: the library songs and their radios
+        "artist_songs",
+        "ytm_radio",
+    }  # no Deezer artist: the library songs and their radios
     own = wave.generators(p, None, None, [])
     assert own.keys() == build.generators(p, []).keys() and "yandex_wave" in own  # the user's own: as a mix
 
@@ -155,16 +175,18 @@ def test_a_refill_takes_the_next_seeds_round_and_round() -> None:
 
     p = profile()
     for i in range(5):
-        t = TasteTrack(key=f"dz:{i}", ref=f"dz:{i}", artist=f"Арт {i}", title=f"Песня {i}", score=5 - i,
-                       last_event=NOW)
+        t = TasteTrack(key=f"dz:{i}", ref=f"dz:{i}", artist=f"Арт {i}", title=f"Песня {i}", score=5 - i, last_event=NOW)
         p.tracks[t.key] = t
     st = wave.State(seeds_used=["dz:0"])
 
     rounds = [(wave.refill_generators(p, st), list(st.seeds_used)) for _ in range(3)]
 
     assert set(rounds[0][0]) == {"ytm_radio", "lastfm_similar"}
-    assert [r[1] for r in rounds] == [["dz:0", "dz:1", "dz:2", "dz:3"], ["dz:0", "dz:1", "dz:2", "dz:3", "dz:4"],
-                                      ["dz:0", "dz:1", "dz:2"]]  # three new seeds a time, then all anew
+    assert [r[1] for r in rounds] == [
+        ["dz:0", "dz:1", "dz:2", "dz:3"],
+        ["dz:0", "dz:1", "dz:2", "dz:3", "dz:4"],
+        ["dz:0", "dz:1", "dz:2"],
+    ]  # three new seeds a time, then all anew
 
 
 # --- learning from the events ----------------------------------------------------------------------------------------
@@ -200,8 +222,17 @@ async def test_events_start_tracks_and_early_skips_count(monkeypatch: pytest.Mon
     for n, a in ((1, "Арт A"), (2, "Арт B"), (3, "Арт C")):
         st.out[f"dz:{n}"] = cand(n, a)
 
-    await wave.learn("s", rt, [event("start", "dz:1"), event("skip", "dz:1", 12), event("start", "dz:2"),
-                               event("skip", "dz:2", 95), event("like", "dz:3")])
+    await wave.learn(
+        "s",
+        rt,
+        [
+            event("start", "dz:1"),
+            event("skip", "dz:1", 12),
+            event("start", "dz:2"),
+            event("skip", "dz:2", 95),
+            event("like", "dz:3"),
+        ],
+    )
 
     assert [x.ref for x in st.played] == ["dz:1", "dz:2"] and st.played[0].kind == "skip"
     assert st.skips == {artist_key("Арт A"): 1}  # left after 30 s: no penalty
@@ -230,11 +261,18 @@ async def env(hub_env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         with respx.mock(assert_all_called=False) as mock:
             mock.route(host="navidrome.test").mock(side_effect=nd.handler)
             async with app_client(app) as client:
-                yield {"client": client, "nd": nd, "admin": await user_id("admin"), "prefetched": prefetched, "warmed": warmed}
+                yield {
+                    "client": client,
+                    "nd": nd,
+                    "admin": await user_id("admin"),
+                    "prefetched": prefetched,
+                    "warmed": warmed,
+                }
 
 
-def fake_sources(monkeypatch: pytest.MonkeyPatch, tracks: list[CatalogTrack],
-                 radio: list[CatalogTrack] = ()) -> dict[str, Any]:
+def fake_sources(
+    monkeypatch: pytest.MonkeyPatch, tracks: list[CatalogTrack], radio: list[CatalogTrack] = ()
+) -> dict[str, Any]:
     """The pool's generators give `tracks`; the radio of a liked track gives `radio`."""
     seen: dict[str, Any] = {"seed": [], "radio": []}
 
@@ -257,8 +295,15 @@ def fake_sources(monkeypatch: pytest.MonkeyPatch, tracks: list[CatalogTrack],
 
 
 def ev(kind: str, ref: str, position: float | None = None) -> dict[str, Any]:
-    return {"event_id": uuid.uuid4().hex, "ts": datetime.now(UTC).isoformat(), "kind": kind, "ref": ref,
-            "position_s": position, "duration_s": 200, "client": "pwa"}
+    return {
+        "event_id": uuid.uuid4().hex,
+        "ts": datetime.now(UTC).isoformat(),
+        "kind": kind,
+        "ref": ref,
+        "position_s": position,
+        "duration_s": 200,
+        "client": "pwa",
+    }
 
 
 async def test_nothing_to_start_from(env) -> None:
@@ -287,9 +332,13 @@ async def test_a_wave_hands_out_five_and_learns_from_what_was_played(env, monkey
     assert len(env["warmed"][-1]) == 5 and set(env["prefetched"][-1]) <= set(env["warmed"][-1])
 
     first = tracks[0]
-    r = await c.post(f"/api/wave/{sid}/next", json={
-        "played": [ev("start", first["ref"]), ev("finish", first["ref"], 200)],
-        "queued": [t["ref"] for t in tracks[1:]]})
+    r = await c.post(
+        f"/api/wave/{sid}/next",
+        json={
+            "played": [ev("start", first["ref"]), ev("finish", first["ref"], 200)],
+            "queued": [t["ref"] for t in tracks[1:]],
+        },
+    )
     assert r.status_code == 200, r.text
     w2 = r.json()
     refs = [t["ref"] for t in w2["tracks"]]
@@ -335,8 +384,9 @@ async def test_the_answer_replaces_the_queue(env, monkeypatch) -> None:
     # the client dropped its queue (nothing ahead): the same best tracks come again
     again = [t["ref"] for t in (await c.post(f"/api/wave/{sid}/next", json={})).json()["tracks"]]
     # it plays the first; two of the rest still queued come back, first
-    played = (await c.post(f"/api/wave/{sid}/next", json={"played": [ev("start", refs[0])],
-                                                        "queued": refs[3:]})).json()["tracks"]
+    played = (
+        await c.post(f"/api/wave/{sid}/next", json={"played": [ev("start", refs[0])], "queued": refs[3:]})
+    ).json()["tracks"]
 
     assert again == refs
     assert [t["ref"] for t in played][:2] == refs[3:] and refs[0] not in [t["ref"] for t in played]
@@ -352,10 +402,13 @@ async def test_dislikes_during_the_wave_keep_tracks_and_artists_out(env, monkeyp
     bad = tracks[1]
 
     # «Не нравится» the artist from the track menu, the track ahead through an event of the session
-    assert (await c.post("/api/dislikes", json={"artist_ref": bad["artist_ref"], "artist": bad["artist"]})
-            ).status_code == 200
-    r = await c.post(f"/api/wave/{sid}/next", json={"played": [ev("dislike", tracks[2]["ref"])],
-                                                     "queued": [t["ref"] for t in tracks]})
+    assert (
+        await c.post("/api/dislikes", json={"artist_ref": bad["artist_ref"], "artist": bad["artist"]})
+    ).status_code == 200
+    r = await c.post(
+        f"/api/wave/{sid}/next",
+        json={"played": [ev("dislike", tracks[2]["ref"])], "queued": [t["ref"] for t in tracks]},
+    )
 
     got = r.json()["tracks"]
     assert got and all(t["artist"] != bad["artist"] for t in got)
@@ -382,7 +435,8 @@ async def test_a_wave_by_search_file_keeps_the_file_and_continues_after_restart(
 
     c = env["client"]
     file = file_candidate("serenade", "https://hitmoz.test/audio/serenade.mp3", title="Serenade").model_copy(
-        update={"artist": "Travis Scott", "cover_url": "https://hitmoz.test/cover.jpg"})
+        update={"artist": "Travis Scott", "cover_url": "https://hitmoz.test/cover.jpg"}
+    )
     ref = "file:hitmoz:serenade"
     await listen.remember_files([file])
     # An unreleased song can have no catalog record. Its exact file still starts the wave.
@@ -395,13 +449,14 @@ async def test_a_wave_by_search_file_keeps_the_file_and_continues_after_restart(
     out = response.json()
     first = out["tracks"][0]
     assert out["seed"]["ref"] == ref and out["title"] == "Волна по треку «Serenade»"
-    assert (first["ref"], first["source"], first["artist"], first["title"]) == (
-        ref, "file", "Travis Scott", "Serenade")
+    assert (first["ref"], first["source"], first["artist"], first["title"]) == (ref, "file", "Travis Scott", "Serenade")
     assert first["cover_url"] == file.cover_url and first["generator"] == "seed"
     assert seen["seed"] == [ref] and ref in env["prefetched"][-1]
     await wave.reset()
-    response = await c.post(f"/api/wave/{out['session_id']}/next", json={
-        "played": [ev("start", ref)], "queued": [t["ref"] for t in out["tracks"][1:]]})
+    response = await c.post(
+        f"/api/wave/{out['session_id']}/next",
+        json={"played": [ev("start", ref)], "queued": [t["ref"] for t in out["tracks"][1:]]},
+    )
     assert response.status_code == 200, response.text
     assert response.json()["recorded"]["accepted"] == 1
     assert response.json()["tracks"] and all(t["ref"] != ref for t in response.json()["tracks"])
@@ -419,13 +474,26 @@ async def test_a_wave_by_a_navidrome_artist_takes_its_songs_and_its_deezer_artis
     c, nd = env["client"], env["nd"]
     await add_track(100)  # nd100 is Deezer's dz:100
     nd.artists["ar1"] = {"id": "ar1", "name": "Кино", "album": [{"id": "al1"}, {"id": "al2"}]}
-    nd.albums["al1"] = {"id": "al1", "song": [
-        {"id": "nd100", "title": "Песня 100", "artist": "Кино", "artistId": "ar1"},
-        {"id": "s2", "title": "Кукушка", "artist": "Кино", "artistId": "ar1", "duration": 400},
-        {"id": "s3", "title": "Чужая", "artist": "Другой", "artistId": "ar9"}]}  # a compilation's other artist
-    nd.albums["al2"] = {"id": "al2", "song": [
-        {"id": "s4", "title": "Вместе", "artist": "Кино feat. Гость", "artistId": "ar7",
-         "artists": [{"id": "ar1"}, {"id": "ar8"}]}]}
+    nd.albums["al1"] = {
+        "id": "al1",
+        "song": [
+            {"id": "nd100", "title": "Песня 100", "artist": "Кино", "artistId": "ar1"},
+            {"id": "s2", "title": "Кукушка", "artist": "Кино", "artistId": "ar1", "duration": 400},
+            {"id": "s3", "title": "Чужая", "artist": "Другой", "artistId": "ar9"},
+        ],
+    }  # a compilation's other artist
+    nd.albums["al2"] = {
+        "id": "al2",
+        "song": [
+            {
+                "id": "s4",
+                "title": "Вместе",
+                "artist": "Кино feat. Гость",
+                "artistId": "ar7",
+                "artists": [{"id": "ar1"}, {"id": "ar8"}],
+            }
+        ],
+    }
     from app.services import svc
 
     async def search(q, kinds=("artist", "album", "track"), limit=10):
@@ -437,8 +505,9 @@ async def test_a_wave_by_a_navidrome_artist_takes_its_songs_and_its_deezer_artis
     got: list[dict[str, Any]] = []
     fake_sources(monkeypatch, [tr(5000 + i) for i in range(10)])
     fake = wave.generators
-    monkeypatch.setattr(wave, "generators", lambda p, seed, artist, seeds: got.append(artist) or fake(
-        p, seed, artist, seeds))
+    monkeypatch.setattr(
+        wave, "generators", lambda p, seed, artist, seeds: got.append(artist) or fake(p, seed, artist, seeds)
+    )
 
     r = await c.post("/api/wave/start", json={"seed": {"nd_artist_id": "ar1"}, "mode": "discover"})
 
@@ -466,7 +535,9 @@ async def test_artist_from_library_track_resolves_and_survives_restart(env, monk
     next_response = await c.post(f"/api/wave/{out['session_id']}/next", json={})
     assert next_response.status_code == 200 and next_response.json()["seed"]["nd_artist_id"] == "ar1"
     for song in ("missing", "noartist"):
-        assert (await c.post("/api/wave/start", json={"seed": {"nd_song_id": song, "by_artist": True}})).status_code == 404
+        assert (
+            await c.post("/api/wave/start", json={"seed": {"nd_song_id": song, "by_artist": True}})
+        ).status_code == 404
 
 
 async def test_a_session_outlives_a_restart_but_not_another_user(env, monkeypatch) -> None:
@@ -630,8 +701,9 @@ async def wave_items(sid: str) -> list:
     from app.models import WaveItem
 
     async with session_scope() as s:
-        return list((await s.execute(select(WaveItem).where(WaveItem.session_id == sid)
-                                     .order_by(WaveItem.position))).scalars())
+        return list(
+            (await s.execute(select(WaveItem).where(WaveItem.session_id == sid).order_by(WaveItem.position))).scalars()
+        )
 
 
 async def test_a_start_keeps_where_and_by_what_client_it_was_started(env, monkeypatch) -> None:
@@ -645,15 +717,22 @@ async def test_a_start_keeps_where_and_by_what_client_it_was_started(env, monkey
 
     assert r.status_code == 200 and plain.status_code == 200, r.text
     row = await wave_row(r.json()["session_id"])
-    assert (row.origin, row.client, row.restart_of, row.taste_model) == ("home_card", "pwa-app",
-                                                                         "0123456789abcdef", "v1")
+    assert (row.origin, row.client, row.restart_of, row.taste_model) == (
+        "home_card",
+        "pwa-app",
+        "0123456789abcdef",
+        "v1",
+    )
     assert row.request_json == body and row.next_calls == 0 and row.cleared_at is None
     old = await wave_row(plain.json()["session_id"])
     assert (old.origin, old.client, old.restart_of, old.request_json) == (None, None, None, {})
 
 
-@pytest.mark.parametrize("origin", ["home card", "Home_card", "1home", "a" * 33, ""],
-                         ids=["space", "capitals", "digit_first", "too_long", "empty"])
+@pytest.mark.parametrize(
+    "origin",
+    ["home card", "Home_card", "1home", "a" * 33, ""],
+    ids=["space", "capitals", "digit_first", "too_long", "empty"],
+)
 async def test_a_bad_origin_is_refused(env, origin: str) -> None:
     r = await env["client"].post("/api/wave/start", json={"origin": origin})
 
@@ -698,10 +777,14 @@ async def test_handed_out_tracks_are_recorded_once_and_counted_again(env, monkey
 
     items = await wave_items(sid)
     assert [x.ref for x in items] == first and [x.position for x in items] == [0, 1, 2, 3, 4]
-    assert all(x.handed_count == 1 and x.generator == "ytm_radio" and x.value is not None and x.user_id == env["admin"]
-               for x in items)
-    assert all(x.title == f"Песня {x.ref[3:]}" and x.key == x.ref and x.gens == {"ytm_radio": int(x.ref[3:]) - 5000}
-               for x in items)
+    assert all(
+        x.handed_count == 1 and x.generator == "ytm_radio" and x.value is not None and x.user_id == env["admin"]
+        for x in items
+    )
+    assert all(
+        x.title == f"Песня {x.ref[3:]}" and x.key == x.ref and x.gens == {"ytm_radio": int(x.ref[3:]) - 5000}
+        for x in items
+    )
 
     r = await c.post(f"/api/wave/{sid}/next", json={"played": [ev("skip", first[0], 5)], "queued": first[1:]})
     assert r.status_code == 200, r.text
@@ -711,7 +794,9 @@ async def test_handed_out_tracks_are_recorded_once_and_counted_again(env, monkey
     again = set(second) & set(first)
     assert again and all(items[ref].handed_count == 2 for ref in again)
     assert items[first[0]].handed_count == 1  # played: not handed out again
-    assert sorted(items[ref].position for ref in set(second) - set(first)) == list(range(5, 5 + len(set(second) - set(first))))
+    assert sorted(items[ref].position for ref in set(second) - set(first)) == list(
+        range(5, 5 + len(set(second) - set(first)))
+    )
     assert (await wave_row(sid)).next_calls == 1
 
 
@@ -745,8 +830,10 @@ async def test_launch_fields_of_the_wave_events_are_stored(env, monkeypatch) -> 
     sid = w["session_id"]
     e = {**ev("start", w["tracks"][0]["ref"]), "launch_id": f"wave:{sid}", "launch_origin": "wave"}
 
-    r = await c.post(f"/api/wave/{sid}/next", json={"played": [e, {**ev("start", w["tracks"][1]["ref"]),
-                                                                    "launch_origin": "Bad origin"}]})
+    r = await c.post(
+        f"/api/wave/{sid}/next",
+        json={"played": [e, {**ev("start", w["tracks"][1]["ref"]), "launch_origin": "Bad origin"}]},
+    )
 
     assert r.status_code == 200 and r.json()["recorded"]["accepted"] == 1, r.text
     async with session_scope() as s:

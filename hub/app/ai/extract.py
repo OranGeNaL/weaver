@@ -158,8 +158,15 @@ class Extraction(BaseModel):
     @classmethod
     def _source_app(cls, v: Any) -> str:
         v = (_clean_str(v) or "other").lower().replace(" ", "_").replace("-", "_")
-        aliases = {"yandex": "yandex_music", "yamusic": "yandex_music", "vk_music": "vk", "vkontakte": "vk",
-                   "apple": "apple_music", "youtube_music": "youtube", "yt_music": "youtube"}
+        aliases = {
+            "yandex": "yandex_music",
+            "yamusic": "yandex_music",
+            "vk_music": "vk",
+            "vkontakte": "vk",
+            "apple": "apple_music",
+            "youtube_music": "youtube",
+            "yt_music": "youtube",
+        }
         v = aliases.get(v, v)
         return v if v in SOURCE_APPS else "other"
 
@@ -364,6 +371,7 @@ def _same_row(x: ExtractedItem, y: ExtractedItem) -> bool:
 
 def _better(keep: ExtractedItem, other: ExtractedItem) -> ExtractedItem:
     """Merge two readings of one row: prefer the non-truncated / longer one, fill gaps from the other."""
+
     def score(i: ExtractedItem) -> tuple:
         return (not i.truncated, len(norm_key(i.title_raw)) + len(norm_key(i.artist_raw)))
 
@@ -401,9 +409,7 @@ def merge_extractions(parts: list[Extraction]) -> Extraction:
 # --------------------------------------------------------------------------- screenshots
 
 
-async def _extract_tile(
-    llm: LLMClient, tile: bytes, label: str, sem: asyncio.Semaphore
-) -> tuple[Extraction, LLMUsage]:
+async def _extract_tile(llm: LLMClient, tile: bytes, label: str, sem: asyncio.Semaphore) -> tuple[Extraction, LLMUsage]:
     content = [
         {"type": "text", "text": f"{label}. Report the track rows of the main list via report_tracks."},
         image_part(tile, sniff_mime(tile)),
@@ -438,7 +444,12 @@ async def extract_from_images(images: list[bytes], llm: LLMClient) -> tuple[Extr
     merged = merge_extractions([e for e, _ in results])
     log.info(
         "extracted %d rows from %d image(s) / %d tile(s), app=%s page=%s, cost=$%.5f",
-        len(merged.items), len(images), len(jobs), merged.source_app, merged.page_type, usage.cost_usd,
+        len(merged.items),
+        len(images),
+        len(jobs),
+        merged.source_app,
+        merged.page_type,
+        usage.cost_usd,
     )
     return merged, usage
 

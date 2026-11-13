@@ -38,8 +38,14 @@ def png(w: int, h: int, color: tuple[int, int, int] = (200, 10, 10)) -> bytes:
 
 
 def settings(**kw) -> Settings:
-    base = {"llm_base_url": BASE, "llm_api_key": "test-key", "llm_model": "anthropic/claude-haiku-5.5",
-            "llm_price_in": 0.10, "llm_price_out": 0.50, "llm_timeout_s": 10}
+    base = {
+        "llm_base_url": BASE,
+        "llm_api_key": "test-key",
+        "llm_model": "anthropic/claude-haiku-5.5",
+        "llm_price_in": 0.10,
+        "llm_price_out": 0.50,
+        "llm_timeout_s": 10,
+    }
     base.update(kw)
     return Settings(**base)
 
@@ -51,21 +57,36 @@ def _clear_mode_cache():
     llm_mod._mode_cache.clear()
 
 
-def completion(*, tool_args: dict | None = None, content: str | None = None, tool_name: str = "report_tracks",
-               usage: dict | None = None, finish: str = "tool_calls") -> dict:
+def completion(
+    *,
+    tool_args: dict | None = None,
+    content: str | None = None,
+    tool_name: str = "report_tracks",
+    usage: dict | None = None,
+    finish: str = "tool_calls",
+) -> dict:
     msg: dict = {"role": "assistant", "content": content}
     if tool_args is not None:
-        msg["tool_calls"] = [{"id": "call_1", "type": "function",
-                              "function": {"name": tool_name, "arguments": json.dumps(tool_args, ensure_ascii=False)}}]
+        msg["tool_calls"] = [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": tool_name, "arguments": json.dumps(tool_args, ensure_ascii=False)},
+            }
+        ]
     return {
-        "id": "gen-1", "object": "chat.completion", "created": 1, "model": "anthropic/claude-haiku-5.5",
+        "id": "gen-1",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "anthropic/claude-haiku-5.5",
         "choices": [{"index": 0, "message": msg, "finish_reason": finish}],
         "usage": usage or {"prompt_tokens": 3400, "completion_tokens": 200, "total_tokens": 3600},
     }
 
 
 TRACKS_ARGS = {
-    "source_app": "yandex_music", "page_type": "playlist",
+    "source_app": "yandex_music",
+    "page_type": "playlist",
     "context": {"playlist_name": " Мой рок ", "album_title": None, "album_artist": None},
     "items": [
         {"artist_raw": "Кино", "title_raw": "Группа крови", "truncated": False, "conf": 0.98, "duration": "4:44"},
@@ -112,22 +133,28 @@ def test_tile_rejects_garbage() -> None:
 
 
 def test_validation_cleans_and_drops() -> None:
-    ex = parse_extraction({
-        "source_app": "Yandex Music", "page_type": "weird", "context": None,
-        "items": [
-            {"artist_raw": "  Кино  ", "title_raw": " Группа   крови ", "conf": 1.7},
-            {"artist_raw": "Nobody", "title_raw": "   ", "conf": 0.9},
-            {"artist_raw": "X", "conf": 0.9},
-            "garbage",
-            {"artist": "Сплин", "title": "Романс", "conf": "85", "truncated": "true"},
-            {"artist_raw": "Мумий Тролль", "title_raw": "Владивосток 20…", "conf": None, "duration": 185},
-        ],
-    })
+    ex = parse_extraction(
+        {
+            "source_app": "Yandex Music",
+            "page_type": "weird",
+            "context": None,
+            "items": [
+                {"artist_raw": "  Кино  ", "title_raw": " Группа   крови ", "conf": 1.7},
+                {"artist_raw": "Nobody", "title_raw": "   ", "conf": 0.9},
+                {"artist_raw": "X", "conf": 0.9},
+                "garbage",
+                {"artist": "Сплин", "title": "Романс", "conf": "85", "truncated": "true"},
+                {"artist_raw": "Мумий Тролль", "title_raw": "Владивосток 20…", "conf": None, "duration": 185},
+            ],
+        }
+    )
     assert ex.source_app == "yandex_music"
     assert ex.page_type == "other"
     assert ex.context.is_empty()
     assert [(i.artist_raw, i.title_raw) for i in ex.items] == [
-        ("Кино", "Группа крови"), ("Сплин", "Романс"), ("Мумий Тролль", "Владивосток 20…"),
+        ("Кино", "Группа крови"),
+        ("Сплин", "Романс"),
+        ("Мумий Тролль", "Владивосток 20…"),
     ]
     assert ex.items[0].conf == 1.0
     assert ex.items[1].conf == pytest.approx(0.85) and ex.items[1].truncated is True
@@ -151,16 +178,22 @@ def test_norm_key() -> None:
 
 
 def test_dedupe_exact_and_normalized() -> None:
-    items = [item("Кино", "Группа крови", conf=0.8), item("Сплин", "Романс"),
-             item("КИНО", "Группа  крови!", conf=0.95, duration="4:44")]
+    items = [
+        item("Кино", "Группа крови", conf=0.8),
+        item("Сплин", "Романс"),
+        item("КИНО", "Группа  крови!", conf=0.95, duration="4:44"),
+    ]
     out = dedupe_items(items)
     assert [(i.artist_raw, i.title_raw) for i in out] == [("Кино", "Группа крови"), ("Сплин", "Романс")]
     assert out[0].conf == 0.95 and out[0].duration == "4:44"
 
 
 def test_dedupe_truncated_keeps_full_in_first_position() -> None:
-    items = [item("Мумий Тролль", "Владивосток 20…", truncated=True), item("Земфира", "Хочешь?"),
-             item("Мумий Тролль", "Владивосток 2000")]
+    items = [
+        item("Мумий Тролль", "Владивосток 20…", truncated=True),
+        item("Земфира", "Хочешь?"),
+        item("Мумий Тролль", "Владивосток 2000"),
+    ]
     out = dedupe_items(items)
     assert [i.title_raw for i in out] == ["Владивосток 2000", "Хочешь?"]
     assert out[0].truncated is False
@@ -183,8 +216,12 @@ def test_dedupe_does_not_merge_different_tracks() -> None:
 
 def test_merge_context_from_first_tile_with_it() -> None:
     a = Extraction(items=[item("Кино", "Группа крови")])
-    b = Extraction(source_app="vk", page_type="playlist", context={"playlist_name": "Рок"},
-                   items=[item("Кино", "Группа крови"), item("Сплин", "Романс")])
+    b = Extraction(
+        source_app="vk",
+        page_type="playlist",
+        context={"playlist_name": "Рок"},
+        items=[item("Кино", "Группа крови"), item("Сплин", "Романс")],
+    )
     c = Extraction(source_app="spotify", context={"playlist_name": "Другой"}, items=[item("ДДТ", "Осень")])
     m = merge_extractions([a, b, c])
     assert m.source_app == "vk" and m.page_type == "playlist" and m.context.playlist_name == "Рок"
@@ -334,7 +371,9 @@ def test_track_list_fast_path() -> None:
     rows = parse_track_list("Кино - Группа крови\n2. Сплин — Выхода нет 4:03\n\n• Земфира – Хочешь?\n")
     assert rows is not None
     assert [(r.artist_raw, r.title_raw, r.duration) for r in rows] == [
-        ("Кино", "Группа крови", None), ("Сплин", "Выхода нет", "4:03"), ("Земфира", "Хочешь?", None),
+        ("Кино", "Группа крови", None),
+        ("Сплин", "Выхода нет", "4:03"),
+        ("Земфира", "Хочешь?", None),
     ]
     assert parse_track_list("скачай Кино - Группа крови") is None
     assert parse_track_list("привет\nкак дела\nKino - Blood type") is None
@@ -352,10 +391,17 @@ async def test_parse_text_fast_path_no_llm() -> None:
 
 @respx.mock
 async def test_parse_text_latest_album() -> None:
-    args = {"kind": "latest_album", "artist": "«Скриптонит»", "album": None, "tracks": [], "playlist_name": None,
-            "record_types": ["album", "bogus"]}
+    args = {
+        "kind": "latest_album",
+        "artist": "«Скриптонит»",
+        "album": None,
+        "tracks": [],
+        "playlist_name": None,
+        "record_types": ["album", "bogus"],
+    }
     route = respx.post(URL).mock(
-        return_value=httpx.Response(200, json=completion(tool_args=args, tool_name="report_intent")))
+        return_value=httpx.Response(200, json=completion(tool_args=args, tool_name="report_intent"))
+    )
     async with LLMClient(settings()) as llm:
         intent, usage = await parse_text_request("скачай последний альбом Скриптонита", llm)
     body = json.loads(route.calls[0].request.content)
@@ -367,8 +413,9 @@ async def test_parse_text_latest_album() -> None:
 
 @respx.mock
 async def test_parse_text_sends_all_5000_characters_to_model() -> None:
-    route = respx.post(URL).mock(return_value=httpx.Response(
-        200, json=completion(tool_args={"kind": "unknown"}, tool_name="report_intent")))
+    route = respx.post(URL).mock(
+        return_value=httpx.Response(200, json=completion(tool_args={"kind": "unknown"}, tool_name="report_intent"))
+    )
     text = "Ж" * 4997 + "END"
     async with LLMClient(settings()) as llm:
         await parse_text_request(text, llm)
@@ -378,22 +425,31 @@ async def test_parse_text_sends_all_5000_characters_to_model() -> None:
 
 @respx.mock
 async def test_parse_text_tracks_and_playlist() -> None:
-    args = {"kind": "tracks", "tracks": [{"artist_raw": "Кино", "title_raw": "Группа крови"},
-                                         {"artist_raw": "Кино", "title_raw": "Пачка сигарет"}],
-            "playlist_name": "Рок"}
+    args = {
+        "kind": "tracks",
+        "tracks": [
+            {"artist_raw": "Кино", "title_raw": "Группа крови"},
+            {"artist_raw": "Кино", "title_raw": "Пачка сигарет"},
+        ],
+        "playlist_name": "Рок",
+    }
     respx.post(URL).mock(return_value=httpx.Response(200, json=completion(tool_args=args, tool_name="report_intent")))
     async with LLMClient(settings()) as llm:
         intent, _ = await parse_text_request("добавь Кино — Группа крови и Пачка сигарет в плейлист Рок", llm)
     assert intent.kind == "tracks" and intent.playlist_name == "Рок"
     assert [(t.artist_raw, t.title_raw, t.conf) for t in intent.tracks] == [
-        ("Кино", "Группа крови", 1.0), ("Кино", "Пачка сигарет", 1.0),
+        ("Кино", "Группа крови", 1.0),
+        ("Кино", "Пачка сигарет", 1.0),
     ]
 
 
 @respx.mock
 async def test_parse_text_garbage_kind() -> None:
-    respx.post(URL).mock(return_value=httpx.Response(
-        200, json=completion(tool_args={"kind": "hack_the_planet"}, tool_name="report_intent")))
+    respx.post(URL).mock(
+        return_value=httpx.Response(
+            200, json=completion(tool_args={"kind": "hack_the_planet"}, tool_name="report_intent")
+        )
+    )
     async with LLMClient(settings()) as llm:
         intent, _ = await parse_text_request("что-то непонятное", llm)
     assert intent.kind == "unknown"

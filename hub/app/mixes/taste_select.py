@@ -1,4 +1,5 @@
 """V2 consumer helpers: bounded geometry operations and deterministic facet-aware seed selection."""
+
 from __future__ import annotations
 
 import hashlib
@@ -76,7 +77,7 @@ def facet_names(p: V2Profile) -> list[dict]:
 def top_artists(p: V2Profile, n: int) -> list[str]:
     out = []
     for facet in sorted(facet_names(p), key=lambda x: (-x["weight"], x["id"])):
-        if facet["weight"] < .15:
+        if facet["weight"] < 0.15:
             continue
         for name in facet["artists"]:
             key = artist_key(name)
@@ -95,14 +96,22 @@ def select_profile_seeds(p: V2Profile, n: int, max_per_artist: int = 2) -> list[
         return []
     pool = p.active_seed_pool()
     if not pool and not p.has_recent_positive:
-        pool = sorted((t for t in p.tracks.values() if (t.liked or t.downloaded or t.album_liked) and
-                       not p.disliked(ref=t.ref, nd_song_id=t.nd_song_id, artist=t.artist, artist_ref=None)),
-                      key=lambda t: t.key)
+        pool = sorted(
+            (
+                t
+                for t in p.tracks.values()
+                if (t.liked or t.downloaded or t.album_liked)
+                and not p.disliked(ref=t.ref, nd_song_id=t.nd_song_id, artist=t.artist, artist_ref=None)
+            ),
+            key=lambda t: t.key,
+        )
     day = p.now.replace(tzinfo=UTC).astimezone(ZoneInfo(p.timezone)).date().isoformat()
     salt = hashlib.sha256(f"{p.user_id}|{day}|v2".encode()).digest()
     rng = random.Random(int.from_bytes(salt, "big"))
     # One random priority per canonical key keeps selection independent of input order.
-    priorities = {t.key: -math.log(max(rng.random(), 1e-15)) / max(t.score, 1) for t in sorted(pool, key=lambda t: t.key)}
+    priorities = {
+        t.key: -math.log(max(rng.random(), 1e-15)) / max(t.score, 1) for t in sorted(pool, key=lambda t: t.key)
+    }
     ranked = sorted(pool, key=lambda t: (priorities[t.key], t.key))
     available = {t.key for t in pool}
     groups = []
@@ -132,7 +141,7 @@ def select_profile_seeds(p: V2Profile, n: int, max_per_artist: int = 2) -> list[
 
     allocations = [0] * len(groups)
     for i, (weight, members, _) in enumerate(groups):
-        if weight >= .15 and len(out) < n and take(members):
+        if weight >= 0.15 and len(out) < n and take(members):
             allocations[i] += 1
     while len(out) < n:
         choices = sorted(range(len(groups)), key=lambda i: (-groups[i][0] / (allocations[i] + 1), groups[i][2]))
@@ -153,9 +162,14 @@ async def enrich_selected(p: V2Profile, selected: list[TasteTrack]) -> list[Tast
         if t.ref and (ct := info.get(t.ref)):
             t.track, t.artist, t.title, t.duration_s = ct, ct.artist, ct.title, ct.duration_s
             p.artist_names[artist_key(t.artist)] = t.artist
-        if t.artist and t.title and counts[artist_key(t.artist)] < 2 and not p.disliked(
-                ref=t.ref, nd_song_id=t.nd_song_id, artist=t.artist,
-                artist_ref=t.track.artist_ref if t.track else None):
+        if (
+            t.artist
+            and t.title
+            and counts[artist_key(t.artist)] < 2
+            and not p.disliked(
+                ref=t.ref, nd_song_id=t.nd_song_id, artist=t.artist, artist_ref=t.track.artist_ref if t.track else None
+            )
+        ):
             counts[artist_key(t.artist)] += 1
             out.append(t)
     return out
@@ -173,17 +187,24 @@ async def seeds(p: V2Profile, n: int) -> list[TasteTrack]:
     if not p.has_recent_positive:
         # A typed own artist-like is an explicit saved fallback, just like an own
         # album's locally known songs. No track score/like is fabricated for it.
-        artists += [{"ref": state.ref, "name": (state.data or {}).get("name", "")}
-                    for state in sorted(p.favorite_states.values(), key=lambda x: (x.target_type, x.key))
-                    if state.target_type == "artist" and state.liked and state.ref and state.ref.startswith("dz:")]
+        artists += [
+            {"ref": state.ref, "name": (state.data or {}).get("name", "")}
+            for state in sorted(p.favorite_states.values(), key=lambda x: (x.target_type, x.key))
+            if state.target_type == "artist" and state.liked and state.ref and state.ref.startswith("dz:")
+        ]
     artists = list({a["ref"]: a for a in artists if a.get("ref")}.values())[:n]
     cold = await cold_seeds(replace(p, picked_artists=artists), n) if artists else []
     out, seen, counts = [], set(), Counter()
 
     def append(t):
         a = artist_key(t.artist)
-        if t.key not in seen and counts[a] < 2 and not p.disliked(ref=t.ref, nd_song_id=t.nd_song_id,
-                artist=t.artist, artist_ref=t.track.artist_ref if t.track else None):
+        if (
+            t.key not in seen
+            and counts[a] < 2
+            and not p.disliked(
+                ref=t.ref, nd_song_id=t.nd_song_id, artist=t.artist, artist_ref=t.track.artist_ref if t.track else None
+            )
+        ):
             seen.add(t.key)
             counts[a] += 1
             out.append(t)

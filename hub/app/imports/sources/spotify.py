@@ -66,13 +66,15 @@ def parse(files: list[bytes]) -> Snapshot:
             data = json.loads(file)
         except (ValueError, UnicodeError, RecursionError) as e:
             raise SourceError("Не удалось прочитать JSON Spotify") from e
-        if not isinstance(data, dict) or not any(isinstance(data.get(k), list) for k in
-                                                 ("playlists", "tracks", "albums", "artists")):
+        if not isinstance(data, dict) or not any(
+            isinstance(data.get(k), list) for k in ("playlists", "tracks", "albums", "artists")
+        ):
             raise SourceError("Выберите Playlist*.json и/или YourLibrary.json из экспорта Spotify")
         for row in _rows(data.get("playlists")):
             title = _text(row, "name") or "Плейлист Spotify"
-            items = _unique(_track(item["track"]) for item in _rows(row.get("items"))
-                            if isinstance(item.get("track"), dict))
+            items = _unique(
+                _track(item["track"]) for item in _rows(row.get("items")) if isinstance(item.get("track"), dict)
+            )
             if items:
                 key = hashlib.sha256(f"{len(playlists)}:{title}".encode()).hexdigest()[:24]
                 playlists.append(SnapCollection("playlist", f"playlist:{key}", title, items))

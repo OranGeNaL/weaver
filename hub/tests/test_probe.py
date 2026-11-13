@@ -42,13 +42,28 @@ def media(tmp_path_factory: pytest.TempPathFactory) -> Path:
         pytest.skip("ffmpeg/ffprobe not installed")
     d = tmp_path_factory.mktemp("media")
     for ext, (args, _) in ENCODERS.items():
-        _ffmpeg("-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-ar", "48000" if ext == "opus" else "44100",
-                *args, str(d / f"sine.{ext}"))
+        _ffmpeg(
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=3",
+            "-ar",
+            "48000" if ext == "opus" else "44100",
+            *args,
+            str(d / f"sine.{ext}"),
+        )
     expr = f"if(between(t,{GAP_START},{GAP_END}),0,0.5*sin(2*PI*440*t))"
     _ffmpeg("-f", "lavfi", "-i", f"aevalsrc='{expr}':s=44100:d=14", "-c:a", "flac", str(d / "gap.flac"))
     # silence at the very start and end only (intro/outro): must not warn
-    _ffmpeg("-f", "lavfi", "-i", "aevalsrc='if(between(t,1,13),0.5*sin(2*PI*440*t),0)':s=44100:d=14",
-            "-c:a", "flac", str(d / "edges.flac"))
+    _ffmpeg(
+        "-f",
+        "lavfi",
+        "-i",
+        "aevalsrc='if(between(t,1,13),0.5*sin(2*PI*440*t),0)':s=44100:d=14",
+        "-c:a",
+        "flac",
+        str(d / "edges.flac"),
+    )
     (d / "garbage.mp3").write_bytes(b"this is not audio" * 100)
     return d
 
@@ -57,14 +72,21 @@ def media(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 def test_parse_ffprobe_json() -> None:
-    info = parse_ffprobe_json({
-        "streams": [
-            {"codec_type": "video", "codec_name": "mjpeg"},
-            {"codec_type": "audio", "codec_name": "opus", "sample_rate": "48000", "channels": 2,
-             "tags": {"TITLE": "x", "HOMEMUSIC_TRACK_ID": "abc"}},
-        ],
-        "format": {"format_name": "ogg", "duration": "201.5", "bit_rate": "131072", "tags": {"encoder": "Lavf"}},
-    })
+    info = parse_ffprobe_json(
+        {
+            "streams": [
+                {"codec_type": "video", "codec_name": "mjpeg"},
+                {
+                    "codec_type": "audio",
+                    "codec_name": "opus",
+                    "sample_rate": "48000",
+                    "channels": 2,
+                    "tags": {"TITLE": "x", "HOMEMUSIC_TRACK_ID": "abc"},
+                },
+            ],
+            "format": {"format_name": "ogg", "duration": "201.5", "bit_rate": "131072", "tags": {"encoder": "Lavf"}},
+        }
+    )
     assert info.duration_s == 201.5
     assert info.bitrate_kbps == 131
     assert info.codec == "opus" and info.sample_rate == 48000 and info.channels == 2

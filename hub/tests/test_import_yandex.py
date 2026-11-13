@@ -81,8 +81,14 @@ class FakeYandex(_client_base()):
     def users_dislikes_tracks(self, user_id=None):
         from yandex_music import TracksList
 
-        return TracksList.de_json({"uid": 1, "revision": 1, "tracks": [
-            {"id": i, "albumId": "1", "timestamp": "2026-01-01T00:00:00+00:00"} for i in self.dislikes]}, self)
+        return TracksList.de_json(
+            {
+                "uid": 1,
+                "revision": 1,
+                "tracks": [{"id": i, "albumId": "1", "timestamp": "2026-01-01T00:00:00+00:00"} for i in self.dislikes],
+            },
+            self,
+        )
 
 
 def test_open_profile_gives_likes_playlists_albums_and_artists():
@@ -97,9 +103,15 @@ def test_open_profile_gives_likes_playlists_albums_and_artists():
     assert client.fetched == [[f"{t['id']}:{t['albumId']}" for t in DATA["likes"]["library"]["tracks"]]]
     assert [i.external_id for i in likes.items] == ["20935722", "149972244", "24142847"]
     first = likes.items[0].raw
-    assert first == {"artist": "Hospital", "artists": ["Hospital"], "title": "Falling",
-                     "album": "When the Trees Were Higher", "duration_s": 216, "cover_url": first["cover_url"],
-                     "liked_at": "2026-09-16T11:40:55"}
+    assert first == {
+        "artist": "Hospital",
+        "artists": ["Hospital"],
+        "title": "Falling",
+        "album": "When the Trees Were Higher",
+        "duration_s": 216,
+        "cover_url": first["cover_url"],
+        "liked_at": "2026-09-16T11:40:55",
+    }
     assert first["cover_url"].startswith("https://avatars.yandex.net/") and first["cover_url"].endswith("/200x200")
     assert likes.items[1].raw["title"] == "Обнял, поцеловал"
 
@@ -109,7 +121,8 @@ def test_open_profile_gives_likes_playlists_albums_and_artists():
     assert [i.raw["title"] for i in playlist.items] == [s["track"]["title"] for s in DATA["playlist"]["tracks"]]
 
     assert [(i.external_id, i.raw["artist"], i.raw["title"]) for i in albums.items] == [
-        (str(x["album"]["id"]), x["album"]["artists"][0]["name"], x["album"]["title"]) for x in DATA["likes_albums"]]
+        (str(x["album"]["id"]), x["album"]["artists"][0]["name"], x["album"]["title"]) for x in DATA["likes_albums"]
+    ]
     assert [i.raw["name"] for i in artists.items] == ["Варя Пипко", "Cosa Nostra (since 2010)"]
 
 
@@ -134,18 +147,25 @@ def test_track_version_and_unavailable_tracks():
     assert yandex.track_raw(Track.de_json({**DATA["tracks"][0], "type": "podcast-episode"}, None)) is None
 
 
-@pytest.mark.parametrize(("text", "login"), [
-    ("https://music.yandex.ru/users/music-blog/playlists/3", "music-blog"),
-    ("music.yandex.ru/users/ivan.petrov/tracks", "ivan.petrov"),
-    ("https://music.yandex.com/users/yamusic-bestsongs/playlists", "yamusic-bestsongs"),
-    ("  music-blog ", "music-blog"),
-], ids=["likes-link", "no-scheme", "com-domain", "bare-login"])
+@pytest.mark.parametrize(
+    ("text", "login"),
+    [
+        ("https://music.yandex.ru/users/music-blog/playlists/3", "music-blog"),
+        ("music.yandex.ru/users/ivan.petrov/tracks", "ivan.petrov"),
+        ("https://music.yandex.com/users/yamusic-bestsongs/playlists", "yamusic-bestsongs"),
+        ("  music-blog ", "music-blog"),
+    ],
+    ids=["likes-link", "no-scheme", "com-domain", "bare-login"],
+)
 def test_profile_login(text, login):
     assert yandex.profile_login(text) == login
 
 
-@pytest.mark.parametrize("text", ["https://music.yandex.ru/album/123", "https://example.com/users/x", "", "music.yandex.ru"],
-                         ids=["album", "other-site", "empty", "host-only"])
+@pytest.mark.parametrize(
+    "text",
+    ["https://music.yandex.ru/album/123", "https://example.com/users/x", "", "music.yandex.ru"],
+    ids=["album", "other-site", "empty", "host-only"],
+)
 def test_profile_login_rejects_other_links(text):
     with pytest.raises(SourceError):
         yandex.profile_login(text)
@@ -153,9 +173,18 @@ def test_profile_login_rejects_other_links(text):
 
 @respx.mock
 async def test_sign_in_by_code():
-    code = respx.post("https://oauth.yandex.ru/device/code").mock(return_value=httpx.Response(200, json={
-        "device_code": "dc", "user_code": "abcd1234", "verification_url": "https://ya.ru/device", "interval": 5,
-        "expires_in": 300}))
+    code = respx.post("https://oauth.yandex.ru/device/code").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "device_code": "dc",
+                "user_code": "abcd1234",
+                "verification_url": "https://ya.ru/device",
+                "interval": 5,
+                "expires_in": 300,
+            },
+        )
+    )
     got = await yandex.device_start("homemusic-1-1")
     assert got["user_code"] == "abcd1234"
     sent = dict(httpx.QueryParams(code.calls[0].request.content.decode()))

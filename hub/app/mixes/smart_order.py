@@ -46,7 +46,7 @@ def slot_after(n_own: int, k: int) -> int:
 def slots_ahead(n_own: int, index: int, ahead: int) -> list[int]:
     """The slots to fill while the player is at own song `index`: the next `ahead` ones that are not behind it
     (the one right after that song counts)."""
-    return [k for k in range(rec_count(n_own)) if slot_after(n_own, k) >= index][:max(0, ahead)]
+    return [k for k in range(rec_count(n_own)) if slot_after(n_own, k) >= index][: max(0, ahead)]
 
 
 # --- the order of own songs ------------------------------------------------------------------------------------------
@@ -80,8 +80,9 @@ def spread(songs: Sequence[OwnSong], rng: random.Random) -> list[OwnSong]:
     return unstick([s for _, _, s in keyed], same_artist)
 
 
-def unstick(order: list[OwnSong], touching: Callable[[OwnSong, OwnSong], bool],
-            start: OwnSong | None = None) -> list[OwnSong]:
+def unstick(
+    order: list[OwnSong], touching: Callable[[OwnSong, OwnSong], bool], start: OwnSong | None = None
+) -> list[OwnSong]:
     """Where two neighbours `touch`, the second one is swapped with the nearest later song, if that leaves fewer
     touching pairs around the two places. `start` — the song that stands before the first one."""
     out = list(order)
@@ -111,8 +112,14 @@ def same_artist(a: OwnSong, b: OwnSong) -> bool:
     return bool(a.artist) and a.artist == b.artist
 
 
-def fewer_repeats(songs: Sequence[OwnSong], last_heard: dict[str, datetime], now: datetime, rng: random.Random,
-                  first: str | None = None, orders: int = ORDERS) -> list[OwnSong]:
+def fewer_repeats(
+    songs: Sequence[OwnSong],
+    last_heard: dict[str, datetime],
+    now: datetime,
+    rng: random.Random,
+    first: str | None = None,
+    orders: int = ORDERS,
+) -> list[OwnSong]:
     """The shuffle of the own songs: the freshest of `orders` random, artist-spread orders. `first` (the song the
     user tapped or is playing) goes first. `last_heard` — song id → when the user last heard it, in any context."""
     unique = list({s.id: s for s in songs}.values())
@@ -142,7 +149,7 @@ def pick_rec(ranked: Sequence[tuple[str, str]], recent_artists: Sequence[str], n
     all. `None` — no candidates."""
     if not ranked:
         return None
-    gap = {a for a in list(recent_artists)[-(ARTIST_GAP - 1):] if a}
+    gap = {a for a in list(recent_artists)[-(ARTIST_GAP - 1) :] if a}
     near = {a for a in neighbors if a}
     for i, (_, artist) in enumerate(ranked):
         if artist not in gap and artist not in near:
@@ -166,7 +173,7 @@ def choose_seeds(songs: Sequence[OwnSong], rng: random.Random, newest_last: bool
     with what was added lately), then random ones, of different artists while there are any. `songs` — in the
     playlist's order; `newest_last` — new songs are added at the end (a playlist), not put first («Понравившиеся»)."""
     ordered = list(songs)
-    newest = (ordered[-RECENT_WINDOW:][::-1] if newest_last else ordered[:RECENT_WINDOW])
+    newest = ordered[-RECENT_WINDOW:][::-1] if newest_last else ordered[:RECENT_WINDOW]
     chosen: list[OwnSong] = []
     used: dict[str, int] = {}
 

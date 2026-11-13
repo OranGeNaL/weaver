@@ -89,8 +89,16 @@ _RU_LAT = str.maketrans(
 )  # fmt: skip
 # Applied to both sides after transliteration to fold common spelling variants (kh/h, ks/x, iy/y, j/y; щ as
 # shh/shch, ё as yo — Deezer lists some Russian releases in GOST 7.79-B: "Chto-to eshhyo").
-_LAT_SQUASH = (("shch", "sch"), ("shh", "sch"), ("yo", "e"), ("dzh", "j"), ("kh", "h"), ("ks", "x"), ("iy", "y"),
-               ("j", "y"))
+_LAT_SQUASH = (
+    ("shch", "sch"),
+    ("shh", "sch"),
+    ("yo", "e"),
+    ("dzh", "j"),
+    ("kh", "h"),
+    ("ks", "x"),
+    ("iy", "y"),
+    ("j", "y"),
+)
 
 
 def to_latin(s: str) -> str:

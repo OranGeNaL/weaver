@@ -198,17 +198,48 @@ async def _encode(src: Path, key: str) -> Path:
 def ffmpeg_args(src: Path, out: Path) -> list[str]:
     """Audio only, no tags or cover; bit-exact so the same source gives the same bytes (a copy that was pruned and
     made again has the same size: a client that has half of it cached keeps reading the same file)."""
-    args = [ffmpeg_bin(), "-hide_banner", "-nostats", "-nostdin", "-loglevel", "error", "-y", "-i", str(src),
-            "-map", "0:a:0", "-vn", "-map_metadata", "-1", "-fflags", "+bitexact", "-flags:a", "+bitexact",
-            "-c:a", "libopus", "-b:a", f"{LIGHT_KBPS}k", "-vbr", "on", "-application", "audio", "-f", "ogg", str(out)]
+    args = [
+        ffmpeg_bin(),
+        "-hide_banner",
+        "-nostats",
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(src),
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-map_metadata",
+        "-1",
+        "-fflags",
+        "+bitexact",
+        "-flags:a",
+        "+bitexact",
+        "-c:a",
+        "libopus",
+        "-b:a",
+        f"{LIGHT_KBPS}k",
+        "-vbr",
+        "on",
+        "-application",
+        "audio",
+        "-f",
+        "ogg",
+        str(out),
+    ]
     nice = shutil.which("nice")
     return [nice, "-n", "10", *args] if nice else args
 
 
 async def _ffmpeg(src: Path, out: Path) -> None:
     proc = await asyncio.create_subprocess_exec(
-        *ffmpeg_args(src, out), stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE)
+        *ffmpeg_args(src, out),
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
     try:
         _, err = await asyncio.wait_for(proc.communicate(), ENCODE_TIMEOUT_S)
     except BaseException:

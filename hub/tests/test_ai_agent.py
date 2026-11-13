@@ -18,16 +18,24 @@ LLM = "https://llm.test/v1"
 
 
 def tool_call(tool: str, **args) -> dict:
-    return {"id": f"call_{tool}_{uuid.uuid4().hex[:6]}", "type": "function",
-            "function": {"name": tool, "arguments": json.dumps(args, ensure_ascii=False)}}
+    return {
+        "id": f"call_{tool}_{uuid.uuid4().hex[:6]}",
+        "type": "function",
+        "function": {"name": tool, "arguments": json.dumps(args, ensure_ascii=False)},
+    }
 
 
 def completion(content: str = "", calls: list[dict] | None = None) -> dict:
     msg: dict = {"role": "assistant", "content": content}
     if calls:
         msg["tool_calls"] = calls
-    return {"id": "x", "object": "chat.completion", "created": 0, "model": "m",
-            "choices": [{"index": 0, "finish_reason": "tool_calls" if calls else "stop", "message": msg}]}
+    return {
+        "id": "x",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "m",
+        "choices": [{"index": 0, "finish_reason": "tool_calls" if calls else "stop", "message": msg}],
+    }
 
 
 SONGS = {"ndA": ("Кино", "Группа крови"), "ndB": ("ДДТ", "Осень"), "ndC": ("Сплин", "Выхода нет")}
@@ -41,8 +49,13 @@ async def env(hub_env, monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setenv("LLM_BASE_URL", LLM)
     config.get_settings.cache_clear()
-    state: dict = {"playlists": {"pl1": {"name": "Тест", "songs": ["ndA", "ndB"]}}, "stars": ["ndA", "ndB", "ndC"],
-                   "deleted": [], "script": [], "llm_requests": []}
+    state: dict = {
+        "playlists": {"pl1": {"name": "Тест", "songs": ["ndA", "ndB"]}},
+        "stars": ["ndA", "ndB", "ndC"],
+        "deleted": [],
+        "script": [],
+        "llm_requests": [],
+    }
 
     def song(i: str) -> dict:
         return {"id": i, "artist": SONGS[i][0], "title": SONGS[i][1]}
@@ -57,8 +70,14 @@ async def env(hub_env, monkeypatch):
         if ep == "getUser":
             return reply(user={"adminRole": True})
         if ep == "getPlaylists":
-            return reply(playlists={"playlist": [{"id": k, "name": v["name"], "songCount": len(v["songs"]),
-                                                  "owner": "admin"} for k, v in state["playlists"].items()]})
+            return reply(
+                playlists={
+                    "playlist": [
+                        {"id": k, "name": v["name"], "songCount": len(v["songs"]), "owner": "admin"}
+                        for k, v in state["playlists"].items()
+                    ]
+                }
+            )
         if ep == "getPlaylist":
             pl = state["playlists"][p["id"]]
             return reply(playlist={"id": p["id"], "name": pl["name"], "entry": [song(i) for i in pl["songs"]]})
@@ -111,8 +130,14 @@ async def yandex_import() -> dict:
 
     async with session_scope() as s:
         user = (await s.execute(User.__table__.select())).first()
-        imp = Import(user_id=user.id, source="yandex", method="token", status="done", account="ivan",
-                     options_json={"liked": ["ndA", "ndB"]})
+        imp = Import(
+            user_id=user.id,
+            source="yandex",
+            method="token",
+            status="done",
+            account="ivan",
+            options_json={"liked": ["ndA", "ndB"]},
+        )
         s.add(imp)
         await s.flush()
         likes = ImportCollection(import_id=imp.id, kind="likes", external_id="likes", title="Мне нравится")
@@ -120,13 +145,28 @@ async def yandex_import() -> dict:
         await s.flush()
         for pos, nd_id in enumerate(["ndB", "ndA"]):
             artist, title = SONGS[nd_id]
-            t = Track(uid=str(uuid.uuid4()), path=f"{artist}/{title}.mp3", nd_song_id=nd_id, artist=artist,
-                      title=title, fingerprint=fingerprint(artist, title))
+            t = Track(
+                uid=str(uuid.uuid4()),
+                path=f"{artist}/{title}.mp3",
+                nd_song_id=nd_id,
+                artist=artist,
+                title=title,
+                fingerprint=fingerprint(artist, title),
+            )
             s.add(t)
             await s.flush()
-            s.add(ImportItem(import_id=imp.id, collection_id=likes.id, position=pos, external_id=str(pos),
-                             raw_json={"artist": artist, "title": title}, status="done", match="exact",
-                             track_id=t.id))
+            s.add(
+                ImportItem(
+                    import_id=imp.id,
+                    collection_id=likes.id,
+                    position=pos,
+                    external_id=str(pos),
+                    raw_json={"artist": artist, "title": title},
+                    status="done",
+                    match="exact",
+                    track_id=t.id,
+                )
+            )
         return {"import_id": imp.id, "likes_id": likes.id}
 
 
@@ -150,28 +190,44 @@ async def test_daily_limit_covers_all_chats_images_and_legacy_tasks(env):
     c = env["client"]
     # Rejected input and missing chats do not consume messages.
     assert (await c.post("/api/assistant/chat", json={"messages": []})).status_code == 400
-    assert (await c.post("/api/assistant/chat", json={"messages": [{"role": "user", "content": " "}]})).status_code == 400
+    assert (
+        await c.post("/api/assistant/chat", json={"messages": [{"role": "user", "content": " "}]})
+    ).status_code == 400
     assert (await c.post("/api/assistant/tasks", json={"text": " "})).status_code == 400
     missing = await c.post("/api/assistant/chat", json={"chat_id": 999, "messages": [{"role": "user", "content": "x"}]})
     assert missing.status_code == 404
     first = await chat(env, "Привет", completion("Привет"))  # 1: new chat
     env["state"]["script"] = [completion("Да")]
-    response = await c.post("/api/assistant/chat", data={
-        "chat_id": str(first["chat_id"]), "messages": json.dumps([{"role": "user", "content": "Скриншот"}]),
-    }, files={"images": ("screen.png", b"image", "image/png")})  # 2: existing chat + image
+    response = await c.post(
+        "/api/assistant/chat",
+        data={
+            "chat_id": str(first["chat_id"]),
+            "messages": json.dumps([{"role": "user", "content": "Скриншот"}]),
+        },
+        files={"images": ("screen.png", b"image", "image/png")},
+    )  # 2: existing chat + image
     assert response.status_code == 200, response.text
     response = await c.post("/api/assistant/tasks", json={"url": "https://music.yandex.ru/album/10100"})  # 3
     assert response.status_code == 200, response.text
     response = await c.post("/api/assistant/tasks", files={"images": ("screen.png", b"image", "image/png")})  # 4
     assert response.status_code == 200, response.text
-    last = await chat(env, "Удали плейлист", completion(calls=[tool_call("delete_playlist", playlist_ids=["pl1"])]),
-                      completion("Подтвердите удаление"))  # 5: another chat, multiple model calls
+    last = await chat(
+        env,
+        "Удали плейлист",
+        completion(calls=[tool_call("delete_playlist", playlist_ids=["pl1"])]),
+        completion("Подтвердите удаление"),
+    )  # 5: another chat, multiple model calls
     requests = len(env["state"]["llm_requests"])
     assert (await c.delete(f"/api/assistant/chats/{first['chat_id']}")).status_code == 200
     for path, kwargs in [
         ("/api/assistant/chat", {"json": {"messages": [{"role": "user", "content": "Ещё"}]}}),
-        ("/api/assistant/chat", {"data": {"messages": '[{"role":"user","content":""}]'},
-                                 "files": {"images": ("s.png", b"image", "image/png")}}),
+        (
+            "/api/assistant/chat",
+            {
+                "data": {"messages": '[{"role":"user","content":""}]'},
+                "files": {"images": ("s.png", b"image", "image/png")},
+            },
+        ),
         ("/api/assistant/tasks", {"json": {"text": "Ещё"}}),
         ("/api/assistant/tasks", {"files": {"images": ("s.png", b"image", "image/png")}}),
     ]:
@@ -181,9 +237,13 @@ async def test_daily_limit_covers_all_chats_images_and_legacy_tasks(env):
         assert int(denied.headers["Retry-After"]) > 0
     assert len(env["state"]["llm_requests"]) == requests
     # Completing an already paid-for proposal still works at the limit.
-    confirmed = await c.post(f"/api/assistant/chat/{last['task_id']}/confirm", json={
-        "confirm_token": last["confirm_token"], "chat_id": last["chat_id"],
-    })
+    confirmed = await c.post(
+        f"/api/assistant/chat/{last['task_id']}/confirm",
+        json={
+            "confirm_token": last["confirm_token"],
+            "chat_id": last["chat_id"],
+        },
+    )
     assert confirmed.status_code == 200, confirmed.text
     assert env["state"]["deleted"] == ["pl1"]
     assert (await c.get("/api/assistant/chats")).status_code == 200
@@ -245,8 +305,11 @@ async def test_photos_per_message_limit(env, path, count, admin):
         await s.execute(update(User).values(is_admin=admin))
     env["state"]["script"] = [completion("Вижу фотографии")]
     files = [("images", (f"image-{i}.png", b"image", "image/png")) for i in range(count)]
-    response = await env["client"].post(f"/api/assistant/{path}",
-        data={"messages": '[{"role":"user","content":""}]'} if path == "chat" else {}, files=files)
+    response = await env["client"].post(
+        f"/api/assistant/{path}",
+        data={"messages": '[{"role":"user","content":""}]'} if path == "chat" else {},
+        files=files,
+    )
     if count > 15:
         assert response.status_code == 400, response.text
         assert "15 фотографий" in response.json()["detail"]
@@ -282,11 +345,18 @@ async def test_message_text_limit(env, kind, size):
     env["state"]["script"] = [completion("Принято")]
     is_chat = kind.startswith("chat-")
     path = "chat" if is_chat else "tasks"
-    body = {"messages": [{"role": "user", "content": text}]} if is_chat else {"url" if kind == "task-url" else "text": text}
+    body = (
+        {"messages": [{"role": "user", "content": text}]}
+        if is_chat
+        else {"url" if kind == "task-url" else "text": text}
+    )
     if kind.endswith("multipart"):
         data = {"messages": json.dumps(body["messages"])} if is_chat else body
-        response = await env["client"].post(f"/api/assistant/{path}", data=data,
-            files={"images": ("screen.png", b"image", "image/png")} if is_chat else {"unused": (None, "")})
+        response = await env["client"].post(
+            f"/api/assistant/{path}",
+            data=data,
+            files={"images": ("screen.png", b"image", "image/png")} if is_chat else {"unused": (None, "")},
+        )
     else:
         response = await env["client"].post(f"/api/assistant/{path}", json=body)
     if size > 5000:
@@ -316,10 +386,15 @@ def tool_results(env) -> list[dict]:
 async def test_moves_yandex_likes_into_a_playlist_without_asking(env):
     likes = f"import_collection:{env['yandex']['likes_id']}"
     out = await chat(
-        env, "То что было добавлено импортом из яндекс музыки в понравившиеся убрать в отдельный плейлист",
+        env,
+        "То что было добавлено импортом из яндекс музыки в понравившиеся убрать в отдельный плейлист",
         completion(calls=[tool_call("account_overview")]),
-        completion(calls=[tool_call("create_playlist", name="Яндекс Музыка", songs_from=likes),
-                          tool_call("unstar", songs_from=likes)]),
+        completion(
+            calls=[
+                tool_call("create_playlist", name="Яндекс Музыка", songs_from=likes),
+                tool_call("unstar", songs_from=likes),
+            ]
+        ),
         completion("Готово: 2 трека в плейлисте «Яндекс Музыка», ♥ снято."),
     )
     state = env["state"]
@@ -336,26 +411,40 @@ async def test_moves_yandex_likes_into_a_playlist_without_asking(env):
 
 
 async def test_starred_songs_name_the_import_that_starred_them(env):
-    await chat(env, "что из яндекса?", completion(calls=[tool_call("list_starred", only="imports")]),
-               completion("Два трека."))
+    await chat(
+        env, "что из яндекса?", completion(calls=[tool_call("list_starred", only="imports")]), completion("Два трека.")
+    )
     res = tool_results(env)[0]
     assert res["cols"] == ["song_id", "song", "album", "import_id"]
-    assert [r[:2] + r[3:] for r in res["rows"]] == [["ndA", "Кино — Группа крови", env["yandex"]["import_id"]],
-                                                    ["ndB", "ДДТ — Осень", env["yandex"]["import_id"]]]
+    assert [r[:2] + r[3:] for r in res["rows"]] == [
+        ["ndA", "Кино — Группа крови", env["yandex"]["import_id"]],
+        ["ndB", "ДДТ — Осень", env["yandex"]["import_id"]],
+    ]
 
 
 async def test_removes_songs_from_a_playlist_and_renames_it(env):
-    out = await chat(env, "убери Осень из Тест и назови его Рок",
-                     completion(calls=[tool_call("remove_from_playlist", playlist_id="pl1", song_ids=["ndB"]),
-                                       tool_call("rename_playlist", playlist_id="pl1", name="Рок")]),
-                     completion("Готово."))
+    out = await chat(
+        env,
+        "убери Осень из Тест и назови его Рок",
+        completion(
+            calls=[
+                tool_call("remove_from_playlist", playlist_id="pl1", song_ids=["ndB"]),
+                tool_call("rename_playlist", playlist_id="pl1", name="Рок"),
+            ]
+        ),
+        completion("Готово."),
+    )
     assert env["state"]["playlists"]["pl1"] == {"name": "Рок", "songs": ["ndA"]}
     assert out["done"] == ["Из плейлиста «Тест» убрано 1 трек", "Плейлист «Тест» переименован в «Рок»"]
 
 
 async def test_deleting_a_playlist_waits_for_confirmation(env):
-    out = await chat(env, "удали плейлист Тест", completion(calls=[tool_call("delete_playlist", playlist_ids=["pl1"])]),
-                     completion("Удалю после подтверждения."))
+    out = await chat(
+        env,
+        "удали плейлист Тест",
+        completion(calls=[tool_call("delete_playlist", playlist_ids=["pl1"])]),
+        completion("Удалю после подтверждения."),
+    )
     assert env["state"]["deleted"] == []
     assert out["actions"] == [{"type": "delete_playlist", "playlist_id": "pl1", "name": "Тест"}]
     assert out["summary"] == "Удалить плейлист «Тест»"
@@ -368,8 +457,11 @@ async def test_deleting_a_playlist_waits_for_confirmation(env):
     assert env["state"]["deleted"] == ["pl1"]
 
 
-@pytest.mark.parametrize("args", [{"songs_from": "everything"}, {"songs_from": "import_collection:999"}],
-                         ids=["unknown-source", "foreign-collection"])
+@pytest.mark.parametrize(
+    "args",
+    [{"songs_from": "everything"}, {"songs_from": "import_collection:999"}],
+    ids=["unknown-source", "foreign-collection"],
+)
 async def test_a_bad_song_set_is_an_error_for_the_model(env, args):
     out = await chat(env, "поставь ♥", completion(calls=[tool_call("star", **args)]), completion("Не вышло."))
     assert "error" in tool_results(env)[0]
@@ -385,14 +477,23 @@ async def test_changes_made_stay_listed_when_the_model_stops_answering(env):
 
 async def test_chat_turns_are_saved_and_continue_the_same_chat(env):
     c = env["client"]
-    first = await chat(env, "поставь ♥ Группе крови", completion(calls=[tool_call("star", song_ids=["ndA"])]),
-                       completion("Поставил."))
+    first = await chat(
+        env, "поставь ♥ Группе крови", completion(calls=[tool_call("star", song_ids=["ndA"])]), completion("Поставил.")
+    )
     chat_id = first["chat_id"]
     assert first["title"] == "поставь ♥ Группе крови"
     env["state"]["script"] = [completion("Пожалуйста.")]
-    r = await c.post("/api/assistant/chat", json={"chat_id": chat_id, "messages": [
-        {"role": "user", "content": "поставь ♥ Группе крови"}, {"role": "assistant", "content": "Поставил."},
-        {"role": "user", "content": "спасибо"}]})
+    r = await c.post(
+        "/api/assistant/chat",
+        json={
+            "chat_id": chat_id,
+            "messages": [
+                {"role": "user", "content": "поставь ♥ Группе крови"},
+                {"role": "assistant", "content": "Поставил."},
+                {"role": "user", "content": "спасибо"},
+            ],
+        },
+    )
     assert r.status_code == 200, r.text
     assert r.json()["chat_id"] == chat_id
 
@@ -400,7 +501,11 @@ async def test_chat_turns_are_saved_and_continue_the_same_chat(env):
     assert [(x["id"], x["title"], x["messages"]) for x in r.json()] == [(chat_id, "поставь ♥ Группе крови", 4)]
     saved = (await c.get(f"/api/assistant/chats/{chat_id}")).json()["messages"]
     assert [(m["role"], m["content"]) for m in saved] == [
-        ("user", "поставь ♥ Группе крови"), ("assistant", "Поставил."), ("user", "спасибо"), ("assistant", "Пожалуйста.")]
+        ("user", "поставь ♥ Группе крови"),
+        ("assistant", "Поставил."),
+        ("user", "спасибо"),
+        ("assistant", "Пожалуйста."),
+    ]
     assert saved[1]["done"] == ["♥ поставлено: 1 трек"]
 
     assert (await c.delete(f"/api/assistant/chats/{chat_id}")).status_code == 200
@@ -411,10 +516,15 @@ async def test_chat_turns_are_saved_and_continue_the_same_chat(env):
 
 async def test_saved_chat_remembers_screenshots_and_the_answer_to_a_proposal(env):
     c = env["client"]
-    env["state"]["script"] = [completion(calls=[tool_call("delete_playlist", playlist_ids=["pl1"])]),
-                              completion("Удалю после подтверждения.")]
-    r = await c.post("/api/assistant/chat", data={"messages": json.dumps([{"role": "user", "content": ""}])},
-                     files={"images": ("screen.png", b"png", "image/png")})
+    env["state"]["script"] = [
+        completion(calls=[tool_call("delete_playlist", playlist_ids=["pl1"])]),
+        completion("Удалю после подтверждения."),
+    ]
+    r = await c.post(
+        "/api/assistant/chat",
+        data={"messages": json.dumps([{"role": "user", "content": ""}])},
+        files={"images": ("screen.png", b"png", "image/png")},
+    )
     assert r.status_code == 200, r.text
     out = r.json()
     assert out["title"] == "Скриншот"

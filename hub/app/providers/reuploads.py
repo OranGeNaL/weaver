@@ -84,13 +84,15 @@ def as_reupload(c: Candidate, raw_title: str, q: TrackQuery, fallback_artist: st
     extra: dict[str, Any] = {**c.extra, "reupload": True, "original_title": raw_title}
     if (marker := uncensored_marker(raw_title)) is not None:
         extra["uncensored"] = marker
-    return c.model_copy(update={
-        "provider": provider,
-        "artist": artist or fallback_artist,
-        "title": title,
-        "explicit": explicit_marker(raw_title),
-        "extra": extra,
-    })
+    return c.model_copy(
+        update={
+            "provider": provider,
+            "artist": artist or fallback_artist,
+            "title": title,
+            "explicit": explicit_marker(raw_title),
+            "extra": extra,
+        }
+    )
 
 
 def order_reuploads(cands: list[Candidate]) -> list[Candidate]:
@@ -129,8 +131,12 @@ class YtReuploadProvider(YtdlpProvider):
     async def search(self, q: TrackQuery, limit: int = 10) -> list[Candidate]:
         texts = reupload_queries(q)
         searches = [
-            self._run(self._extract, ytsearch_query(self.cfg.search_prefix, t, limit), extract_flat="in_playlist",
-                      noplaylist=False)
+            self._run(
+                self._extract,
+                ytsearch_query(self.cfg.search_prefix, t, limit),
+                extract_flat="in_playlist",
+                noplaylist=False,
+            )
             for t in texts
         ]
         out: list[Candidate] = []
@@ -157,8 +163,9 @@ def sc_entry_to_candidate(e: dict) -> Candidate | None:
     if not tid or not raw or not url:
         return None
     ts = e.get("timestamp")
-    uploaded: date | None = datetime.fromtimestamp(ts, tz=UTC).date() if ts else _parse_upload_date(
-        e.get("upload_date"))
+    uploaded: date | None = (
+        datetime.fromtimestamp(ts, tz=UTC).date() if ts else _parse_upload_date(e.get("upload_date"))
+    )
     artists = [a for a in (e.get("artists") or []) if isinstance(a, str) and a]
     thumbs = e.get("thumbnails") or []
     duration = e.get("duration")
@@ -171,11 +178,15 @@ def sc_entry_to_candidate(e: dict) -> Candidate | None:
         upload_date=uploaded,
         page_url=url,
         cover_url=e.get("thumbnail") or (thumbs[-1].get("url") if thumbs else None),
-        extra={k: v for k, v in {
-            "source": "soundcloud",
-            "channel": e.get("uploader"),
-            "view_count": e.get("view_count"),
-        }.items() if v is not None},
+        extra={
+            k: v
+            for k, v in {
+                "source": "soundcloud",
+                "channel": e.get("uploader"),
+                "view_count": e.get("view_count"),
+            }.items()
+            if v is not None
+        },
     )
 
 
@@ -209,14 +220,16 @@ class SoundcloudProvider(YtdlpProvider):
             return c
         info = await self._run(self._extract, c.page_url, check_formats=False)
         abrs = [f.get("abr") for f in info.get("formats") or [] if f.get("abr")]
-        return c.model_copy(update={
-            "enriched": True,
-            "provider_id": str(info.get("id") or c.provider_id),
-            "duration_s": round(float(info["duration"])) if info.get("duration") else c.duration_s,
-            "bitrate_kbps": round(max(abrs)) if abrs else c.bitrate_kbps,
-            "upload_date": _parse_upload_date(info.get("upload_date")) or c.upload_date,
-            "cover_url": info.get("thumbnail") or c.cover_url,
-        })
+        return c.model_copy(
+            update={
+                "enriched": True,
+                "provider_id": str(info.get("id") or c.provider_id),
+                "duration_s": round(float(info["duration"])) if info.get("duration") else c.duration_s,
+                "bitrate_kbps": round(max(abrs)) if abrs else c.bitrate_kbps,
+                "upload_date": _parse_upload_date(info.get("upload_date")) or c.upload_date,
+                "cover_url": info.get("thumbnail") or c.cover_url,
+            }
+        )
 
     def media_url(self, c: Candidate) -> str:
         return c.page_url

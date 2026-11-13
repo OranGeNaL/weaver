@@ -55,8 +55,15 @@ def test_queries_add_the_uncensored_word_once():
 
 
 def yt_entry(vid: str, title: str, channel: str, duration: int = 154, **kw: Any) -> dict:
-    return {"_type": "url", "ie_key": "Youtube", "id": vid, "title": title, "channel": channel,
-            "duration": duration, **kw}
+    return {
+        "_type": "url",
+        "ie_key": "Youtube",
+        "id": vid,
+        "title": title,
+        "channel": channel,
+        "duration": duration,
+        **kw,
+    }
 
 
 async def test_youtube_reuploads_skip_official_copies_and_noise(monkeypatch):
@@ -66,18 +73,22 @@ async def test_youtube_reuploads_skip_official_copies_and_noise(monkeypatch):
     def fake_extract(url: str, **opts: Any) -> dict:
         asked.append(url)
         if url.endswith("без цензуры"):
-            return {"entries": [
-                yt_entry("unc00000001", "Кайфоград – Слава КПСС (без цензуры)", "Олег Овощенский", 155),
-                yt_entry("plain000001", "Слава КПСС – Кайфоград", "Олег Овощенский"),  # repeat of the other search
-            ]}
-        return {"entries": [
-            yt_entry("official001", "Слава КПСС - Кайфоград (Video)", "СЛАВА КПСС", 176, channel_is_verified=True),
-            yt_entry("topic000001", "Кайфоград", "Слава КПСС - Topic"),
-            yt_entry("plain000001", "Слава КПСС – Кайфоград", "Олег Овощенский"),
-            yt_entry("react000001", "РЕАКЦИЯ НА Слава КПСС - Кайфоград", "ХАЙЛАЙТЫ"),
-            yt_entry("mixtape0001", "Слава КПСС - Все треки", "фан", 3792),
-            yt_entry("clean000001", "Слава КПСС - Кайфоград (без мата)", "music_hub", 150),
-        ]}
+            return {
+                "entries": [
+                    yt_entry("unc00000001", "Кайфоград – Слава КПСС (без цензуры)", "Олег Овощенский", 155),
+                    yt_entry("plain000001", "Слава КПСС – Кайфоград", "Олег Овощенский"),  # repeat of the other search
+                ]
+            }
+        return {
+            "entries": [
+                yt_entry("official001", "Слава КПСС - Кайфоград (Video)", "СЛАВА КПСС", 176, channel_is_verified=True),
+                yt_entry("topic000001", "Кайфоград", "Слава КПСС - Topic"),
+                yt_entry("plain000001", "Слава КПСС – Кайфоград", "Олег Овощенский"),
+                yt_entry("react000001", "РЕАКЦИЯ НА Слава КПСС - Кайфоград", "ХАЙЛАЙТЫ"),
+                yt_entry("mixtape0001", "Слава КПСС - Все треки", "фан", 3792),
+                yt_entry("clean000001", "Слава КПСС - Кайфоград (без мата)", "music_hub", 150),
+            ]
+        }
 
     monkeypatch.setattr(p, "_extract", fake_extract)
     out = await p.search(Q, limit=10)
@@ -113,17 +124,30 @@ async def test_youtube_reuploads_survive_one_failed_search(monkeypatch):
 
 def sc_entry(tid: str, title: str, uploader: str, uploaded: date, duration: float = 153.66, **kw: Any) -> dict:
     ts = int(datetime(uploaded.year, uploaded.month, uploaded.day, 12, tzinfo=UTC).timestamp())
-    return {"_type": "url", "ie_key": "Soundcloud", "id": tid, "title": title, "uploader": uploader,
-            "timestamp": ts, "duration": duration, "webpage_url": f"https://soundcloud.com/{uploader}/{tid}",
-            "view_count": 1000, "thumbnails": [{"url": "https://i1.sndcdn.com/mini.jpg"},
-                                               {"url": "https://i1.sndcdn.com/original.jpg"}], **kw}
+    return {
+        "_type": "url",
+        "ie_key": "Soundcloud",
+        "id": tid,
+        "title": title,
+        "uploader": uploader,
+        "timestamp": ts,
+        "duration": duration,
+        "webpage_url": f"https://soundcloud.com/{uploader}/{tid}",
+        "view_count": 1000,
+        "thumbnails": [{"url": "https://i1.sndcdn.com/mini.jpg"}, {"url": "https://i1.sndcdn.com/original.jpg"}],
+        **kw,
+    }
 
 
 def test_soundcloud_entry():
     c = sc_entry_to_candidate(sc_entry("1647355104", "Слава КПСС - Кайфоград", "пук хрюк", date(2023, 10, 23)))
     assert c is not None
     assert (c.provider, c.provider_id, c.duration_s, c.upload_date) == (
-        "soundcloud", "1647355104", 154, date(2023, 10, 23))
+        "soundcloud",
+        "1647355104",
+        154,
+        date(2023, 10, 23),
+    )
     assert c.page_url == "https://soundcloud.com/пук хрюк/1647355104"
     assert c.cover_url == "https://i1.sndcdn.com/original.jpg" and c.extra["channel"] == "пук хрюк"
     assert sc_entry_to_candidate({"id": "1", "title": ""}) is None
@@ -134,11 +158,13 @@ async def test_soundcloud_search_parses_titles(monkeypatch):
 
     def fake_extract(url: str, **opts: Any) -> dict:
         assert url.startswith("scsearch10:")
-        return {"entries": [
-            sc_entry("2", "Кайфоград", "Слава КПСС", date(2024, 6, 1)),
-            sc_entry("3", "Кайфоград (правильная версия)", "wwrtuyi", date(2026, 5, 2)),
-            sc_entry("4", "Слава КПСС - Кайфоград (Любимые песни)", "пук хрюк", date(2023, 10, 23)),
-        ]}
+        return {
+            "entries": [
+                sc_entry("2", "Кайфоград", "Слава КПСС", date(2024, 6, 1)),
+                sc_entry("3", "Кайфоград (правильная версия)", "wwrtuyi", date(2026, 5, 2)),
+                sc_entry("4", "Слава КПСС - Кайфоград (Любимые песни)", "пук хрюк", date(2023, 10, 23)),
+            ]
+        }
 
     monkeypatch.setattr(p, "_extract", fake_extract)
     out = await p.search(Q, limit=10)

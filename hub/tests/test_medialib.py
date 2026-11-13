@@ -17,15 +17,51 @@ from tests.support import app_client
 
 OK = {"status": "ok", "version": "1.16.1"}
 SONGS = [
-    {"id": "ndK", "title": "Группа крови", "artist": "Кино", "artistId": "arK", "album": "Группа крови",
-     "albumId": "alK", "coverArt": "al-alK", "duration": 245, "track": 1, "starred": "2026-10-01T10:00:00Z"},
-    {"id": "ndZ", "title": "Звезда", "artist": "Кино", "artistId": "arK", "album": "Группа крови",
-     "albumId": "alK", "coverArt": "al-alK", "duration": 220, "track": 2, "starred": "2026-10-20T10:00:00Z"},
+    {
+        "id": "ndK",
+        "title": "Группа крови",
+        "artist": "Кино",
+        "artistId": "arK",
+        "album": "Группа крови",
+        "albumId": "alK",
+        "coverArt": "al-alK",
+        "duration": 245,
+        "track": 1,
+        "starred": "2026-10-01T10:00:00Z",
+    },
+    {
+        "id": "ndZ",
+        "title": "Звезда",
+        "artist": "Кино",
+        "artistId": "arK",
+        "album": "Группа крови",
+        "albumId": "alK",
+        "coverArt": "al-alK",
+        "duration": 220,
+        "track": 2,
+        "starred": "2026-10-20T10:00:00Z",
+    },
 ]
 ALBUMS = [
-    {"id": "alK", "name": "Группа крови", "artist": "Кино", "artistId": "arK", "year": 1988, "songCount": 2,
-     "duration": 465, "coverArt": "al-alK", "starred": "2026-10-02T00:00:00Z"},
-    {"id": "alK2", "name": "Звезда по имени Солнце", "artist": "Кино", "artistId": "arK", "year": 1989, "songCount": 10},
+    {
+        "id": "alK",
+        "name": "Группа крови",
+        "artist": "Кино",
+        "artistId": "arK",
+        "year": 1988,
+        "songCount": 2,
+        "duration": 465,
+        "coverArt": "al-alK",
+        "starred": "2026-10-02T00:00:00Z",
+    },
+    {
+        "id": "alK2",
+        "name": "Звезда по имени Солнце",
+        "artist": "Кино",
+        "artistId": "arK",
+        "year": 1989,
+        "songCount": 10,
+    },
 ]
 ARTISTS = [
     {"id": "arX", "name": "Кто-то", "albumCount": 1},
@@ -58,7 +94,9 @@ async def env(hub_env):
             body = {"albumList2": {"album": ALBUMS[:1] if p["type"] == "starred" else ALBUMS}}
         elif name == "getAlbum":
             if p["id"] != "alK":
-                return httpx.Response(200, json={"subsonic-response": {"status": "failed", "error": {"code": 70, "message": "not found"}}})
+                return httpx.Response(
+                    200, json={"subsonic-response": {"status": "failed", "error": {"code": 70, "message": "not found"}}}
+                )
             body = {"album": {**ALBUMS[0], "song": SONGS}}
         elif name == "getArtist":
             body = {"artist": {**ARTISTS[1], "album": state.get("artist_albums", ALBUMS)}}
@@ -85,8 +123,16 @@ async def add_track(artist: str, title: str, nd_song_id: str, **kw) -> int:
     from app.models import Track
 
     async with session_scope() as s:
-        t = Track(uid=str(uuid.uuid4()), path=f"{artist}/{title}.mp3", nd_song_id=nd_song_id, artist=artist,
-                  title=title, duration_s=245, fingerprint=fingerprint(artist, title), **kw)
+        t = Track(
+            uid=str(uuid.uuid4()),
+            path=f"{artist}/{title}.mp3",
+            nd_song_id=nd_song_id,
+            artist=artist,
+            title=title,
+            duration_s=245,
+            fingerprint=fingerprint(artist, title),
+            **kw,
+        )
         s.add(t)
         await s.flush()
         return t.id
@@ -126,14 +172,20 @@ async def test_catalog_like_is_listed_before_download_and_unlike_removes_it(env)
         uid = (await s.execute(select(User.id).where(User.nd_username == "admin"))).scalar_one()
     queue = bus.subscribe(uid)
     try:
-        target = {"ref": "dz:999", "target_data": {"title": "WHAT TO DO?", "artist": "Jackboys",
-                  "duration_s": 250, "cover_url": "/cover.jpg"}}
+        target = {
+            "ref": "dz:999",
+            "target_data": {"title": "WHAT TO DO?", "artist": "Jackboys", "duration_s": 250, "cover_url": "/cover.jpg"},
+        }
         r = await c.post("/api/star", json={"targets": [target], "event_id": "catalog-like"})
         assert r.status_code == 200, r.text
         assert '"event": "library"' in queue.get_nowait()
         liked = (await c.get("/api/nd/liked")).json()["songs"]
         assert liked[0]["ref"] == "dz:999"
-        assert (liked[0]["title"], liked[0]["artist"], liked[0]["cover_url"]) == ("WHAT TO DO?", "Jackboys", "/cover.jpg")
+        assert (liked[0]["title"], liked[0]["artist"], liked[0]["cover_url"]) == (
+            "WHAT TO DO?",
+            "Jackboys",
+            "/cover.jpg",
+        )
         assert not liked[0]["owned"] and liked[0]["nd_song_id"] is None
         async with session_scope() as s:
             assert not (await s.execute(select(DownloadItem))).first()
@@ -147,6 +199,7 @@ async def test_catalog_like_is_listed_before_download_and_unlike_removes_it(env)
 @pytest.mark.parametrize("cache_key", ["listen:dz:999", "mix:track:dz:999", "dz:track:999", None])
 async def test_old_catalog_like_uses_stored_metadata_without_network(env, cache_key):
     from app.catalog.cache import cache_set
+
     if cache_key:
         await cache_set(cache_key, {"title": "WHAT TO DO?", "artist": "Jackboys", "duration_s": 250}, 3600)
     c = env["client"]
@@ -185,8 +238,16 @@ async def test_pending_import_likes_are_visible_only_to_their_user_and_own_unlik
             coll = ImportCollection(import_id=imp.id, kind="likes", external_id="likes", title="Likes")
             s.add(coll)
             await s.flush()
-            s.add(ImportItem(import_id=imp.id, collection_id=coll.id, external_id=ref, ref=ref, status="waiting",
-                             raw_json={"title": "Imported song", "artist": "Artist"}))
+            s.add(
+                ImportItem(
+                    import_id=imp.id,
+                    collection_id=coll.id,
+                    external_id=ref,
+                    ref=ref,
+                    status="waiting",
+                    raw_json={"title": "Imported song", "artist": "Artist"},
+                )
+            )
     c = env["client"]
     songs = (await c.get("/api/nd/liked")).json()["songs"]
     assert "dz:998" in [t["ref"] for t in songs] and "dz:997" not in [t["ref"] for t in songs]
@@ -212,14 +273,18 @@ async def test_artists_artist_page_and_album_lists(env):
     r = await c.get("/api/nd/albums", params={"type": "newest", "offset": 50, "size": 25})
     assert r.status_code == 200 and len(r.json()) == 2
     assert ("getAlbumList2", {"type": "newest", "size": "25", "offset": "50"}) in [
-        (n, {k: p[k] for k in ("type", "size", "offset")}) for n, p in env["state"]["calls"] if n == "getAlbumList2"]
+        (n, {k: p[k] for k in ("type", "size", "offset")}) for n, p in env["state"]["calls"] if n == "getAlbumList2"
+    ]
     assert (await c.get("/api/nd/albums", params={"type": "bogus"})).status_code == 422
 
 
 async def test_artist_albums_newest_year_first_then_without_a_year(env):
     env["state"]["artist_albums"] = [
-        {"id": "a1", "name": "Без года"}, {"id": "a2", "name": "Б", "year": 1988}, {"id": "a3", "name": "а", "year": 1988},
-        {"id": "a4", "name": "Новый", "year": 1990}, {"id": "a5", "name": "Ещё без года", "year": 0},
+        {"id": "a1", "name": "Без года"},
+        {"id": "a2", "name": "Б", "year": 1988},
+        {"id": "a3", "name": "а", "year": 1988},
+        {"id": "a4", "name": "Новый", "year": 1990},
+        {"id": "a5", "name": "Ещё без года", "year": 0},
     ]
     page = (await env["client"].get("/api/nd/artists/arK")).json()
     assert [a["id"] for a in page["albums"]] == ["a4", "a3", "a2", "a1", "a5"]

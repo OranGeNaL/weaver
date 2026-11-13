@@ -30,20 +30,31 @@ NONE = track("Неизвестный", "Нет такого", 180)  # nowhere
 def snapshot():
     from app.imports.sources.base import SnapCollection, SnapItem, Snapshot
 
-    return Snapshot(account="ivan", collections=[
-        # newest like first, as Yandex lists them: Город золотой is the oldest
-        SnapCollection("likes", "likes", "Мне нравится", [
-            SnapItem("2", OSEN), SnapItem("1", KROVI), SnapItem("3", GOROD)]),
-        SnapCollection("playlist", "77:1001", "Дорога", [
-            SnapItem("1", KROVI), SnapItem("3", GOROD), SnapItem("9", NONE), SnapItem("2", OSEN)]),
-        SnapCollection("albums", "albums", "Альбомы", [SnapItem("500", {"artist": "Кино", "title": "Группа крови"})]),
-        SnapCollection("artists", "artists", "Исполнители", [SnapItem("600", {"name": "Кино"})]),
-        SnapCollection("dislikes", "dislikes", "Не нравится", [SnapItem("8", track("Кто-то", "Что-то"))]),
-    ])
+    return Snapshot(
+        account="ivan",
+        collections=[
+            # newest like first, as Yandex lists them: Город золотой is the oldest
+            SnapCollection(
+                "likes", "likes", "Мне нравится", [SnapItem("2", OSEN), SnapItem("1", KROVI), SnapItem("3", GOROD)]
+            ),
+            SnapCollection(
+                "playlist",
+                "77:1001",
+                "Дорога",
+                [SnapItem("1", KROVI), SnapItem("3", GOROD), SnapItem("9", NONE), SnapItem("2", OSEN)],
+            ),
+            SnapCollection(
+                "albums", "albums", "Альбомы", [SnapItem("500", {"artist": "Кино", "title": "Группа крови"})]
+            ),
+            SnapCollection("artists", "artists", "Исполнители", [SnapItem("600", {"name": "Кино"})]),
+            SnapCollection("dislikes", "dislikes", "Не нравится", [SnapItem("8", track("Кто-то", "Что-то"))]),
+        ],
+    )
 
 
-@pytest.mark.parametrize("suffix", ["", " (из фильма «Город»)", " (prod. by Producer)"],
-                         ids=["latin-only", "soundtrack", "producer"])
+@pytest.mark.parametrize(
+    "suffix", ["", " (из фильма «Город»)", " (prod. by Producer)"], ids=["latin-only", "soundtrack", "producer"]
+)
 async def test_import_matches_hitmoz_after_deezer_miss(monkeypatch, suffix):
     from app.imports.resolve import catalog_track
     from app.services import svc
@@ -124,9 +135,15 @@ async def add_library_track(raw: dict, nd_song_id: str) -> int:
     from app.models import Track
 
     async with session_scope() as s:
-        t = Track(uid=str(uuid.uuid4()), path=f"{raw['artist']}/{raw['title']}.mp3", nd_song_id=nd_song_id,
-                  artist=raw["artist"], title=raw["title"], duration_s=raw["duration_s"],
-                  fingerprint=fingerprint(raw["artist"], raw["title"]))
+        t = Track(
+            uid=str(uuid.uuid4()),
+            path=f"{raw['artist']}/{raw['title']}.mp3",
+            nd_song_id=nd_song_id,
+            artist=raw["artist"],
+            title=raw["title"],
+            duration_s=raw["duration_s"],
+            fingerprint=fingerprint(raw["artist"], raw["title"]),
+        )
         s.add(t)
         await s.flush()
         return t.id
@@ -141,8 +158,11 @@ async def run_imports(max_jobs: int = 50) -> None:
     seen: set[int] = set()
     for _ in range(max_jobs):
         async with session_scope() as s:
-            job = (await s.execute(select(Job).where(Job.status == "queued", Job.kind.like("import_%"))
-                                   .order_by(Job.id).limit(1))).scalar_one_or_none()
+            job = (
+                await s.execute(
+                    select(Job).where(Job.status == "queued", Job.kind.like("import_%")).order_by(Job.id).limit(1)
+                )
+            ).scalar_one_or_none()
             if job is None or job.id in seen:
                 return
             seen.add(job.id)
@@ -196,9 +216,7 @@ async def test_concurrent_import_matches_share_the_source_mapping(env, monkeypat
     assert [(r.match, r.ref) for r in results] == [("exact", "dz:100"), ("exact", "dz:100")]
     async with session_scope() as s:
         rows = list((await s.execute(select(SourceMap))).scalars())
-        assert [(r.source, r.kind, r.external_id, r.ref) for r in rows] == [
-            ("yandex", "track", "same-track", "dz:100")
-        ]
+        assert [(r.source, r.kind, r.external_id, r.ref) for r in rows] == [("yandex", "track", "same-track", "dz:100")]
 
 
 async def items(c: httpx.AsyncClient, imp: dict, **params) -> list[dict]:
@@ -209,31 +227,46 @@ async def items(c: httpx.AsyncClient, imp: dict, **params) -> list[dict]:
 
 async def test_spotify_export_preview_and_economy_import_preserve_playlist_order(env):
     def track(raw, key):
-        return {"track": {"artistName": raw["artist"], "trackName": raw["title"],
-                          "trackUri": f"spotify:track:{key}"}}
+        return {"track": {"artistName": raw["artist"], "trackName": raw["title"], "trackUri": f"spotify:track:{key}"}}
 
     import json
 
-    playlists = {"playlists": [{"name": "Spotify mix", "items": [
-        track(OSEN, "AB1"), {"episode": {"episodeName": "Podcast"}}, track(GOROD, "AB2"), track(OSEN, "AB1"),
-    ]}]}
+    playlists = {
+        "playlists": [
+            {
+                "name": "Spotify mix",
+                "items": [
+                    track(OSEN, "AB1"),
+                    {"episode": {"episodeName": "Podcast"}},
+                    track(GOROD, "AB2"),
+                    track(OSEN, "AB1"),
+                ],
+            }
+        ]
+    }
     library = {"tracks": [{"artist": GOROD["artist"], "track": GOROD["title"], "uri": "spotify:track:AB2"}]}
     client = env["client"]
-    response = await client.post("/api/imports/spotify", files=[
-        ("files", ("Playlist1.json", json.dumps(playlists), "application/json")),
-        ("files", ("YourLibrary.json", json.dumps(library), "application/json")),
-    ])
+    response = await client.post(
+        "/api/imports/spotify",
+        files=[
+            ("files", ("Playlist1.json", json.dumps(playlists), "application/json")),
+            ("files", ("YourLibrary.json", json.dumps(library), "application/json")),
+        ],
+    )
     assert response.status_code == 200, response.text
     imp = response.json()
     assert (imp["source"], imp["method"], imp["status"]) == ("spotify", "file", "preview")
     assert imp["stats"]["tracks"] == imp["stats"]["owned"] == 2
-    response = await client.post(f"/api/imports/{imp['id']}/start", json={
-        "mode": "economy", "collection_ids": [c["id"] for c in imp["collections"]],
-    })
+    response = await client.post(
+        f"/api/imports/{imp['id']}/start",
+        json={
+            "mode": "economy",
+            "collection_ids": [c["id"] for c in imp["collections"]],
+        },
+    )
     assert response.status_code == 200, response.text
     await run_imports()
-    assert any(p["name"] == "Spotify mix" and p["songs"] == ["ndB", "ndA"]
-               for p in env["state"]["playlists"].values())
+    assert any(p["name"] == "Spotify mix" and p["songs"] == ["ndB", "ndA"] for p in env["state"]["playlists"].values())
     assert "ndA" in env["state"]["stars"]
     assert (await client.post(f"/api/imports/{imp['id']}/sync")).status_code == 409
 
@@ -244,8 +277,12 @@ async def test_preview_counts_what_the_library_has(env):
     assert "secret-token" not in str(imp) and imp["has_token"] and imp["account"] == "ivan"
     assert env["state"]["fetches"] == [("secret-token", None)]
     assert [(x["kind"], x["title"], x["count"], x["owned"]) for x in imp["collections"]] == [
-        ("likes", "Мне нравится", 3, 2), ("playlist", "Дорога", 4, 2), ("albums", "Альбомы", 1, 0),
-        ("artists", "Исполнители", 1, 0), ("dislikes", "Не нравится", 1, 0)]
+        ("likes", "Мне нравится", 3, 2),
+        ("playlist", "Дорога", 4, 2),
+        ("albums", "Альбомы", 1, 0),
+        ("artists", "Исполнители", 1, 0),
+        ("dislikes", "Не нравится", 1, 0),
+    ]
     st = imp["stats"]
     # distinct tracks of likes and playlists: Осень and Город золотой are owned, the other two would be downloaded
     assert (st["tracks"], st["owned"], st["to_download"]) == (4, 2, 2)
@@ -262,8 +299,10 @@ async def test_economy_import_likes_and_playlists_in_order(env):
 
     c, state = env["client"], env["state"]
     imp = await prepared(c)
-    r = await c.post(f"/api/imports/{imp['id']}/start",
-                     json={"collection_ids": [x["id"] for x in imp["collections"]], "mode": "economy"})
+    r = await c.post(
+        f"/api/imports/{imp['id']}/start",
+        json={"collection_ids": [x["id"] for x in imp["collections"]], "mode": "economy"},
+    )
     assert r.status_code == 200, r.text
     await run_imports()
     imp = (await c.get(f"/api/imports/{imp['id']}")).json()
@@ -284,20 +323,38 @@ async def test_economy_import_likes_and_playlists_in_order(env):
     # the liked track the library lacks shows ♥ by its catalog ref
     stars = (await c.get("/api/starred")).json()
     assert {k: stars[k] for k in ("song_ids", "album_ids", "artist_ids", "refs")} == {
-        "song_ids": ["ndA", "ndB"], "album_ids": [], "artist_ids": [], "refs": ["dz:100"]}
+        "song_ids": ["ndA", "ndB"],
+        "album_ids": [],
+        "artist_ids": [],
+        "refs": ["dz:100"],
+    }
     assert len(stars["subjects"]) == 3 and all(x["provenance"] == "import" for x in stars["subjects"])
     assert await jobs("download_item") == []
 
     # listened to: downloaded now (the user's own work), quietly, ♥ by the download. The app's `start` of it
     # counts (it may play the file from its precache, which asked the stream as `X-HomeMusic-Prefetch`)
-    r = await c.post("/api/plays/events", json={"events": [{
-        "event_id": "s1", "ts": "2026-10-23T10:00:00Z", "kind": "start", "ref": "dz:100", "client": "app/1.6.0"}]})
+    r = await c.post(
+        "/api/plays/events",
+        json={
+            "events": [
+                {
+                    "event_id": "s1",
+                    "ts": "2026-10-23T10:00:00Z",
+                    "kind": "start",
+                    "ref": "dz:100",
+                    "client": "app/1.6.0",
+                }
+            ]
+        },
+    )
     assert r.json()["accepted"] == 1
     [job] = await jobs("download_item")
     assert job.priority == 0
     [dl] = (await c.get("/api/downloads")).json()
     assert (dl["star"], dl["import_id"], dl["track_ref"]) == (True, imp["id"], "dz:100")
-    assert {x["status"] for x in await items(c, imp) if x["title"] == "Группа крови" and x["kind"] == "track"} == {"queued"}
+    assert {x["status"] for x in await items(c, imp) if x["title"] == "Группа крови" and x["kind"] == "track"} == {
+        "queued"
+    }
 
     # the download is over: the playlist is rewritten in order with it
     track_id = await add_library_track(KROVI, "ndC")
@@ -307,7 +364,9 @@ async def test_economy_import_likes_and_playlists_in_order(env):
         await imports_done(s, [item])
     await run_imports()
     assert state["playlists"]["pl1"]["songs"] == ["ndC", "ndA", "ndB"]
-    assert {x["status"] for x in await items(c, imp) if x["title"] == "Группа крови" and x["kind"] == "track"} == {"done"}
+    assert {x["status"] for x in await items(c, imp) if x["title"] == "Группа крови" and x["kind"] == "track"} == {
+        "done"
+    }
     # ♥ in Yandex's order: Группа крови was liked after Город золотой and before Осень, so Осень is starred again after it
     assert state["star_log"][-3:] == [("unstar", ["ndC", "ndB"]), ("star", ["ndC"]), ("star", ["ndB"])]
     assert state["stars"] == ["ndA", "ndC", "ndB"]
@@ -319,7 +378,9 @@ async def test_economy_import_likes_and_playlists_in_order(env):
     async with session_scope() as s:
         await sync_likes(s, await s.get(Import, imp["id"]))
     assert state["stars"] == ["ndC", "ndB"]
-    assert {x["status"] for x in await items(c, imp, collection_id=likes) if x["title"] == "Город золотой"} == {"skipped"}
+    assert {x["status"] for x in await items(c, imp, collection_id=likes) if x["title"] == "Город золотой"} == {
+        "skipped"
+    }
 
 
 async def test_likes_are_downloaded_from_the_oldest(env):
@@ -327,23 +388,40 @@ async def test_likes_are_downloaded_from_the_oldest(env):
     from app.imports.sources.base import SnapCollection, SnapItem, Snapshot
     from app.services import svc
 
-    svc.deezer.more = [CatalogTrack(ref="dz:300", source="dz", id="300", title="Звезда по имени Солнце",
-                                    artist="Кино", duration_s=225)]
-    env["state"]["snapshot"] = Snapshot(account="ivan", collections=[SnapCollection("likes", "likes", "Мне нравится", [
-        SnapItem("5", track("Кино", "Звезда по имени Солнце", 225)), SnapItem("1", KROVI)])])
+    svc.deezer.more = [
+        CatalogTrack(ref="dz:300", source="dz", id="300", title="Звезда по имени Солнце", artist="Кино", duration_s=225)
+    ]
+    env["state"]["snapshot"] = Snapshot(
+        account="ivan",
+        collections=[
+            SnapCollection(
+                "likes",
+                "likes",
+                "Мне нравится",
+                [SnapItem("5", track("Кино", "Звезда по имени Солнце", 225)), SnapItem("1", KROVI)],
+            )
+        ],
+    )
     c = env["client"]
     imp = await prepared(c)
-    await c.post(f"/api/imports/{imp['id']}/start", json={"collection_ids": [imp["collections"][0]["id"]], "mode": "full"})
+    await c.post(
+        f"/api/imports/{imp['id']}/start", json={"collection_ids": [imp["collections"][0]["id"]], "mode": "full"}
+    )
     await run_imports()
     # a downloaded like lands on top of «Понравившиеся»: so the oldest goes first
-    assert [d["title"] for d in reversed((await c.get("/api/downloads")).json())] == ["Группа крови", "Звезда по имени Солнце"]
+    assert [d["title"] for d in reversed((await c.get("/api/downloads")).json())] == [
+        "Группа крови",
+        "Звезда по имени Солнце",
+    ]
 
 
 async def test_full_import_downloads_in_the_background(env):
     c = env["client"]
     imp = await prepared(c)
-    r = await c.post(f"/api/imports/{imp['id']}/start", json={
-        "collection_ids": [x["id"] for x in imp["collections"]], "mode": "full", "keep_token": True})
+    r = await c.post(
+        f"/api/imports/{imp['id']}/start",
+        json={"collection_ids": [x["id"] for x in imp["collections"]], "mode": "full", "keep_token": True},
+    )
     assert r.status_code == 200, r.text
     await run_imports()
     imp = (await c.get(f"/api/imports/{imp['id']}")).json()
@@ -354,7 +432,9 @@ async def test_full_import_downloads_in_the_background(env):
     assert job.priority < 0
     [dl] = (await c.get("/api/downloads")).json()
     assert dl["star"] and dl["import_id"] == imp["id"]
-    assert {x["download_item_id"] for x in await items(c, imp) if x["title"] == "Группа крови" and x["kind"] == "track"} == {dl["id"]}
+    assert {
+        x["download_item_id"] for x in await items(c, imp) if x["title"] == "Группа крови" and x["kind"] == "track"
+    } == {dl["id"]}
     assert imp["stats"]["downloading"] == 1
     # the liked album is only matched (download_albums is off), the playlist exists already
     [album] = await items(c, imp, collection_id=imp["collections"][2]["id"])
@@ -376,8 +456,7 @@ async def test_second_import_reuses_the_matches(env):  # two whole imports: ~2x 
     searched = []
     for _ in range(2):
         imp = await prepared(c)
-        await c.post(f"/api/imports/{imp['id']}/start",
-                     json={"collection_ids": [x["id"] for x in imp["collections"]]})
+        await c.post(f"/api/imports/{imp['id']}/start", json={"collection_ids": [x["id"] for x in imp["collections"]]})
         await run_imports()
         searched.append(svc.deezer.searched)
     assert searched[0] > 0 and searched[1] == searched[0]  # the next import of the same songs does not search again
@@ -411,9 +490,18 @@ async def test_unliking_a_waiting_track(env):
 
 async def test_sign_in_by_code(env):
     c, mock = env["client"], env["mock"]
-    mock.post("https://oauth.yandex.ru/device/code").mock(return_value=httpx.Response(200, json={
-        "device_code": "dc", "user_code": "abcd1234", "verification_url": "https://ya.ru/device", "interval": 5,
-        "expires_in": 300}))
+    mock.post("https://oauth.yandex.ru/device/code").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "device_code": "dc",
+                "user_code": "abcd1234",
+                "verification_url": "https://ya.ru/device",
+                "interval": 5,
+                "expires_in": 300,
+            },
+        )
+    )
     token = mock.post("https://oauth.yandex.ru/token")
     token.mock(return_value=httpx.Response(400, json={"error": "authorization_pending"}))
     r = await c.post("/api/imports", json={"method": "device"})
@@ -435,8 +523,9 @@ async def test_profile_link(env):
     c = env["client"]
     r = await c.post("/api/imports", json={"method": "profile", "url": "https://music.yandex.ru/album/1"})
     assert r.status_code == 400 and "профиль" in r.json()["detail"]
-    r = await c.post("/api/imports", json={"method": "profile",
-                                           "url": "https://music.yandex.ru/users/ivan/playlists/3"})
+    r = await c.post(
+        "/api/imports", json={"method": "profile", "url": "https://music.yandex.ru/users/ivan/playlists/3"}
+    )
     assert r.status_code == 200, r.text
     await run_imports()
     assert env["state"]["fetches"] == [(None, "ivan")]
@@ -448,8 +537,9 @@ async def test_matching_verdicts(env):
     from app.imports.resolve import CatalogDown, resolve_track
     from app.services import svc
 
-    svc.deezer.more = [CatalogTrack(ref="dz:300", source="dz", id="300", title="Звезда по имени Солнце",
-                                    artist="Кино", duration_s=225)]
+    svc.deezer.more = [
+        CatalogTrack(ref="dz:300", source="dz", id="300", title="Звезда по имени Солнце", artist="Кино", duration_s=225)
+    ]
     svc.providers["hitmoz"].cands = [cand("55", "https://cdn.test/x.mp3", title="Последний герой")]
     cases = {
         "exact": track("Кино", "Группа крови", 246),
@@ -473,13 +563,17 @@ async def test_matching_verdicts(env):
             await resolve_track(s, "yandex", "new", track("Кино", "Кукушка"))
 
 
-@pytest.mark.parametrize(("starred", "want", "again"), [
-    ([], ["a", "b"], ["a", "b"]),
-    (["a", "b"], ["a", "b", "c"], ["c"]),
-    (["a", "c"], ["a", "b", "c"], ["b", "c"]),
-    (["a", "b"], ["a", "b"], []),
-    (["b", "a"], ["a", "b"], ["a", "b"]),
-], ids=["first", "newer-like", "older-like", "nothing-new", "reordered"])
+@pytest.mark.parametrize(
+    ("starred", "want", "again"),
+    [
+        ([], ["a", "b"], ["a", "b"]),
+        (["a", "b"], ["a", "b", "c"], ["c"]),
+        (["a", "c"], ["a", "b", "c"], ["b", "c"]),
+        (["a", "b"], ["a", "b"], []),
+        (["b", "a"], ["a", "b"], ["a", "b"]),
+    ],
+    ids=["first", "newer-like", "older-like", "nothing-new", "reordered"],
+)
 def test_restar_plan(starred, want, again):
     from app.imports.apply import restar_plan
 
@@ -490,8 +584,10 @@ def test_playlist_and_like_order():
     from app.imports.apply import like_order, playlist_order
     from app.models import ImportItem
 
-    rows = [ImportItem(id=i, position=pos, status=st) for i, pos, st in
-            [(1, 2, "done"), (2, 0, "done"), (3, 1, "waiting"), (4, 3, "done"), (5, 4, "skipped")]]
+    rows = [
+        ImportItem(id=i, position=pos, status=st)
+        for i, pos, st in [(1, 2, "done"), (2, 0, "done"), (3, 1, "waiting"), (4, 3, "done"), (5, 4, "skipped")]
+    ]
     songs = {1: "c", 2: "a", 4: "a", 5: "e"}  # 3 is not downloaded yet; 2 and 4 are the same song
     assert playlist_order(rows, songs) == ["a", "c", "a"]  # the service's order, a repeat kept, a removed row not
     assert like_order(rows, songs) == ["a", "c"]  # oldest like (the last position) first, each song once
@@ -501,11 +597,19 @@ async def test_dislikes_of_the_service_become_the_users_dislikes(env):
     from app.imports.sources.base import SnapCollection, SnapItem, Snapshot
 
     c, state = env["client"], env["state"]
-    state["snapshot"] = Snapshot(account="ivan", collections=[SnapCollection("dislikes", "dislikes", "Не нравится", [
-        SnapItem("1", KROVI), SnapItem("3", GOROD), SnapItem("9", NONE)])])
+    state["snapshot"] = Snapshot(
+        account="ivan",
+        collections=[
+            SnapCollection(
+                "dislikes", "dislikes", "Не нравится", [SnapItem("1", KROVI), SnapItem("3", GOROD), SnapItem("9", NONE)]
+            )
+        ],
+    )
     imp = await prepared(c)
-    r = await c.post(f"/api/imports/{imp['id']}/start",
-                     json={"collection_ids": [x["id"] for x in imp["collections"]], "mode": "full"})
+    r = await c.post(
+        f"/api/imports/{imp['id']}/start",
+        json={"collection_ids": [x["id"] for x in imp["collections"]], "mode": "full"},
+    )
     assert r.status_code == 200, r.text
     await run_imports()
     # a catalog track by its ref, an owned one by its Navidrome song too; one not found is no dislike

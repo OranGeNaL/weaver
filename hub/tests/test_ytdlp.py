@@ -31,18 +31,40 @@ from app.providers.ytdlp import (
 NETWORK = os.environ.get("HUB_NETWORK_TESTS") == "1"
 
 FLAT_TOPIC = {
-    "_type": "url", "ie_key": "Youtube", "id": "abc123def45", "url": "https://www.youtube.com/watch?v=abc123def45",
-    "title": "Группа крови", "duration": 284.0, "channel": "Кино - Topic", "channel_id": "UC1",
-    "view_count": 1000, "thumbnails": [{"url": "https://i.ytimg.com/a.jpg"}, {"url": "https://i.ytimg.com/b.jpg"}],
+    "_type": "url",
+    "ie_key": "Youtube",
+    "id": "abc123def45",
+    "url": "https://www.youtube.com/watch?v=abc123def45",
+    "title": "Группа крови",
+    "duration": 284.0,
+    "channel": "Кино - Topic",
+    "channel_id": "UC1",
+    "view_count": 1000,
+    "thumbnails": [{"url": "https://i.ytimg.com/a.jpg"}, {"url": "https://i.ytimg.com/b.jpg"}],
 }
 FLAT_DASHED = {
-    "_type": "url", "ie_key": "Youtube", "id": "zzz", "title": "Кино - Группа крови (Official Audio)",
-    "duration": 285, "channel": "Rock Archive", "uploader": "Rock Archive",
+    "_type": "url",
+    "ie_key": "Youtube",
+    "id": "zzz",
+    "title": "Кино - Группа крови (Official Audio)",
+    "duration": 285,
+    "channel": "Rock Archive",
+    "uploader": "Rock Archive",
 }
 FULL_MUSIC = {
-    "id": "ytm1", "title": "Группа крови", "track": "Группа крови", "artists": ["Кино"], "artist": "Кино",
-    "album": "Группа крови", "release_year": 1988, "release_date": "19880105", "upload_date": "20150301",
-    "duration": 284, "abr": 129.5, "acodec": "opus", "channel": "Кино - Topic",
+    "id": "ytm1",
+    "title": "Группа крови",
+    "track": "Группа крови",
+    "artists": ["Кино"],
+    "artist": "Кино",
+    "album": "Группа крови",
+    "release_year": 1988,
+    "release_date": "19880105",
+    "upload_date": "20150301",
+    "duration": 284,
+    "abr": 129.5,
+    "acodec": "opus",
+    "channel": "Кино - Topic",
     "thumbnail": "https://i.ytimg.com/vi/ytm1/maxresdefault.jpg",
 }
 
@@ -93,7 +115,10 @@ def test_entry_full_music_metadata() -> None:
 
 def test_entry_multiple_artists_and_formats_abr() -> None:
     e = {
-        "id": "m", "track": "Duet", "title": "Duet (Official)", "artists": ["A", "B"],
+        "id": "m",
+        "track": "Duet",
+        "title": "Duet (Official)",
+        "artists": ["A", "B"],
         "formats": [
             {"format_id": "140", "acodec": "mp4a.40.2", "vcodec": "none", "abr": 129.0},
             {"format_id": "251", "acodec": "opus", "vcodec": "none", "abr": 141.2},
@@ -135,13 +160,22 @@ def test_protocol() -> None:
 
 
 def _link(text: str, page_type: str) -> dict:
-    return {"text": text, "navigationEndpoint": {"browseEndpoint": {
-        "browseId": "x", "browseEndpointContextSupportedConfigs": {
-            "browseEndpointContextMusicConfig": {"pageType": f"MUSIC_PAGE_TYPE_{page_type}"}}}}}
+    return {
+        "text": text,
+        "navigationEndpoint": {
+            "browseEndpoint": {
+                "browseId": "x",
+                "browseEndpointContextSupportedConfigs": {
+                    "browseEndpointContextMusicConfig": {"pageType": f"MUSIC_PAGE_TYPE_{page_type}"}
+                },
+            }
+        },
+    }
 
 
-def ytm_row(vid: str | None, title: str, artists: list[str], album: str | None, duration: str,
-            explicit: bool = False) -> dict:
+def ytm_row(
+    vid: str | None, title: str, artists: list[str], album: str | None, duration: str, explicit: bool = False
+) -> dict:
     """A row of the YouTube Music "Songs" search, as its web API returns it."""
     runs: list[dict] = []
     for i, a in enumerate(artists):
@@ -152,8 +186,11 @@ def ytm_row(vid: str | None, title: str, artists: list[str], album: str | None, 
         runs += [{"text": " • "}, _link(album, "ALBUM")]
     runs += [{"text": " • "}, {"text": duration}]
     row: dict = {
-        "thumbnail": {"musicThumbnailRenderer": {"thumbnail": {"thumbnails": [
-            {"url": "https://lh3.test/s60"}, {"url": "https://lh3.test/s120"}]}}},
+        "thumbnail": {
+            "musicThumbnailRenderer": {
+                "thumbnail": {"thumbnails": [{"url": "https://lh3.test/s60"}, {"url": "https://lh3.test/s120"}]}
+            }
+        },
         "flexColumns": [
             {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": title}]}}},
             {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": runs}}},
@@ -167,21 +204,38 @@ def ytm_row(vid: str | None, title: str, artists: list[str], album: str | None, 
 
 
 def ytm_response(*rows: dict) -> dict:
-    return {"contents": {"tabbedSearchResultsRenderer": {"tabs": [{"tabRenderer": {"content": {
-        "sectionListRenderer": {"contents": [{"musicShelfRenderer": {"contents": list(rows)}}]}}}}]}}}
+    return {
+        "contents": {
+            "tabbedSearchResultsRenderer": {
+                "tabs": [
+                    {
+                        "tabRenderer": {
+                            "content": {
+                                "sectionListRenderer": {"contents": [{"musicShelfRenderer": {"contents": list(rows)}}]}
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+    }
 
 
 def test_ytm_row_mapping() -> None:
-    c = ytm_item_to_candidate(ytm_row("ytm1", "Группа крови", ["Кино"], "Группа крови", "4:45")[
-        "musicResponsiveListItemRenderer"])
+    c = ytm_item_to_candidate(
+        ytm_row("ytm1", "Группа крови", ["Кино"], "Группа крови", "4:45")["musicResponsiveListItemRenderer"]
+    )
     assert c is not None
     assert (c.provider, c.provider_id, c.page_url) == ("ytdlp", "ytm1", "https://www.youtube.com/watch?v=ytm1")
     assert (c.artist, c.title, c.album, c.duration_s) == ("Кино", "Группа крови", "Группа крови", 285)
     assert c.explicit is None and not c.enriched and c.bitrate_kbps is None
     assert c.cover_url == "https://lh3.test/s120" and c.extra["source"] == "ytmusic"
 
-    c = ytm_item_to_candidate(ytm_row("e", "Without Me", ["Eminem", "Dido"], None, "1:04:51", explicit=True)[
-        "musicResponsiveListItemRenderer"])
+    c = ytm_item_to_candidate(
+        ytm_row("e", "Without Me", ["Eminem", "Dido"], None, "1:04:51", explicit=True)[
+            "musicResponsiveListItemRenderer"
+        ]
+    )
     assert c is not None
     assert (c.artist, c.album, c.duration_s, c.explicit) == ("Eminem, Dido", None, 3891, True)
     # artists without links: the segment's text
@@ -192,11 +246,24 @@ def test_ytm_row_mapping() -> None:
     # the variant without links: "artists • album • duration" as plain text (a type label may lead)
     row = ytm_row("p", "Get Lucky", [], None, "6:09")["musicResponsiveListItemRenderer"]
     row["flexColumns"][1]["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"] = [
-        {"text": t} for t in ("Song", " • ", "Daft Punk, Pharrell Williams & Nile Rodgers", " • ", "Random Access Memories",
-                              " • ", "6:09")]
+        {"text": t}
+        for t in (
+            "Song",
+            " • ",
+            "Daft Punk, Pharrell Williams & Nile Rodgers",
+            " • ",
+            "Random Access Memories",
+            " • ",
+            "6:09",
+        )
+    ]
     c = ytm_item_to_candidate(row)
     assert c is not None
-    assert (c.artist, c.album, c.duration_s) == ("Daft Punk, Pharrell Williams & Nile Rodgers", "Random Access Memories", 369)
+    assert (c.artist, c.album, c.duration_s) == (
+        "Daft Punk, Pharrell Williams & Nile Rodgers",
+        "Random Access Memories",
+        369,
+    )
     assert ytm_item_to_candidate(ytm_row(None, "No id", ["A"], None, "3:00")["musicResponsiveListItemRenderer"]) is None
 
 
@@ -237,8 +304,13 @@ async def test_search_music_api(monkeypatch: pytest.MonkeyPatch) -> None:
 @respx.mock
 async def test_search_music_api_trouble_falls_back_to_ytdlp(monkeypatch: pytest.MonkeyPatch) -> None:
     p = YtdlpProvider(YtdlpCfg())
-    monkeypatch.setattr(p, "_extract", lambda url, **o: (
-        {"entries": [{"id": "ytm1", "title": "Группа крови"}]} if "music.youtube.com/search" in url else FULL_MUSIC))
+    monkeypatch.setattr(
+        p,
+        "_extract",
+        lambda url, **o: (
+            {"entries": [{"id": "ytm1", "title": "Группа крови"}]} if "music.youtube.com/search" in url else FULL_MUSIC
+        ),
+    )
     respx.post(YTM_API_URL).mock(side_effect=[httpx.Response(403), httpx.Response(200, json={"error": "changed"})])
     for _ in range(2):  # blocked, then a response of another shape
         res = await p.search(TrackQuery(artist="Кино", title="Группа крови"), limit=4)
@@ -277,8 +349,15 @@ def test_listen_format_prefers_m4a_audio() -> None:
         {"format_id": "140", "ext": "m4a", "acodec": "mp4a", "vcodec": "none", "abr": 129, "url": "https://g/140"},
         {"format_id": "139", "ext": "m4a", "acodec": "mp4a", "vcodec": "none", "abr": 48, "url": "https://g/139"},
         {"format_id": "18", "ext": "mp4", "acodec": "mp4a", "vcodec": "avc1", "url": "https://g/18"},
-        {"format_id": "hls", "ext": "m4a", "acodec": "mp4a", "vcodec": "none", "abr": 256, "url": "https://g/m3u8",
-         "protocol": "m3u8_native"},
+        {
+            "format_id": "hls",
+            "ext": "m4a",
+            "acodec": "mp4a",
+            "vcodec": "none",
+            "abr": 256,
+            "url": "https://g/m3u8",
+            "protocol": "m3u8_native",
+        },
     ]
     assert listen_format({"formats": fmts})["format_id"] == "140"
     assert listen_format({"formats": fmts[:1]})["format_id"] == "251"
@@ -288,8 +367,15 @@ def test_listen_format_prefers_m4a_audio() -> None:
 async def test_stream_reuses_the_search_lookup_once(monkeypatch: pytest.MonkeyPatch) -> None:
     p = YtdlpProvider(YtdlpCfg())
     calls: list[dict] = []
-    audio = {"format_id": "140", "ext": "m4a", "acodec": "mp4a", "vcodec": "none", "abr": 129,
-             "url": "https://g.test/140", "http_headers": {"User-Agent": "UA"}}
+    audio = {
+        "format_id": "140",
+        "ext": "m4a",
+        "acodec": "mp4a",
+        "vcodec": "none",
+        "abr": 129,
+        "url": "https://g.test/140",
+        "http_headers": {"User-Agent": "UA"},
+    }
 
     def fake_extract(url: str, **opts: Any) -> dict:
         calls.append(opts)
@@ -311,14 +397,21 @@ async def test_stream_reuses_the_search_lookup_once(monkeypatch: pytest.MonkeyPa
     await p.aclose()
 
 
-YT_FILE = Candidate(provider="ytdlp", provider_id="vid1", artist="Кино", title="Группа крови",
-                    page_url="https://www.youtube.com/watch?v=vid1")
+YT_FILE = Candidate(
+    provider="ytdlp",
+    provider_id="vid1",
+    artist="Кино",
+    title="Группа крови",
+    page_url="https://www.youtube.com/watch?v=vid1",
+)
 
 
-@pytest.mark.parametrize(("ahead_s", "waits"), [(5, [5.0]), (0, []), (-3, [])],
-                         ids=["ad-before-the-video", "no-ad", "ad-over"])
-async def test_stream_waits_until_the_ad_could_be_skipped(monkeypatch: pytest.MonkeyPatch, ahead_s: int,
-                                                          waits: list[float]) -> None:
+@pytest.mark.parametrize(
+    ("ahead_s", "waits"), [(5, [5.0]), (0, []), (-3, [])], ids=["ad-before-the-video", "no-ad", "ad-over"]
+)
+async def test_stream_waits_until_the_ad_could_be_skipped(
+    monkeypatch: pytest.MonkeyPatch, ahead_s: int, waits: list[float]
+) -> None:
     # googlevideo answers 403 until `available_at`: a stream must not hand the URL out earlier
     p = YtdlpProvider(YtdlpCfg())
     now = 1_800_000_000.0
@@ -329,8 +422,11 @@ async def test_stream_waits_until_the_ad_could_be_skipped(monkeypatch: pytest.Mo
         slept.append(s)
 
     monkeypatch.setattr(ytdlp_mod, "_sleep", fake_sleep)
-    monkeypatch.setattr(p, "_extract", lambda url, **opts: {
-        "url": "https://g.test/140", "ext": "m4a", "available_at": int(now) + ahead_s})
+    monkeypatch.setattr(
+        p,
+        "_extract",
+        lambda url, **opts: {"url": "https://g.test/140", "ext": "m4a", "available_at": int(now) + ahead_s},
+    )
     src = await p.stream(YT_FILE)
     assert src.url == "https://g.test/140" and slept == waits
     await p.aclose()
@@ -340,8 +436,11 @@ async def test_stream_gives_up_on_a_long_ad(monkeypatch: pytest.MonkeyPatch) -> 
     p = YtdlpProvider(YtdlpCfg())
     now = 1_800_000_000.0
     monkeypatch.setattr(ytdlp_mod.time, "time", lambda: now)
-    monkeypatch.setattr(p, "_extract", lambda url, **opts: {
-        "url": "https://g.test/140", "available_at": now + ytdlp_mod.MAX_AD_WAIT_S + 1})
+    monkeypatch.setattr(
+        p,
+        "_extract",
+        lambda url, **opts: {"url": "https://g.test/140", "available_at": now + ytdlp_mod.MAX_AD_WAIT_S + 1},
+    )
     with pytest.raises(ProviderError, match="реклама"):
         await p.stream(YT_FILE)
     await p.aclose()
@@ -377,8 +476,9 @@ async def test_search_errors_raise_provider_error(monkeypatch: pytest.MonkeyPatc
 
 @pytest.mark.parametrize("apostrophe", ["'", "’"])
 @pytest.mark.parametrize("operation", ["stream", "fetch"])
-async def test_bot_check_explains_source_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-                                                apostrophe: str, operation: str) -> None:
+async def test_bot_check_explains_source_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, apostrophe: str, operation: str
+) -> None:
     def blocked(*args, **kwargs):
         raise DownloadError(
             f"ERROR: [youtube] Ykzk5erqQnM: Sign in to confirm you{apostrophe}re not a bot. "
@@ -398,8 +498,9 @@ async def test_bot_check_explains_source_failure(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.parametrize("operation", ["metadata", "stream", "fetch"])
-async def test_youtube_cookies_are_reloaded_without_rewriting_export(monkeypatch: pytest.MonkeyPatch,
-                                                                    tmp_path: Path, operation: str) -> None:
+async def test_youtube_cookies_are_reloaded_without_rewriting_export(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, operation: str
+) -> None:
     cookie_path = tmp_path / "cookies.txt"
     monkeypatch.setenv("YTDLP_COOKIES_FILE", str(cookie_path))
     received = []
@@ -420,9 +521,11 @@ async def test_youtube_cookies_are_reloaded_without_rewriting_export(monkeypatch
     p = YtdlpProvider(YtdlpCfg())
     c = entry_to_candidate(FLAT_TOPIC)
     for value in ("first", "refreshed"):
-        exported = ("# Netscape HTTP Cookie File\n"
-                    f"#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t0\tSID\t{value}\n"
-                    ".example.com\tTRUE\t/\tTRUE\t0\tOTHER\tprivate\n")
+        exported = (
+            "# Netscape HTTP Cookie File\n"
+            f"#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t0\tSID\t{value}\n"
+            ".example.com\tTRUE\t/\tTRUE\t0\tOTHER\tprivate\n"
+        )
         cookie_path.write_text(exported, encoding="utf-8")
         before = cookie_path.stat().st_mtime_ns
         if operation == "metadata":
@@ -437,9 +540,12 @@ async def test_youtube_cookies_are_reloaded_without_rewriting_export(monkeypatch
     await p.aclose()
 
 
-@pytest.mark.parametrize("contents", [None, "secret invalid cookies", "# Netscape HTTP Cookie File\ninvalid secret line"])
-async def test_unreadable_cookies_fail_without_exposing_contents(monkeypatch: pytest.MonkeyPatch,
-                                                               tmp_path: Path, contents: str | None) -> None:
+@pytest.mark.parametrize(
+    "contents", [None, "secret invalid cookies", "# Netscape HTTP Cookie File\ninvalid secret line"]
+)
+async def test_unreadable_cookies_fail_without_exposing_contents(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, contents: str | None
+) -> None:
     path = tmp_path / "cookies.txt"
     if contents is not None:
         path.write_text(contents, encoding="utf-8")
@@ -521,9 +627,11 @@ async def test_fetch_with_fake_ydl(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     assert c is not None
     progress: list[float] = []
     if sync_cb:
+
         def cb(f: float) -> None:
             progress.append(f)
     else:
+
         async def cb(f: float) -> None:  # type: ignore[misc]
             progress.append(f)
 
@@ -568,18 +676,23 @@ def test_media_mirrors_are_the_videos_other_cache_servers() -> None:
     assert ytdlp_mod.media_mirrors("https://g.test/140?mn=sn-a") == []  # not a YouTube media server
 
 
-@pytest.mark.parametrize(("answering", "expected"), [
-    (("rr7---sn-isp1.googlevideo.com",), GV),
-    (("rr1---sn-far2.googlevideo.com",), GV.replace("rr7---sn-isp1", "rr1---sn-far2")),
-    ((), GV),  # nothing answers: yt-dlp tries the original and reports its error
-], ids=["own-server-answers", "own-server-hangs", "none-answers"])
+@pytest.mark.parametrize(
+    ("answering", "expected"),
+    [
+        (("rr7---sn-isp1.googlevideo.com",), GV),
+        (("rr1---sn-far2.googlevideo.com",), GV.replace("rr7---sn-isp1", "rr1---sn-far2")),
+        ((), GV),  # nothing answers: yt-dlp tries the original and reports its error
+    ],
+    ids=["own-server-answers", "own-server-hangs", "none-answers"],
+)
 def test_answering_url(monkeypatch: pytest.MonkeyPatch, answering: tuple[str, ...], expected: str) -> None:
     media_servers(monkeypatch, *answering)
     assert ytdlp_mod.answering_url(GV) == expected
 
 
-async def test_fetch_downloads_from_a_cache_server_that_answers(monkeypatch: pytest.MonkeyPatch,
-                                                                tmp_path: Path) -> None:
+async def test_fetch_downloads_from_a_cache_server_that_answers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setattr(ytdlp_mod.yt_dlp, "YoutubeDL", FakeYDL)
     monkeypatch.setattr(FakeYDL, "formats", [{"format_id": "251", "url": GV}, {"format_id": "hls", "url": None}])
     probed = media_servers(monkeypatch, "rr1---sn-far2.googlevideo.com")
@@ -604,12 +717,16 @@ async def test_stream_from_a_cache_server_that_answers(monkeypatch: pytest.Monke
 PROXY = "http://proxy.test:3128"
 
 
-@pytest.mark.parametrize(("hosts", "youtube", "soundcloud"), [
-    ({"api.deezer.com"}, None, None),
-    ({"music.youtube.com"}, PROXY, None),
-    ({"*.sndcdn.com"}, None, PROXY),
-    ({"youtube.com", "soundcloud.com"}, PROXY, PROXY),
-], ids=["catalog-only", "youtube", "soundcloud-cdn", "both"])
+@pytest.mark.parametrize(
+    ("hosts", "youtube", "soundcloud"),
+    [
+        ({"api.deezer.com"}, None, None),
+        ({"music.youtube.com"}, PROXY, None),
+        ({"*.sndcdn.com"}, None, PROXY),
+        ({"youtube.com", "soundcloud.com"}, PROXY, PROXY),
+    ],
+    ids=["catalog-only", "youtube", "soundcloud-cdn", "both"],
+)
 def test_ytdlp_proxy_is_selected_per_provider(monkeypatch, hosts, youtube, soundcloud):
     from app.providers.reuploads import SoundcloudProvider
 
@@ -620,8 +737,7 @@ def test_ytdlp_proxy_is_selected_per_provider(monkeypatch, hosts, youtube, sound
 
 async def test_proxy_is_used_for_youtube_download_and_stream_redirect(monkeypatch, tmp_path):
     monkeypatch.setenv("HTTPS_PROXY", "http://other-proxy.test:8888")
-    monkeypatch.setattr(net, "get_settings", lambda: SimpleNamespace(
-        outbound_proxy=PROXY, proxy_hosts={"youtube.com"}))
+    monkeypatch.setattr(net, "get_settings", lambda: SimpleNamespace(outbound_proxy=PROXY, proxy_hosts={"youtube.com"}))
     monkeypatch.setattr(ytdlp_mod.yt_dlp, "YoutubeDL", FakeYDL)
     monkeypatch.setattr(FakeYDL, "formats", [{"format_id": "251", "url": GV}])
     probed = media_servers(monkeypatch)

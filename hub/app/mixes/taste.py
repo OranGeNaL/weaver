@@ -105,7 +105,9 @@ class Profile:
     disliked_artists: set[str] = field(default_factory=set)  # artist keys
     picked_artists: list[dict[str, Any]] = field(default_factory=list)  # onboarding: [{ref, name}]
 
-    def find(self, *, ref: str | None = None, nd_song_id: str | None = None, fp: str | None = None) -> TasteTrack | None:
+    def find(
+        self, *, ref: str | None = None, nd_song_id: str | None = None, fp: str | None = None
+    ) -> TasteTrack | None:
         for k in (ref, song_key(nd_song_id) if nd_song_id else None, fp):
             if k and (key := self.by_id.get(k)):
                 return self.tracks[key]
@@ -118,7 +120,9 @@ class Profile:
     def disliked(self, *, ref: str | None, nd_song_id: str | None, artist: str, artist_ref: str | None) -> bool:
         if (ref and ref in self.disliked_ids) or (nd_song_id and song_key(nd_song_id) in self.disliked_ids):
             return True
-        return bool(artist_ref and artist_ref in self.disliked_artist_refs) or artist_key(artist) in self.disliked_artists
+        return (
+            bool(artist_ref and artist_ref in self.disliked_artist_refs) or artist_key(artist) in self.disliked_artists
+        )
 
     @property
     def empty(self) -> bool:
@@ -133,10 +137,15 @@ class Profile:
 
     def seeds(self, n: int, max_per_artist: int = 2) -> list[TasteTrack]:
         since = self.now - timedelta(days=SEED_DAYS)
-        recent = sorted((t for t in self.tracks.values() if t.score > 0 and t.last_event and t.last_event >= since),
-                        key=lambda t: -t.score)
-        pool = recent or sorted((t for t in self.tracks.values() if (t.liked or t.downloaded) and t.score >= 0),
-                                key=lambda t: t.last_event or datetime.min, reverse=True)
+        recent = sorted(
+            (t for t in self.tracks.values() if t.score > 0 and t.last_event and t.last_event >= since),
+            key=lambda t: -t.score,
+        )
+        pool = recent or sorted(
+            (t for t in self.tracks.values() if (t.liked or t.downloaded) and t.score >= 0),
+            key=lambda t: t.last_event or datetime.min,
+            reverse=True,
+        )
         out: list[TasteTrack] = []
         per: dict[str, int] = {}
         for t in pool:
@@ -198,9 +207,15 @@ async def _catalog_info(refs: list[str]) -> dict[str, CatalogTrack]:
     return {r: t for r, t in await asyncio.gather(*(one(r) for r in refs)) if t is not None}
 
 
-async def build_profile(s: AsyncSession, user: User, now: datetime | None = None,
-                        starred: list[dict[str, Any]] | None = None, *, model: str = "v1",
-                        timezone: str | None = None) -> Profile:
+async def build_profile(
+    s: AsyncSession,
+    user: User,
+    now: datetime | None = None,
+    starred: list[dict[str, Any]] | None = None,
+    *,
+    model: str = "v1",
+    timezone: str | None = None,
+) -> Profile:
     """v1 scoring with permanent, deduplicated favorite state. `starred` is an optional successful snapshot."""
     now = now or utcnow()
     if model == "v2":
@@ -208,8 +223,9 @@ async def build_profile(s: AsyncSession, user: User, now: datetime | None = None
         from app.mixes.taste_math import calculate_profile
         from app.mixes.taste_snapshot import load_snapshot
 
-        return calculate_profile(await load_snapshot(s, user.id, now=now), now=now,
-                                 timezone=timezone or get_settings().timezone)
+        return calculate_profile(
+            await load_snapshot(s, user.id, now=now), now=now, timezone=timezone or get_settings().timezone
+        )
     if model != "v1":
         raise ValueError("online taste model must be v1 or v2")
     p = Profile(user_id=user.id, now=now)
@@ -224,8 +240,10 @@ async def build_profile(s: AsyncSession, user: User, now: datetime | None = None
     late_skips: list[tuple[TasteTrack, float, float]] = []  # skips after 30 s without the length in the event
 
     events = await user_events(s, user.id, HISTORY_DAYS, now=now)
-    await b.ids.prime([(e.ref, e.nd_song_id) for e in events if e.target_type == "track"] +
-                      [(x.ref, x.nd_id) for x in favorites.values() if x.target_type == "track"])
+    await b.ids.prime(
+        [(e.ref, e.nd_song_id) for e in events if e.target_type == "track"]
+        + [(x.ref, x.nd_id) for x in favorites.values() if x.target_type == "track"]
+    )
     for e in events:
         if e.target_type != "track" or e.kind not in ("start", "skip", "finish"):
             continue  # the `dislikes` table is the truth
@@ -262,8 +280,13 @@ async def build_profile(s: AsyncSession, user: User, now: datetime | None = None
         t.artist, t.title = t.artist or data.get("artist") or "", t.title or data.get("title") or ""
         b._index(t)
 
-    rows = (await s.execute(select(DownloadItem, Track).join(Track, Track.id == DownloadItem.track_id)
-                            .where(DownloadItem.user_id == user.id, DownloadItem.status == "done"))).all()
+    rows = (
+        await s.execute(
+            select(DownloadItem, Track)
+            .join(Track, Track.id == DownloadItem.track_id)
+            .where(DownloadItem.user_id == user.id, DownloadItem.status == "done")
+        )
+    ).all()
     for item, tr in rows:
         if quiet(item.query_json):
             continue
@@ -310,7 +333,7 @@ async def _names(s: AsyncSession, p: Profile, b: _Builder) -> None:
     songs = [t.nd_song_id for t in p.tracks.values() if t.nd_song_id]
     lib: dict[str, Track] = {}
     for i in range(0, len(songs), 500):
-        for tr in (await s.execute(select(Track).where(Track.nd_song_id.in_(songs[i:i + 500])))).scalars():
+        for tr in (await s.execute(select(Track).where(Track.nd_song_id.in_(songs[i : i + 500])))).scalars():
             lib[tr.nd_song_id] = tr  # type: ignore[index]
     for t in p.tracks.values():
         if t.nd_song_id and (tr := lib.get(t.nd_song_id)):

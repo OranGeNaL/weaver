@@ -105,8 +105,9 @@ def _cookie_revision() -> tuple:
 class YoutubeAccess:
     """Shared by regular YouTube and re-uploads, owned by one Services lifespan (no global state)."""
 
-    def __init__(self, cfg: YtdlpCfg, *, max_parallel: int | None = None,
-                 clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self, cfg: YtdlpCfg, *, max_parallel: int | None = None, clock: Callable[[], float] = time.monotonic
+    ) -> None:
         self.sem = PrioritySemaphore(max_parallel or cfg.max_parallel)
         self.clock = clock
         self.cooldown_s = cfg.refusal_cooldown_s
@@ -150,8 +151,10 @@ def _media_host_answers(host: str) -> bool:
     if hit and now - hit[0] < MEDIA_PROBE_TTL_S:
         return hit[1]
     try:
-        with socket.create_connection((host, 443), timeout=MEDIA_PROBE_TIMEOUT_S) as sock, \
-                ssl.create_default_context().wrap_socket(sock, server_hostname=host):
+        with (
+            socket.create_connection((host, 443), timeout=MEDIA_PROBE_TIMEOUT_S) as sock,
+            ssl.create_default_context().wrap_socket(sock, server_hostname=host),
+        ):
             ok = True
     except OSError:
         ok = False
@@ -265,7 +268,8 @@ def _best_abr(info: dict) -> int | None:
         if rf.get("acodec") not in (None, "none") and rf.get("abr"):
             return round(float(rf["abr"]))
     abrs = [
-        float(f["abr"]) for f in info.get("formats") or []
+        float(f["abr"])
+        for f in info.get("formats") or []
         if f.get("abr") and f.get("acodec") not in (None, "none") and f.get("vcodec") in (None, "none")
     ]
     return round(max(abrs)) if abrs else None
@@ -332,8 +336,11 @@ def listen_format(info: dict) -> dict | None:
     """The format `LISTEN_FORMAT` would pick among an extraction's formats: audio-only m4a with the best bitrate,
     else any audio-only format (plain HTTP(S), not HLS/DASH manifests)."""
     audio = [
-        f for f in info.get("formats") or []
-        if f.get("url") and f.get("acodec") not in (None, "none") and f.get("vcodec") in (None, "none")
+        f
+        for f in info.get("formats") or []
+        if f.get("url")
+        and f.get("acodec") not in (None, "none")
+        and f.get("vcodec") in (None, "none")
         and f.get("protocol", "https") in ("http", "https")
     ]
     m4a = [f for f in audio if f.get("ext") == "m4a"]
@@ -395,7 +402,8 @@ def ytm_item_to_candidate(item: dict) -> Candidate | None:
 
     def page_type(r: dict) -> str:
         cfg = ((r.get("navigationEndpoint") or {}).get("browseEndpoint") or {}).get(
-            "browseEndpointContextSupportedConfigs") or {}
+            "browseEndpointContextSupportedConfigs"
+        ) or {}
         return (cfg.get("browseEndpointContextMusicConfig") or {}).get("pageType", "")
 
     def text(seg: list[dict]) -> str:
@@ -417,10 +425,12 @@ def ytm_item_to_candidate(item: dict) -> Candidate | None:
         album = text(segments[1]) if len(segments) > 1 else None
     if not title or not artist:
         return None
-    badges = [((b.get("musicInlineBadgeRenderer") or {}).get("icon") or {}).get("iconType")
-              for b in item.get("badges") or []]
+    badges = [
+        ((b.get("musicInlineBadgeRenderer") or {}).get("icon") or {}).get("iconType") for b in item.get("badges") or []
+    ]
     thumbs = (((item.get("thumbnail") or {}).get("musicThumbnailRenderer") or {}).get("thumbnail") or {}).get(
-        "thumbnails") or []
+        "thumbnails"
+    ) or []
     return Candidate(
         provider="ytdlp",
         provider_id=str(vid),
@@ -452,8 +462,14 @@ def ytsearch_query(prefix: str, text: str, limit: int) -> str:
 class YtdlpProvider:
     name = "ytdlp"
 
-    def __init__(self, cfg: YtdlpCfg, *, use_music_search: bool = True, max_parallel: int | None = None,
-                 access: YoutubeAccess | None = None) -> None:
+    def __init__(
+        self,
+        cfg: YtdlpCfg,
+        *,
+        use_music_search: bool = True,
+        max_parallel: int | None = None,
+        access: YoutubeAccess | None = None,
+    ) -> None:
         self.cfg = cfg
         self.use_music_search = use_music_search
         self._youtube = (access or YoutubeAccess(cfg, max_parallel=max_parallel)) if self.name != "soundcloud" else None
@@ -481,15 +497,17 @@ class YtdlpProvider:
             "fragment_retries": 3,
         }
         if self._youtube:
-            opts.update({
-                "extractor_args": {"youtube": {"player_client": ["mweb"]}},
-                "retries": 1,
-                "fragment_retries": 1,
-                "extractor_retries": 1,
-                "concurrent_fragment_downloads": 1,
-                "sleep_interval_requests": self.cfg.sleep_requests_s,
-                "sleep_interval": self.cfg.sleep_downloads_s,
-            })
+            opts.update(
+                {
+                    "extractor_args": {"youtube": {"player_client": ["mweb"]}},
+                    "retries": 1,
+                    "fragment_retries": 1,
+                    "extractor_retries": 1,
+                    "concurrent_fragment_downloads": 1,
+                    "sleep_interval_requests": self.cfg.sleep_requests_s,
+                    "sleep_interval": self.cfg.sleep_downloads_s,
+                }
+            )
             if base_url := os.environ.get("YTDLP_POT_BASE_URL"):
                 opts["extractor_args"]["youtubepot-bgutilhttp"] = {"base_url": [base_url]}
         if self._proxy:
@@ -523,7 +541,9 @@ class YtdlpProvider:
                     cookies.load(path, ignore_discard=True, ignore_expires=True)
             except (OSError, LoadError, ValueError):
                 # Cookie parser exceptions may contain credentials from the offending line.
-                raise ProviderError("Не удалось прочитать cookies YouTube. Владельцу сервера нужно проверить файл cookies.") from None
+                raise ProviderError(
+                    "Не удалось прочитать cookies YouTube. Владельцу сервера нужно проверить файл cookies."
+                ) from None
         with yt_dlp.YoutubeDL({**self._base_opts(), **opts}) as ydl:
             for cookie in cookies:
                 if cookie.domain.lstrip(".") == "youtube.com" or cookie.domain.endswith(".youtube.com"):
@@ -595,13 +615,17 @@ class YtdlpProvider:
 
     async def _music_api_request(self, text: str, limit: int) -> list[Candidate]:
         if self._api is None:
-            self._api = make_client(timeout=15, headers={"Origin": "https://music.youtube.com"},
-                                    proxy_hosts={"*"} if self._proxy else None)
+            self._api = make_client(
+                timeout=15, headers={"Origin": "https://music.youtube.com"}, proxy_hosts={"*"} if self._proxy else None
+            )
         version = ytm_client_version()
         resp = await self._api.post(
             YTM_API_URL,
-            json={"context": {"client": {"clientName": "WEB_REMIX", "clientVersion": version, "hl": "en"}},
-                  "query": text, "params": YTM_SONGS_PARAMS},
+            json={
+                "context": {"client": {"clientName": "WEB_REMIX", "clientVersion": version, "hl": "en"}},
+                "query": text,
+                "params": YTM_SONGS_PARAMS,
+            },
             headers={"X-YouTube-Client-Name": "67", "X-YouTube-Client-Version": version},
         )
         resp.raise_for_status()
@@ -676,13 +700,17 @@ class YtdlpProvider:
                     access.pending.pop(video_id, None)
                 if not t.cancelled():
                     t.exception()  # retrieve a failure even if all callers were cancelled
+
             task.add_done_callback(done)
 
     async def _lookup_metadata(self, video_id: str) -> dict:
         # formats aren't needed here, so don't fail when they can't be resolved (e.g. no JS runtime)
         return await self._run(
-            self._extract, WATCH_URL.format(id=video_id),
-            ignore_no_formats_error=True, format="bestaudio/best", check_formats=False,
+            self._extract,
+            WATCH_URL.format(id=video_id),
+            ignore_no_formats_error=True,
+            format="bestaudio/best",
+            check_formats=False,
         )
 
     async def _search_youtube(self, q: TrackQuery, limit: int) -> list[Candidate]:
@@ -771,8 +799,7 @@ class YtdlpProvider:
                 if (fp := rd.get("filepath")) and Path(fp).is_file():
                     return Path(fp)
             files = [
-                p for p in dest_dir.glob(f"ytdlp_{c.provider_id}.*")
-                if p.suffix.lower() in _AUDIO_EXTS and p.is_file()
+                p for p in dest_dir.glob(f"ytdlp_{c.provider_id}.*") if p.suffix.lower() in _AUDIO_EXTS and p.is_file()
             ]
             if not files:
                 raise ProviderError(f"yt-dlp finished but no file for {c.provider_id} in {dest_dir}")
@@ -810,8 +837,9 @@ class YtdlpProvider:
             # Keep the same egress IP as extraction, including on redirects.
             self._http = make_client(timeout=60, proxy_hosts={"*"} if self._proxy else None)
         headers = {k: v for k, v in (info.get("http_headers") or {}).items() if isinstance(v, str)}
-        return StreamSource(url=url, client=self._http, headers=headers,
-                            media_type=_MEDIA_TYPES.get(info.get("ext") or "", "audio/mp4"))
+        return StreamSource(
+            url=url, client=self._http, headers=headers, media_type=_MEDIA_TYPES.get(info.get("ext") or "", "audio/mp4")
+        )
 
     async def aclose(self) -> None:
         for client in (self._http, self._api):

@@ -214,7 +214,7 @@ def _yandex_fetch(kind: str, ids: tuple[str, ...]) -> Extraction:
         missing = [str(s.id).split(":")[0] for s in playlist.tracks or [] if s.track is None]
         extra: dict[str, Any] = {}
         for i in range(0, len(missing), YANDEX_TRACKS_CHUNK):
-            for t in client.tracks(missing[i:i + YANDEX_TRACKS_CHUNK]) or []:
+            for t in client.tracks(missing[i : i + YANDEX_TRACKS_CHUNK]) or []:
                 extra[str(t.id)] = t
         result = yandex_playlist_extraction(playlist, extra)
         if not result.items and (playlist.track_count or 0) > 0:
@@ -268,9 +268,7 @@ def youtube_entry_item(entry: dict, *, album_mode: bool = False) -> ExtractedIte
     if album_mode and channel:
         return ExtractedItem(artist_raw=channel, title_raw=title, album_raw=album, duration=duration, conf=0.85)
     if m := _DASH_SPLIT_RE.match(title):
-        return ExtractedItem(
-            artist_raw=m["artist"], title_raw=m["title"], album_raw=album, duration=duration, conf=0.8
-        )
+        return ExtractedItem(artist_raw=m["artist"], title_raw=m["title"], album_raw=album, duration=duration, conf=0.8)
     return ExtractedItem(artist_raw=artist or channel, title_raw=title, album_raw=album, duration=duration, conf=0.5)
 
 
@@ -386,18 +384,21 @@ def spotify_extraction(data: dict) -> Extraction:
     for t in ent.get("trackList") or []:
         if t.get("entityType", "track") != "track" or not t.get("title"):
             continue
-        items.append(ExtractedItem(
-            artist_raw=_spotify_artists(t.get("subtitle")),
-            title_raw=t["title"],
-            album_raw=name if album_mode else None,
-            duration=fmt_duration((t.get("duration") or 0) / 1000),
-            conf=1.0,
-        ))
+        items.append(
+            ExtractedItem(
+                artist_raw=_spotify_artists(t.get("subtitle")),
+                title_raw=t["title"],
+                album_raw=name if album_mode else None,
+                duration=fmt_duration((t.get("duration") or 0) / 1000),
+                conf=1.0,
+            )
+        )
     if album_mode:
         ctx = ExtractionContext(album_title=name, album_artist=_spotify_artists(ent.get("subtitle")) or None)
         return Extraction(source_app="spotify", page_type="album", context=ctx, items=items)
-    return Extraction(source_app="spotify", page_type="playlist", context=ExtractionContext(playlist_name=name),
-                      items=items)
+    return Extraction(
+        source_app="spotify", page_type="playlist", context=ExtractionContext(playlist_name=name), items=items
+    )
 
 
 async def _spotify(kind: str, sid: str) -> Extraction:

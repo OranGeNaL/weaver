@@ -5,6 +5,7 @@ An attempt — the events of one try to play a track: one `(device_id, playback_
 `listening_summary`: measured `listened_ms` crossing the threshold, or a Navidrome scrobble. A launch — the user began
 playing a list: by `launch_id`, by the wave session, or (old history) by the 30-minute heuristic.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -23,9 +24,22 @@ PLAY_KINDS = ("start", "progress", "interrupted", "error", "skip", "finish")
 MARK_KINDS = ("like", "unlike", "dislike", "undislike")
 LAUNCH_GAP = timedelta(minutes=30)
 MARK_TAIL = timedelta(minutes=5)  # a like right after the list ended still belongs to it
-PLAYLIST_SHARE = .6  # an old `playlist` launch is a mix's when this share of its tracks are the mix's songs
+PLAYLIST_SHARE = 0.6  # an old `playlist` launch is a mix's when this share of its tracks are the mix's songs
 EARLY_SKIP_S = 30
-SOURCES = {"mix", "wave", "smart", "playlist", "album", "artist", "liked", "search", "queue", "continuous", "library", "other"}
+SOURCES = {
+    "mix",
+    "wave",
+    "smart",
+    "playlist",
+    "album",
+    "artist",
+    "liked",
+    "search",
+    "queue",
+    "continuous",
+    "library",
+    "other",
+}
 SELF_SELECTED = {"album", "playlist", "search", "artist", "liked", "library"}  # «прижившаяся рекомендация»
 NOT_USER = ("favorite:bootstrap", "favorite:reconcile")
 
@@ -147,13 +161,15 @@ class Launch:
 
 
 def attempt_stats(attempts: list[Attempt]) -> dict[str, int]:
-    return {"tracks_started": len({a.key for a in attempts if a.started}),
-            "started": sum(a.started for a in attempts),
-            "heard": sum(a.heard_at is not None for a in attempts),
-            "finished": sum(a.finished for a in attempts),
-            "early_skips": sum(a.early_skip_at is not None for a in attempts),
-            "late_skips": sum(a.late_skip for a in attempts),
-            "listened_ms": sum(a.listened_ms for a in attempts)}
+    return {
+        "tracks_started": len({a.key for a in attempts if a.started}),
+        "started": sum(a.started for a in attempts),
+        "heard": sum(a.heard_at is not None for a in attempts),
+        "finished": sum(a.finished for a in attempts),
+        "early_skips": sum(a.early_skip_at is not None for a in attempts),
+        "late_skips": sum(a.late_skip for a in attempts),
+        "listened_ms": sum(a.listened_ms for a in attempts),
+    }
 
 
 def mark_stats(marks: list[PlayEvent]) -> dict[str, int]:
@@ -164,13 +180,22 @@ def _attempt(events: list[PlayEvent], aliases: Aliases, grouped: bool) -> Attemp
     ref = next((e.ref for e in events if e.ref), None)
     nd = next((e.nd_song_id for e in events if e.nd_song_id), None)
     first = events[0]
-    a = Attempt(events, aliases.key(ref, nd), ref, nd, aliases.of(ref, nd), first.ts, first.client, first.device_id,
-                next((e.context for e in events if e.context), None),
-                next((e.launch_id for e in events if e.launch_id), None),
-                next((e.launch_origin for e in events if e.launch_origin), None))
+    a = Attempt(
+        events,
+        aliases.key(ref, nd),
+        ref,
+        nd,
+        aliases.of(ref, nd),
+        first.ts,
+        first.client,
+        first.device_id,
+        next((e.context for e in events if e.context), None),
+        next((e.launch_id for e in events if e.launch_id), None),
+        next((e.launch_origin for e in events if e.launch_origin), None),
+    )
     duration = next((e.duration_s for e in reversed(events) if e.duration_s), None) or next(
-        ((e.track_metadata or {}).get("duration_s") for e in events if (e.track_metadata or {}).get("duration_s")),
-        None)
+        ((e.track_metadata or {}).get("duration_s") for e in events if (e.track_metadata or {}).get("duration_s")), None
+    )
     if grouped and any(e.listened_ms is not None for e in events):  # measured only by a playback, as the summary
         a.measured = True
         threshold, previous = listened_threshold_ms(duration), 0
@@ -220,8 +245,10 @@ def attempts_of(rows: list[PlayEvent], aliases: Aliases) -> list[Attempt]:
                 del open_[stream]
         else:
             legacy.append([r])
-    out = [*(_attempt(events, aliases, True) for events in groups.values()),
-           *(_attempt(events, aliases, False) for events in legacy)]
+    out = [
+        *(_attempt(events, aliases, True) for events in groups.values()),
+        *(_attempt(events, aliases, False) for events in legacy),
+    ]
     return sorted(out, key=lambda a: (a.started_at, a.events[0].id))
 
 
@@ -256,28 +283,61 @@ class History:
 
 
 async def load(s: AsyncSession, user_id: int, now: datetime) -> History:
-    rows = [r for r in (await s.execute(select(PlayEvent).where(
-        PlayEvent.user_id == user_id, PlayEvent.ts <= now, PlayEvent.superseded_scrobble.is_(False),
-        PlayEvent.kind.in_((*PLAY_KINDS, *MARK_KINDS))).order_by(PlayEvent.ts, PlayEvent.id))).scalars()
-        if not test_traffic(r.client)]
+    rows = [
+        r
+        for r in (
+            await s.execute(
+                select(PlayEvent)
+                .where(
+                    PlayEvent.user_id == user_id,
+                    PlayEvent.ts <= now,
+                    PlayEvent.superseded_scrobble.is_(False),
+                    PlayEvent.kind.in_((*PLAY_KINDS, *MARK_KINDS)),
+                )
+                .order_by(PlayEvent.ts, PlayEvent.id)
+            )
+        ).scalars()
+        if not test_traffic(r.client)
+    ]
     plays = [r for r in rows if r.kind in PLAY_KINDS and r.target_type == "track"]
-    marks = [r for r in rows if r.kind in MARK_KINDS and r.context not in NOT_USER and not r.reverts_event_id and
-             (r.target_data or {}).get("provenance") != "import"]
+    marks = [
+        r
+        for r in rows
+        if r.kind in MARK_KINDS
+        and r.context not in NOT_USER
+        and not r.reverts_event_id
+        and (r.target_data or {}).get("provenance") != "import"
+    ]
     aliases = Aliases(plays)
     attempts = attempts_of(plays, aliases)
-    sessions = {w.id: w for w in (await s.execute(select(WaveSession).where(
-        WaveSession.user_id == user_id, WaveSession.created_at <= now).order_by(WaveSession.created_at))).scalars()}
+    sessions = {
+        w.id: w
+        for w in (
+            await s.execute(
+                select(WaveSession)
+                .where(WaveSession.user_id == user_id, WaveSession.created_at <= now)
+                .order_by(WaveSession.created_at)
+            )
+        ).scalars()
+    }
     wave_items: dict[str, list[WaveItem]] = defaultdict(list)
-    for w in (await s.execute(select(WaveItem).where(WaveItem.user_id == user_id)
-                              .order_by(WaveItem.session_id, WaveItem.position))).scalars():
+    for w in (
+        await s.execute(
+            select(WaveItem).where(WaveItem.user_id == user_id).order_by(WaveItem.session_id, WaveItem.position)
+        )
+    ).scalars():
         wave_items[w.session_id].append(w)
     mixes: dict[int, MixInfo] = {}
-    for m in (await s.execute(select(Mix).where(Mix.user_id == user_id, Mix.created_at <= now)
-                              .order_by(Mix.created_at))).scalars():
+    for m in (
+        await s.execute(select(Mix).where(Mix.user_id == user_id, Mix.created_at <= now).order_by(Mix.created_at))
+    ).scalars():
         mixes[m.id] = MixInfo(m, [], set())
     if mixes:
-        for i in (await s.execute(select(MixItem).where(MixItem.mix_id.in_(list(mixes)))
-                                  .order_by(MixItem.mix_id, MixItem.position))).scalars():
+        for i in (
+            await s.execute(
+                select(MixItem).where(MixItem.mix_id.in_(list(mixes))).order_by(MixItem.mix_id, MixItem.position)
+            )
+        ).scalars():
             info = mixes[i.mix_id]
             info.items.append(i)
             if i.state == "active":
@@ -291,8 +351,18 @@ def _launches(h: History) -> list[Launch]:
     out: list[Launch] = []
     by_id: dict[str, Launch] = {}
     for sid, w in h.sessions.items():
-        launch = Launch(f"wave:{sid}", "wave", f"wave:{sid}", "wave_session", w.created_at, origin=w.origin,
-                        client=w.client, wave_id=sid, restart=w.origin == "restart", session_end=w.updated_at)
+        launch = Launch(
+            f"wave:{sid}",
+            "wave",
+            f"wave:{sid}",
+            "wave_session",
+            w.created_at,
+            origin=w.origin,
+            client=w.client,
+            wave_id=sid,
+            restart=w.origin == "restart",
+            session_end=w.updated_at,
+        )
         by_id[launch.id] = launch
         out.append(launch)
     rest: list[Attempt] = []
@@ -307,11 +377,20 @@ def _launches(h: History) -> list[Launch]:
         launch = by_id.get(lid)
         if launch is None:
             if sid:
-                launch = Launch(lid, "wave", lid, "reconstructed", a.started_at, client=a.client, device=a.device,
-                                wave_id=sid)
+                launch = Launch(
+                    lid, "wave", lid, "reconstructed", a.started_at, client=a.client, device=a.device, wave_id=sid
+                )
             else:
-                launch = Launch(lid, source_of(a.context), a.context, "launch_id", a.started_at,
-                                origin=a.launch_origin, client=a.client, device=a.device)
+                launch = Launch(
+                    lid,
+                    source_of(a.context),
+                    a.context,
+                    "launch_id",
+                    a.started_at,
+                    origin=a.launch_origin,
+                    client=a.client,
+                    device=a.device,
+                )
             by_id[lid] = launch
             out.append(launch)
         launch.attempts.append(a)
@@ -321,10 +400,21 @@ def _launches(h: History) -> list[Launch]:
     for a in rest:  # old history: a new launch on another context or after a 30-minute gap on the stream
         stream = a.device or a.client
         launch = current.get(stream)
-        if launch is None or a.started_at - launch.last_play > LAUNCH_GAP or (a.started and a.context != launch.context):
+        if (
+            launch is None
+            or a.started_at - launch.last_play > LAUNCH_GAP
+            or (a.started and a.context != launch.context)
+        ):
             counter += 1
-            launch = Launch(f"inferred:{counter}", source_of(a.context), a.context, "inferred", a.started_at,
-                            client=a.client, device=a.device)
+            launch = Launch(
+                f"inferred:{counter}",
+                source_of(a.context),
+                a.context,
+                "inferred",
+                a.started_at,
+                client=a.client,
+                device=a.device,
+            )
             current[stream] = launch
             out.append(launch)
         launch.attempts.append(a)
@@ -370,8 +460,9 @@ def _attach_marks(h: History, launches: list[Launch]) -> None:
         target = by_lid.get(f"wave:{sid}") if (sid := wave_of(m.launch_id) or wave_of(m.context)) else None
         target = target or (by_lid.get(m.launch_id) if m.launch_id else None)
         if target is None and m.context:
-            target = next((x for x in by_context.get(m.context, ())
-                           if x.started_at <= m.ts <= x.last_play + MARK_TAIL), None)
+            target = next(
+                (x for x in by_context.get(m.context, ()) if x.started_at <= m.ts <= x.last_play + MARK_TAIL), None
+            )
         if target is not None:
             target.marks.append(m)
 
@@ -384,8 +475,9 @@ def outcome(attempts: list[Attempt], marks: list[PlayEvent], aliases: set[str]) 
     """What became of one offered track: `not_played` / `started` / `heard` / `finished` / `early_skip` / `liked` /
     `disliked` (the strongest), by the attempts and marks of the list that offered it."""
     mine = [a for a in attempts if a.aliases & aliases]
-    kinds = {m.kind for m in marks if {x for x in (m.ref, f"nd:{m.nd_song_id}" if m.nd_song_id else None) if x} &
-             aliases}
+    kinds = {
+        m.kind for m in marks if {x for x in (m.ref, f"nd:{m.nd_song_id}" if m.nd_song_id else None) if x} & aliases
+    }
     early = next((a.early_skip_at for a in mine if a.early_skip_at is not None), None)
     if "dislike" in kinds:
         value = "disliked"
@@ -401,9 +493,23 @@ def outcome(attempts: list[Attempt], marks: list[PlayEvent], aliases: set[str]) 
         value = "started"
     else:
         value = "not_played"
-    return {"outcome": value, "early_skip_at": early if value == "early_skip" else None,
-            "listened_ms": sum(a.listened_ms for a in mine)}
+    return {
+        "outcome": value,
+        "early_skip_at": early if value == "early_skip" else None,
+        "listened_ms": sum(a.listened_ms for a in mine),
+    }
 
 
-__all__ = ["LAUNCH_GAP", "SELF_SELECTED", "Attempt", "History", "Launch", "attempt_stats", "load", "mark_stats",
-           "outcome", "source_of", "test_traffic"]
+__all__ = [
+    "LAUNCH_GAP",
+    "SELF_SELECTED",
+    "Attempt",
+    "History",
+    "Launch",
+    "attempt_stats",
+    "load",
+    "mark_stats",
+    "outcome",
+    "source_of",
+    "test_traffic",
+]

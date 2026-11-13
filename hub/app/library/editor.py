@@ -43,8 +43,9 @@ async def _album_cover(album: Album) -> bytes | None:
     return await asyncio.to_thread(p.read_bytes) if p.is_file() else None
 
 
-async def relocate_track(s: AsyncSession, track: Track, album: Album, *, cover: bytes | None = None,
-                         retag: bool = True) -> None:
+async def relocate_track(
+    s: AsyncSession, track: Track, album: Album, *, cover: bytes | None = None, retag: bool = True
+) -> None:
     """Write album/track fields into the file and move it to the album folder if the path changed."""
     old_abs = library_abs(track.path)
     track.album_id = album.id
@@ -75,7 +76,9 @@ async def update_album(s: AsyncSession, album: Album, **fields) -> Album:
             if v is not None:
                 setattr(album, k, v)
         new_dir = library_abs(album_reldir(album))
-        cover = await asyncio.to_thread((old_dir / "cover.jpg").read_bytes) if (old_dir / "cover.jpg").is_file() else None
+        cover = (
+            await asyncio.to_thread((old_dir / "cover.jpg").read_bytes) if (old_dir / "cover.jpg").is_file() else None
+        )
         tracks = (await s.execute(select(Track).where(Track.album_id == album.id))).scalars().all()
         for t in tracks:
             await relocate_track(s, t, album, cover=cover)
@@ -127,7 +130,7 @@ async def move_tracks(s: AsyncSession, track_ids: list[int], target: Album) -> l
 
 
 async def merge_albums(s: AsyncSession, source_ids: list[int], target: Album) -> Album:
-    ids = (await s.execute(select(Track.id).where(Track.album_id.in_([i for i in source_ids if i != target.id]))))
+    ids = await s.execute(select(Track.id).where(Track.album_id.in_([i for i in source_ids if i != target.id])))
     await move_tracks(s, list(ids.scalars()), target)
     return target
 
@@ -154,7 +157,9 @@ async def trash_track(s: AsyncSession, track: Track) -> None:
     async with library_lock:
         src = library_abs(track.path)
         if src.is_file():
-            dest = get_settings().trash_dir / datetime.now().strftime("%Y-%m-%d") / Path(*PurePosixPath(track.path).parts)
+            dest = (
+                get_settings().trash_dir / datetime.now().strftime("%Y-%m-%d") / Path(*PurePosixPath(track.path).parts)
+            )
             await asyncio.to_thread(_move, src, dest)
             await asyncio.to_thread(_remove_empty_dirs, src.parent)
         album_id = track.album_id

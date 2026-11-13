@@ -50,14 +50,16 @@ async def find_existing(
     """The library track of this song; of several versions (a file picked next to an older one) the newest."""
     newest = Track.id.desc()
     if isrc:
-        t = (await s.execute(
-            select(Track).where(Track.isrc == isrc.upper()).order_by(newest).limit(1))).scalar_one_or_none()
+        t = (
+            await s.execute(select(Track).where(Track.isrc == isrc.upper()).order_by(newest).limit(1))
+        ).scalar_one_or_none()
         if t:
             return t
     if deezer_track_id:
         t = (
             await s.execute(
-                select(Track).where(Track.deezer_track_id == str(deezer_track_id)).order_by(newest).limit(1))
+                select(Track).where(Track.deezer_track_id == str(deezer_track_id)).order_by(newest).limit(1)
+            )
         ).scalar_one_or_none()
         if t:
             return t
@@ -90,12 +92,16 @@ async def annotate_tracks(
     dz_ids = {t.id for t in tracks if t.source == "dz"}
     fps = {fingerprint(t.artist, t.title) for t in tracks}
     rows = (
-        await s.execute(
-            select(Track).where(
-                or_(Track.isrc.in_(isrcs), Track.deezer_track_id.in_(dz_ids), Track.fingerprint.in_(fps))
-            ).order_by(Track.id.desc())
+        (
+            await s.execute(
+                select(Track)
+                .where(or_(Track.isrc.in_(isrcs), Track.deezer_track_id.in_(dz_ids), Track.fingerprint.in_(fps)))
+                .order_by(Track.id.desc())
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     # several versions of a song: the newest one wins, as in `find_existing`
     by_isrc = {r.isrc: r for r in reversed(rows) if r.isrc}
     by_dz = {r.deezer_track_id: r for r in reversed(rows) if r.deezer_track_id}

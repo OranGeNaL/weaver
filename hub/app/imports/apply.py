@@ -62,8 +62,15 @@ async def decide(s: AsyncSession, imp: Import, it: ImportItem, kind: str, r: Res
             from app.plays import add_dislike
 
             raw = it.raw_json or {}
-            await add_dislike(s, imp.user_id, ref=it.ref, nd_song_id=track.nd_song_id if track else None,
-                              artist=raw.get("artist"), title=raw.get("title"), source="yandex_import")
+            await add_dislike(
+                s,
+                imp.user_id,
+                ref=it.ref,
+                nd_song_id=track.nd_song_id if track else None,
+                artist=raw.get("artist"),
+                title=raw.get("title"),
+                source="yandex_import",
+            )
         return
     if kind == "artists":
         it.status = "done" if it.match != "not_found" else "not_found"  # ★ at the end, if the library has them
@@ -101,8 +108,12 @@ async def _batch(s: AsyncSession, imp: Import) -> DownloadBatch:
 
 def track_query(raw: dict[str, Any]) -> TrackQuery:
     main = (raw.get("artists") or [raw.get("artist") or ""])[0]
-    return TrackQuery(artist=main or raw.get("artist") or "", title=raw.get("title") or "", album=raw.get("album"),
-                      duration_s=raw.get("duration_s"))
+    return TrackQuery(
+        artist=main or raw.get("artist") or "",
+        title=raw.get("title") or "",
+        album=raw.get("album"),
+        duration_s=raw.get("duration_s"),
+    )
 
 
 async def new_download(s: AsyncSession, imp: Import, query_json: dict[str, Any], priority: int) -> DownloadItem:
@@ -114,15 +125,19 @@ async def new_download(s: AsyncSession, imp: Import, query_json: dict[str, Any],
     return item
 
 
-async def queue_track(s: AsyncSession, imp: Import, it: ImportItem, kind: str, *,
-                      priority: int = PRIORITY_IMPORT) -> bool:
+async def queue_track(
+    s: AsyncSession, imp: Import, it: ImportItem, kind: str, *, priority: int = PRIORITY_IMPORT
+) -> bool:
     """Download a matched track (once per import: a song in likes and in a playlist is one download)."""
     if not it.ref:
         return False
-    twin = (await s.execute(
-        select(ImportItem.download_item_id).where(ImportItem.import_id == imp.id, ImportItem.ref == it.ref,
-                                                  ImportItem.download_item_id.is_not(None)).limit(1)
-    )).scalar_one_or_none()
+    twin = (
+        await s.execute(
+            select(ImportItem.download_item_id)
+            .where(ImportItem.import_id == imp.id, ImportItem.ref == it.ref, ImportItem.download_item_id.is_not(None))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
     if twin is not None:
         it.download_item_id, it.status = twin, "queued"
         return True
@@ -133,8 +148,7 @@ async def queue_track(s: AsyncSession, imp: Import, it: ImportItem, kind: str, *
         meta["deezer_track_id"] = id_
     if raw.get("artists"):
         meta["artists"] = raw["artists"]
-    qj: dict[str, Any] = {"query": track_query(raw).model_dump(), "meta": meta,
-                          "import": {"id": imp.id, "item": it.id}}
+    qj: dict[str, Any] = {"query": track_query(raw).model_dump(), "meta": meta, "import": {"id": imp.id, "item": it.id}}
     dl = await new_download(s, imp, qj, priority)
     it.download_item_id, it.status = dl.id, "queued"
     return True
@@ -154,11 +168,20 @@ async def queue_album(s: AsyncSession, imp: Import, it: ImportItem) -> int:
         return 0
     n = 0
     for t in album.tracks or []:
-        if await find_existing(s, artist=t.artist, title=t.title, duration_s=t.duration_s, isrc=t.isrc,
-                               deezer_track_id=t.id if t.source == "dz" else None):
+        if await find_existing(
+            s,
+            artist=t.artist,
+            title=t.title,
+            duration_s=t.duration_s,
+            isrc=t.isrc,
+            deezer_track_id=t.id if t.source == "dz" else None,
+        ):
             continue
-        qj = {"query": query_from_track(t).model_dump(), "meta": meta_from_catalog(t, album),
-              "import": {"id": imp.id, "album": it.id}}
+        qj = {
+            "query": query_from_track(t).model_dump(),
+            "meta": meta_from_catalog(t, album),
+            "import": {"id": imp.id, "album": it.id},
+        }
         await new_download(s, imp, qj, PRIORITY_IMPORT)
         n += 1
     it.status = "queued" if n else "done"
@@ -173,40 +196,80 @@ def _import_downloads(imp: Import):
 
 
 async def active_downloads(s: AsyncSession, imp: Import) -> int:
-    return (await s.execute(
-        select(func.count()).select_from(
-            _import_downloads(imp).where(DownloadItem.status.in_(ACTIVE_STATUSES)).subquery())
-    )).scalar_one()
+    return (
+        await s.execute(
+            select(func.count()).select_from(
+                _import_downloads(imp).where(DownloadItem.status.in_(ACTIVE_STATUSES)).subquery()
+            )
+        )
+    ).scalar_one()
 
 
 async def refresh_items(s: AsyncSession, imp: Import) -> None:
     """Rows follow their downloads; a waiting row whose track got into the library (♥, a search) is done."""
-    rows = (await s.execute(
-        select(ImportItem, DownloadItem).join(DownloadItem, DownloadItem.id == ImportItem.download_item_id)
-        .where(ImportItem.import_id == imp.id, ImportItem.status == "queued"))).all()
+    rows = (
+        await s.execute(
+            select(ImportItem, DownloadItem)
+            .join(DownloadItem, DownloadItem.id == ImportItem.download_item_id)
+            .where(ImportItem.import_id == imp.id, ImportItem.status == "queued")
+        )
+    ).all()
     for it, dl in rows:
         if dl.status == "done":
             it.status, it.track_id = "done", dl.track_id or it.track_id
         elif dl.status in ("failed", "needs_review", "cancelled"):
             it.status = "failed"
-    albums = (await s.execute(select(ImportItem).join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
-                              .where(ImportItem.import_id == imp.id, ImportItem.status == "queued",
-                                     ImportCollection.kind == "albums"))).scalars().all()
+    albums = (
+        (
+            await s.execute(
+                select(ImportItem)
+                .join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
+                .where(ImportItem.import_id == imp.id, ImportItem.status == "queued", ImportCollection.kind == "albums")
+            )
+        )
+        .scalars()
+        .all()
+    )
     for it in albums:
-        left = (await s.execute(select(func.count()).select_from(
-            select(DownloadItem.id).where(cast(DownloadItem.query_json["import"]["album"].astext, Integer) == it.id,
-                                          DownloadItem.status.in_(ACTIVE_STATUSES)).subquery()))).scalar_one()
+        left = (
+            await s.execute(
+                select(func.count()).select_from(
+                    select(DownloadItem.id)
+                    .where(
+                        cast(DownloadItem.query_json["import"]["album"].astext, Integer) == it.id,
+                        DownloadItem.status.in_(ACTIVE_STATUSES),
+                    )
+                    .subquery()
+                )
+            )
+        ).scalar_one()
         if not left:
             it.status = "done"
-    waiting = (await s.execute(
-        select(ImportItem).join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
-        .where(ImportItem.import_id == imp.id, ImportItem.status == "waiting",
-               ImportCollection.kind.in_(("likes", "playlist"))))).scalars().all()
+    waiting = (
+        (
+            await s.execute(
+                select(ImportItem)
+                .join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
+                .where(
+                    ImportItem.import_id == imp.id,
+                    ImportItem.status == "waiting",
+                    ImportCollection.kind.in_(("likes", "playlist")),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     for it in waiting:
         raw = it.raw_json or {}
         src, id_ = split_ref(it.ref) if it.ref else ("", "")
-        lib = await find_existing(s, artist=raw.get("artist") or "", title=raw.get("title") or "",
-                                  duration_s=raw.get("duration_s"), deezer_track_id=id_ if src == "dz" else None)
+        lib = await find_existing(
+            s,
+            artist=raw.get("artist") or "",
+            title=raw.get("title") or "",
+            duration_s=raw.get("duration_s"),
+            deezer_track_id=id_ if src == "dz" else None,
+        )
         if lib is not None:
             it.status, it.track_id = "done", lib.id
     await s.flush()
@@ -220,15 +283,21 @@ async def _song_ids(s: AsyncSession, items: list[ImportItem]) -> dict[int, str]:
     track_ids = {i.track_id for i in items if i.track_id}
     if not track_ids:
         return {}
-    songs = dict((await s.execute(
-        select(Track.id, Track.nd_song_id).where(Track.id.in_(track_ids), Track.nd_song_id.is_not(None)))).all())
+    songs = dict(
+        (
+            await s.execute(
+                select(Track.id, Track.nd_song_id).where(Track.id.in_(track_ids), Track.nd_song_id.is_not(None))
+            )
+        ).all()
+    )
     return {i.id: songs[i.track_id] for i in items if i.track_id in songs}
 
 
 def playlist_order(items: list[ImportItem], songs: dict[int, str]) -> list[str]:
     """Songs of a playlist in the service's order: what the library has, without the rest."""
-    return [songs[i.id] for i in sorted(items, key=lambda i: i.position)
-            if i.id in songs and i.status not in ("skipped",)]
+    return [
+        songs[i.id] for i in sorted(items, key=lambda i: i.position) if i.id in songs and i.status not in ("skipped",)
+    ]
 
 
 def like_order(items: list[ImportItem], songs: dict[int, str]) -> list[str]:
@@ -244,9 +313,19 @@ async def sync_playlists(s: AsyncSession, imp: Import) -> None:
     user = await s.get(User, imp.user_id)
     if user is None:
         return
-    colls = (await s.execute(select(ImportCollection).where(
-        ImportCollection.import_id == imp.id, ImportCollection.kind == "playlist",
-        ImportCollection.selected.is_(True)))).scalars().all()
+    colls = (
+        (
+            await s.execute(
+                select(ImportCollection).where(
+                    ImportCollection.import_id == imp.id,
+                    ImportCollection.kind == "playlist",
+                    ImportCollection.selected.is_(True),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     if not colls:
         return
     nd = _nd(user)
@@ -270,10 +349,19 @@ async def sync_playlists(s: AsyncSession, imp: Import) -> None:
 
 
 async def _likes(s: AsyncSession, imp: Import) -> list[ImportItem]:
-    return list((await s.execute(
-        select(ImportItem).join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
-        .where(ImportItem.import_id == imp.id, ImportCollection.kind == "likes",
-               ImportCollection.selected.is_(True)))).scalars())
+    return list(
+        (
+            await s.execute(
+                select(ImportItem)
+                .join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
+                .where(
+                    ImportItem.import_id == imp.id,
+                    ImportCollection.kind == "likes",
+                    ImportCollection.selected.is_(True),
+                )
+            )
+        ).scalars()
+    )
 
 
 def restar_plan(starred: list[str], want: list[str]) -> list[str]:
@@ -314,7 +402,7 @@ async def sync_likes(s: AsyncSession, imp: Import) -> None:
             want = like_order(items, songs)
             again = restar_plan(prev, want)
             for k in range(0, len(again), STAR_CHUNK):
-                await nd.unstar(song_ids=again[k:k + STAR_CHUNK])
+                await nd.unstar(song_ids=again[k : k + STAR_CHUNK])
             for song_id in again:
                 await nd.star(song_ids=[song_id])
         except Exception as e:
@@ -336,16 +424,27 @@ async def album_owned(s: AsyncSession, ref: str | None) -> bool:
     src, id_ = split_ref(ref)
     if src != "dz":
         return False
-    return (await s.execute(select(Track.id).join(Album, Album.id == Track.album_id)
-                            .where(Album.deezer_album_id == id_).limit(1))).scalar_one_or_none() is not None
+    return (
+        await s.execute(
+            select(Track.id).join(Album, Album.id == Track.album_id).where(Album.deezer_album_id == id_).limit(1)
+        )
+    ).scalar_one_or_none() is not None
 
 
 async def star_albums_artists(s: AsyncSession, imp: Import) -> None:
     """★ liked albums and artists the library has (Navidrome stars only what it knows)."""
-    rows = (await s.execute(
-        select(ImportItem, ImportCollection.kind).join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
-        .where(ImportItem.import_id == imp.id, ImportCollection.kind.in_(("albums", "artists")),
-               ImportCollection.selected.is_(True), ImportItem.status.in_(("done", "waiting", "queued"))))).all()
+    rows = (
+        await s.execute(
+            select(ImportItem, ImportCollection.kind)
+            .join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
+            .where(
+                ImportItem.import_id == imp.id,
+                ImportCollection.kind.in_(("albums", "artists")),
+                ImportCollection.selected.is_(True),
+                ImportItem.status.in_(("done", "waiting", "queued")),
+            )
+        )
+    ).all()
     user = await s.get(User, imp.user_id)
     if not rows or user is None:
         return
@@ -355,15 +454,23 @@ async def star_albums_artists(s: AsyncSession, imp: Import) -> None:
     try:
         for it, kind in rows:
             if kind == "albums" and it.ref and split_ref(it.ref)[0] == "dz":
-                song = (await s.execute(select(Track.nd_song_id).join(Album, Album.id == Track.album_id).where(
-                    Album.deezer_album_id == split_ref(it.ref)[1], Track.nd_song_id.is_not(None)).limit(1)
-                )).scalar_one_or_none()
+                song = (
+                    await s.execute(
+                        select(Track.nd_song_id)
+                        .join(Album, Album.id == Track.album_id)
+                        .where(Album.deezer_album_id == split_ref(it.ref)[1], Track.nd_song_id.is_not(None))
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
                 if song and (nd_album := (await nd.get_song(song)).get("albumId")):
                     album_ids.append(nd_album)
                     from app.api.schemas import FavoriteTarget
                     from app.favorites import remember
-                    await remember(s, FavoriteTarget(target_type="album", ref=it.ref, nd_album_id=nd_album,
-                                                      target_data=it.raw_json))
+
+                    await remember(
+                        s,
+                        FavoriteTarget(target_type="album", ref=it.ref, nd_album_id=nd_album, target_data=it.raw_json),
+                    )
             elif kind == "artists":
                 name = (it.raw_json or {}).get("name") or ""
                 want = normalize_artist(name).text
@@ -373,14 +480,21 @@ async def star_albums_artists(s: AsyncSession, imp: Import) -> None:
                     artist_ids.append(hit["id"])
                     from app.api.schemas import FavoriteTarget
                     from app.favorites import remember
-                    await remember(s, FavoriteTarget(target_type="artist", ref=it.ref, nd_artist_id=hit["id"],
-                                                      target_data={"name": name}))
+
+                    await remember(
+                        s,
+                        FavoriteTarget(
+                            target_type="artist", ref=it.ref, nd_artist_id=hit["id"], target_data={"name": name}
+                        ),
+                    )
         if album_ids or artist_ids:
             await nd.star(album_ids=album_ids, artist_ids=artist_ids)
             opts = imp.options_json or {}
-            imp.options_json = {**opts,
+            imp.options_json = {
+                **opts,
                 "liked_album_ids": list(dict.fromkeys([*(opts.get("liked_album_ids") or []), *album_ids])),
-                "liked_artist_ids": list(dict.fromkeys([*(opts.get("liked_artist_ids") or []), *artist_ids]))}
+                "liked_artist_ids": list(dict.fromkeys([*(opts.get("liked_artist_ids") or []), *artist_ids])),
+            }
     except Exception as e:
         log.warning("import %s: star albums/artists: %r", imp.id, e)
     finally:
@@ -402,10 +516,18 @@ async def cancel_downloads(s: AsyncSession, imp: Import) -> int:
 
 
 def _user_likes(user_id: int):
-    return (select(ImportItem).join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
-            .join(Import, Import.id == ImportItem.import_id)
-            .where(Import.user_id == user_id, ImportCollection.kind == "likes", ImportCollection.selected.is_(True),
-                   Import.status.in_(("running", "done")), ImportItem.ref.is_not(None)))
+    return (
+        select(ImportItem)
+        .join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
+        .join(Import, Import.id == ImportItem.import_id)
+        .where(
+            Import.user_id == user_id,
+            ImportCollection.kind == "likes",
+            ImportCollection.selected.is_(True),
+            Import.status.in_(("running", "done")),
+            ImportItem.ref.is_not(None),
+        )
+    )
 
 
 async def pending_like_refs(s: AsyncSession, user_id: int) -> list[str]:
@@ -416,8 +538,11 @@ async def pending_like_refs(s: AsyncSession, user_id: int) -> list[str]:
 
 async def unlike_refs(s: AsyncSession, user_id: int, refs: list[str]) -> None:
     """♥ taken off a track liked in another service: it is no longer liked nor downloaded for that."""
-    for it in (await s.execute(_user_likes(user_id).where(ImportItem.ref.in_(refs),
-                                                          ImportItem.status.in_(("waiting", "queued"))))).scalars():
+    for it in (
+        await s.execute(
+            _user_likes(user_id).where(ImportItem.ref.in_(refs), ImportItem.status.in_(("waiting", "queued")))
+        )
+    ).scalars():
         if it.download_item_id:
             dl = await s.get(DownloadItem, it.download_item_id)
             if dl is not None and dl.status == "queued" and not (dl.query_json or {}).get("requested"):

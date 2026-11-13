@@ -48,16 +48,22 @@ async def db(hub_env, db_url: str, monkeypatch: pytest.MonkeyPatch):
 def test_radio_rows_parse_songs_and_videos() -> None:
     hits = [sources.radio_hit(r) for r in sources.radio_rows(load("ytm_next"))]
     assert [(h.artist, h.title, h.duration_s) for h in hits[:3]] == [
-        ("Кино", "Группа крови", 285), ("Кино", "В наших глазах", 215), ("Molchat Doma", "Судно (Борис Рыжий)", 142)]
+        ("Кино", "Группа крови", 285),
+        ("Кино", "В наших глазах", 215),
+        ("Molchat Doma", "Судно (Борис Рыжий)", 142),
+    ]
     # a music video row: its channel is the artist
     assert ("DOOM GENERATION", "Chernikovskaya Hata - Belaya Noch") in [(h.artist, h.title) for h in hits]
     assert hits[1].source_id == "Rng6M38as1A"
 
 
 async def test_ytm_radio_finds_the_seed_and_leaves_it_out(db, respx_mock: respx.MockRouter) -> None:
-    search = respx_mock.post(url__startswith=YTM_SEARCH).respond(json=ytm_response(
-        ytm_row("other", "Кукушка", ["Кино"], "Чёрный альбом", "6:37"),
-        ytm_row("xtxjm7ciwmc", "Группа крови", ["Кино"], "Группа крови", "4:45")))
+    search = respx_mock.post(url__startswith=YTM_SEARCH).respond(
+        json=ytm_response(
+            ytm_row("other", "Кукушка", ["Кино"], "Чёрный альбом", "6:37"),
+            ytm_row("xtxjm7ciwmc", "Группа крови", ["Кино"], "Группа крови", "4:45"),
+        )
+    )
     nxt = respx_mock.post(url__startswith=YTM_NEXT).respond(json=load("ytm_next"))
 
     hits = await sources.ytm_radio("Кино", "Группа крови")
@@ -72,8 +78,9 @@ async def test_ytm_radio_finds_the_seed_and_leaves_it_out(db, respx_mock: respx.
 
 
 async def test_ytm_radio_of_a_song_youtube_lacks_is_empty(db, respx_mock: respx.MockRouter) -> None:
-    respx_mock.post(url__startswith=YTM_SEARCH).respond(json=ytm_response(
-        ytm_row("zzz", "Совсем другое", ["Кто-то"], None, "3:00")))
+    respx_mock.post(url__startswith=YTM_SEARCH).respond(
+        json=ytm_response(ytm_row("zzz", "Совсем другое", ["Кто-то"], None, "3:00"))
+    )
     nxt = respx_mock.post(url__startswith=YTM_NEXT)
 
     assert await sources.ytm_radio("Кино", "Группа крови") == []
@@ -99,9 +106,17 @@ async def test_lastfm_similar_tracks(db, respx_mock: respx.MockRouter) -> None:
 
     p = route.calls.last.request.url.params
     assert (p["method"], p["api_key"], p["artist"], p["track"], p["limit"]) == (
-        "track.getSimilar", "test-key", "Кино", "Группа крови", "30")
+        "track.getSimilar",
+        "test-key",
+        "Кино",
+        "Группа крови",
+        "30",
+    )
     assert [(h.artist, h.title) for h in hits[:3]] == [
-        ("Кино", "В наших глазах"), ("Кино", "Закрой за мной дверь, я ухожу"), ("Агата Кристи", "Как на войне")]
+        ("Кино", "В наших глазах"),
+        ("Кино", "Закрой за мной дверь, я ухожу"),
+        ("Агата Кристи", "Как на войне"),
+    ]
     assert hits[0].duration_s == 213
 
 
@@ -123,8 +138,12 @@ async def test_lastfm_error_is_source_down(db, respx_mock: respx.MockRouter) -> 
 async def test_lastfm_similar_artists_and_tags(db, respx_mock: respx.MockRouter) -> None:
     def answer(request: httpx.Request) -> httpx.Response:
         method = request.url.params["method"]
-        return httpx.Response(200, json=load({"artist.getSimilar": "lastfm_artist_similar",
-                                              "artist.getTopTags": "lastfm_artist_tags"}[method]))
+        return httpx.Response(
+            200,
+            json=load(
+                {"artist.getSimilar": "lastfm_artist_similar", "artist.getTopTags": "lastfm_artist_tags"}[method]
+            ),
+        )
 
     respx_mock.get(LASTFM).mock(side_effect=answer)
 
@@ -154,7 +173,11 @@ async def test_deezer_radio_related_and_chart(dz, respx_mock: respx.MockRouter) 
 
     tracks = await dz.get_artist_radio("4505880")
     assert (tracks[0].ref, tracks[0].artist, tracks[0].title, tracks[0].artist_ref) == (
-        "dz:448266002", "Кино", "Война", "dz:4505880")
+        "dz:448266002",
+        "Кино",
+        "Война",
+        "dz:4505880",
+    )
     assert tracks[0].rank == 312485 and tracks[0].preview_url
     assert await dz.get_artist_radio("4505880") == tracks and radio.call_count == 1
     assert [a.name for a in await dz.get_artist_related("4505880")][:2] == ["Наутилус Помпилиус", "Земфира"]
@@ -165,15 +188,26 @@ async def test_deezer_radio_related_and_chart(dz, respx_mock: respx.MockRouter) 
 
 
 def ym_track(id_: int, artist: str, title: str, seconds: int = 200) -> SimpleNamespace:
-    return SimpleNamespace(id=id_, title=title, version=None, type="music", duration_ms=seconds * 1000,
-                           artists=[SimpleNamespace(name=artist)])
+    return SimpleNamespace(
+        id=id_,
+        title=title,
+        version=None,
+        type="music",
+        duration_ms=seconds * 1000,
+        artists=[SimpleNamespace(name=artist)],
+    )
 
 
 class FakeYandex:
     """The `yandex-music` client: a search, «similar» of a track, «Моя волна» (`rotor_station_tracks`)."""
 
-    def __init__(self, token: str | None = None, *, wave: list[list[SimpleNamespace]] | None = None,
-                 wave_error: Exception | None = None):
+    def __init__(
+        self,
+        token: str | None = None,
+        *,
+        wave: list[list[SimpleNamespace]] | None = None,
+        wave_error: Exception | None = None,
+    ):
         self.token = token
         self.wave = list(wave or [])
         self.wave_error = wave_error
@@ -185,7 +219,9 @@ class FakeYandex:
 
     def tracks_similar(self, track_id: str):
         assert track_id == "38634621"
-        return SimpleNamespace(similar_tracks=[ym_track(1, "MyTsoi", "Я знаю, кто я."), ym_track(2, "2 серия", "Прощай")])
+        return SimpleNamespace(
+            similar_tracks=[ym_track(1, "MyTsoi", "Я знаю, кто я."), ym_track(2, "2 серия", "Прощай")]
+        )
 
     def rotor_station_tracks(self, station: str, queue: str | None = None):
         assert station == "user:onyourwave"
@@ -203,8 +239,10 @@ async def test_yandex_similar_without_token(db, monkeypatch: pytest.MonkeyPatch)
 
     hits = await sources.yandex_similar("Кино", "Группа крови", 285)
 
-    assert [(h.artist, h.title, h.source_id) for h in hits] == [("MyTsoi", "Я знаю, кто я.", "1"),
-                                                                 ("2 серия", "Прощай", "2")]
+    assert [(h.artist, h.title, h.source_id) for h in hits] == [
+        ("MyTsoi", "Я знаю, кто я.", "1"),
+        ("2 серия", "Прощай", "2"),
+    ]
     assert await sources.yandex_similar("Нет", "Такого") == []
 
 
@@ -237,8 +275,9 @@ async def test_resolve_takes_only_sure_matches_and_remembers(db) -> None:
     from app.services import svc
     from tests.support import FakeDeezer
 
-    other = CatalogTrack(ref="dz:300", source="dz", id="300", title="Война", artist="Кино", artists=["Кино"],
-                         duration_s=240, rank=1000)
+    other = CatalogTrack(
+        ref="dz:300", source="dz", id="300", title="Война", artist="Кино", artists=["Кино"], duration_s=240, rank=1000
+    )
     fake = svc.deezer = FakeDeezer(more=[other])
     try:
         hits = [Hit("Кино", "Война", 240, "v1"), Hit("Кино", "Группа крови", 245, "v2"), Hit("Никто", "Ничего")]
@@ -276,8 +315,17 @@ async def test_resolve_prefers_the_library(db) -> None:
     from app.models import Track
 
     async with session_scope() as s:
-        s.add(Track(uid=str(uuid.uuid4()), path="a/b.mp3", nd_song_id="ndOwn", artist="Своя группа", title="Песня",
-                    duration_s=200, fingerprint=fingerprint("Своя группа", "Песня")))
+        s.add(
+            Track(
+                uid=str(uuid.uuid4()),
+                path="a/b.mp3",
+                nd_song_id="ndOwn",
+                artist="Своя группа",
+                title="Песня",
+                duration_s=200,
+                fingerprint=fingerprint("Своя группа", "Песня"),
+            )
+        )
 
     [t] = await resolve_hits("lastfm", [Hit("Своя группа", "Песня", 201)])
 
@@ -291,11 +339,16 @@ async def test_embedder_client(db, respx_mock: respx.MockRouter) -> None:
     from app.mixes.embedder import EmbedderClient
 
     embed = respx_mock.post(f"{EMBEDDER}/embed").respond(json={"queued": 1, "known": 1, "rejected": []})
-    sim = respx_mock.post(f"{EMBEDDER}/similarity").respond(json={"model": "fake", "results": [
-        {"key": "dz:1", "pos": 0.8, "neg": 0.2, "score": 0.7, "nearest": [], "nearest_neg": None}],
-        "missing": ["dz:2"]})
-    respx_mock.post(f"{EMBEDDER}/vectors").respond(json={"model": "fake", "dim": 2, "vectors": {"dz:1": [1, 0]},
-                                                         "missing": []})
+    sim = respx_mock.post(f"{EMBEDDER}/similarity").respond(
+        json={
+            "model": "fake",
+            "results": [{"key": "dz:1", "pos": 0.8, "neg": 0.2, "score": 0.7, "nearest": [], "nearest_neg": None}],
+            "missing": ["dz:2"],
+        }
+    )
+    respx_mock.post(f"{EMBEDDER}/vectors").respond(
+        json={"model": "fake", "dim": 2, "vectors": {"dz:1": [1, 0]}, "missing": []}
+    )
 
     async with EmbedderClient() as e:
         assert await e.embed([{"key": "dz:1", "url": "https://p.test/1.mp3"}, {"key": "nd:x", "path": "a/b.mp3"}]) == 1
@@ -303,8 +356,10 @@ async def test_embedder_client(db, respx_mock: respx.MockRouter) -> None:
         vectors = await e.vectors(["dz:1"])
 
     assert json.loads(embed.calls.last.request.content)["items"][1] == {"key": "nd:x", "path": "a/b.mp3"}
-    assert json.loads(sim.calls.last.request.content)["profile"] == [{"key": "nd:x", "weight": 2.0},
-                                                                     {"key": "nd:y", "weight": -5.0}]
+    assert json.loads(sim.calls.last.request.content)["profile"] == [
+        {"key": "nd:x", "weight": 2.0},
+        {"key": "nd:y", "weight": -5.0},
+    ]
     assert (got.scores, got.missing, vectors) == ({"dz:1": 0.7}, {"dz:2"}, {"dz:1": [1, 0]})
 
 

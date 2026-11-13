@@ -15,7 +15,9 @@ ND = "http://navidrome.test"
 
 
 @asynccontextmanager
-async def app_client(app: Any, login: tuple[str, str] | None = ("admin", "adminpw")) -> AsyncIterator[httpx.AsyncClient]:
+async def app_client(
+    app: Any, login: tuple[str, str] | None = ("admin", "adminpw")
+) -> AsyncIterator[httpx.AsyncClient]:
     """An HTTP client talking to the app in-process; signed in when `login` is given."""
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://hub.test") as client:
@@ -29,9 +31,17 @@ def cand(pid: str, url: str, *, title: str = "Группа крови", bitrate:
     """A found file of «Кино — Группа крови» (245 s), its page at https://<provider>.test/song/<pid>."""
     from app.providers.base import Candidate
 
-    return Candidate(provider=provider, provider_id=pid, artist="Кино", title=title, duration_s=245,
-                     bitrate_kbps=bitrate, page_url=f"https://{provider}.test/song/{pid}", download_url=url,
-                     upload_date=date(2019, 5, 1))
+    return Candidate(
+        provider=provider,
+        provider_id=pid,
+        artist="Кино",
+        title=title,
+        duration_s=245,
+        bitrate_kbps=bitrate,
+        page_url=f"https://{provider}.test/song/{pid}",
+        download_url=url,
+        upload_date=date(2019, 5, 1),
+    )
 
 
 class FakeProvider:
@@ -43,9 +53,16 @@ class FakeProvider:
     false: no plain HTTP audio (SoundCloud), listening downloads `src`.
     """
 
-    def __init__(self, name: str = "hitmoz", cands: Sequence | Callable[[Any], Sequence] = (), *,
-                 client: httpx.AsyncClient | None = None, src: Path | None = None,
-                 explicit: dict[str, bool] | None = None, streams: bool = True):
+    def __init__(
+        self,
+        name: str = "hitmoz",
+        cands: Sequence | Callable[[Any], Sequence] = (),
+        *,
+        client: httpx.AsyncClient | None = None,
+        src: Path | None = None,
+        explicit: dict[str, bool] | None = None,
+        streams: bool = True,
+    ):
         self.name = name
         self.cands = cands
         self.client = client
@@ -98,18 +115,46 @@ class FakeDeezer:
     a search finds by their title. `searched` counts track searches; `down` — the catalog does not answer.
     """
 
-    def __init__(self, *, duration_s: int = 245, preview: str | None = "https://preview.test/p.mp3",
-                 cover_url: str | None = None, more: Sequence[Any] = ()):
+    def __init__(
+        self,
+        *,
+        duration_s: int = 245,
+        preview: str | None = "https://preview.test/p.mp3",
+        cover_url: str | None = None,
+        more: Sequence[Any] = (),
+    ):
         from app.catalog.models import CatalogAlbum, CatalogTrack
 
-        self.track = CatalogTrack(ref="dz:100", source="dz", id="100", title="Группа крови", artist="Кино",
-                                  artists=["Кино"], album_ref="dz:10", album_title="Группа крови",
-                                  duration_s=duration_s, track_no=1, disc_no=1, isrc="RUA1D8800001", explicit=False,
-                                  cover_url=cover_url,
-                                  preview_url="https://preview.test/old.mp3" if preview else None)
-        self.album = CatalogAlbum(ref="dz:10", source="dz", id="10", title="Группа крови", artist="Кино",
-                                  record_type="album", release_date=date(1988, 1, 1), year=1988,
-                                  cover_url=cover_url, nb_tracks=1, tracks=[self.track])
+        self.track = CatalogTrack(
+            ref="dz:100",
+            source="dz",
+            id="100",
+            title="Группа крови",
+            artist="Кино",
+            artists=["Кино"],
+            album_ref="dz:10",
+            album_title="Группа крови",
+            duration_s=duration_s,
+            track_no=1,
+            disc_no=1,
+            isrc="RUA1D8800001",
+            explicit=False,
+            cover_url=cover_url,
+            preview_url="https://preview.test/old.mp3" if preview else None,
+        )
+        self.album = CatalogAlbum(
+            ref="dz:10",
+            source="dz",
+            id="10",
+            title="Группа крови",
+            artist="Кино",
+            record_type="album",
+            release_date=date(1988, 1, 1),
+            year=1988,
+            cover_url=cover_url,
+            nb_tracks=1,
+            tracks=[self.track],
+        )
         self.preview = preview
         self.previews = 0
         self.more = list(more)
@@ -147,13 +192,17 @@ class FakeDeezer:
 
     def search_list(self):
         """31 results for paging: the real track, 29 more and a repeat of the 6th (Deezer lists a track twice)."""
-        more = [self.track.model_copy(update={"ref": f"dz:{200 + i}", "id": str(200 + i), "title": f"Песня {i}",
-                                              "isrc": None}) for i in range(29)]
+        more = [
+            self.track.model_copy(
+                update={"ref": f"dz:{200 + i}", "id": str(200 + i), "title": f"Песня {i}", "isrc": None}
+            )
+            for i in range(29)
+        ]
         return [self.track, *more[:5], more[4], *more[5:]]
 
     async def search_track_page(self, q, offset=0, limit=25):
         items = self.search_list()
-        page = items[offset:offset + limit]
+        page = items[offset : offset + limit]
         return page, (offset + len(page) if offset + len(page) < len(items) else None)
 
     # artists (mixes): «Кино» is dz:1 with dz:100 among its top tracks; `chart` — the chart's artists

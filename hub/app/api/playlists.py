@@ -12,8 +12,13 @@ router = APIRouter(prefix="/api/playlists", tags=["playlists"])
 
 
 def pl_out(p: dict) -> PlaylistOut:
-    return PlaylistOut(id=p["id"], name=p.get("name", ""), song_count=p.get("songCount", 0),
-                       duration_s=p.get("duration", 0), cover_art=p.get("coverArt"))
+    return PlaylistOut(
+        id=p["id"],
+        name=p.get("name", ""),
+        song_count=p.get("songCount", 0),
+        duration_s=p.get("duration", 0),
+        cover_art=p.get("coverArt"),
+    )
 
 
 @router.get("", response_model=list[PlaylistOut])
@@ -40,8 +45,12 @@ async def create_playlist(body: PlaylistCreateIn, user: User = Depends(current_u
 
 
 @router.post("/{playlist_id}/add")
-async def add(playlist_id: str, body: PlaylistAddIn, user: User = Depends(current_user),
-              s: AsyncSession = Depends(get_session, scope="function")):
+async def add(
+    playlist_id: str,
+    body: PlaylistAddIn,
+    user: User = Depends(current_user),
+    s: AsyncSession = Depends(get_session, scope="function"),
+):
     ids = list(body.song_ids)
     if body.library_track_ids:
         rows = (await s.execute(select(Track.id, Track.nd_song_id).where(Track.id.in_(body.library_track_ids)))).all()
@@ -58,8 +67,9 @@ async def add(playlist_id: str, body: PlaylistAddIn, user: User = Depends(curren
 
 
 @router.get("/{playlist_id}", response_model=PlaylistPageOut)
-async def get_playlist(playlist_id: str, user: User = Depends(current_user),
-                       s: AsyncSession = Depends(get_session, scope="function")):
+async def get_playlist(
+    playlist_id: str, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
     p = await nd_call(user, lambda nd: nd.get_playlist(playlist_id), not_found="Плейлист не найден")
     if not p.get("id"):
         raise HTTPException(404, "Плейлист не найден")
@@ -69,8 +79,11 @@ async def get_playlist(playlist_id: str, user: User = Depends(current_user),
 @router.post("/{playlist_id}/remove")
 async def remove(playlist_id: str, body: PlaylistRemoveIn, user: User = Depends(current_user)):
     """Takes songs out by their positions (a song may be in a playlist twice)."""
-    await nd_call(user, lambda nd: nd.update_playlist(playlist_id, remove_indexes=sorted(set(body.indexes))),
-                  not_found="Плейлист не найден")
+    await nd_call(
+        user,
+        lambda nd: nd.update_playlist(playlist_id, remove_indexes=sorted(set(body.indexes))),
+        not_found="Плейлист не найден",
+    )
     return {"ok": True}
 
 

@@ -23,20 +23,32 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 def me_out(user: User) -> MeOut:
     settings = get_settings()
-    return MeOut(id=user.id, username=user.nd_username, is_admin=user.is_admin,
-                 public_music_url=settings.public_music_url, public_hub_url=settings.public_hub_url,
-                 google_email=user.google_email, email=user.email)
+    return MeOut(
+        id=user.id,
+        username=user.nd_username,
+        is_admin=user.is_admin,
+        public_music_url=settings.public_music_url,
+        public_hub_url=settings.public_hub_url,
+        google_email=user.google_email,
+        email=user.email,
+    )
 
 
 @router.get("/options", response_model=AuthOptionsOut)
 async def options():
     settings = get_settings()
-    return AuthOptionsOut(invites=True, email_signup=mailer.configured(),
-                          google_client_id=settings.google_client_id or None, music_url=settings.public_music_url)
+    return AuthOptionsOut(
+        invites=True,
+        email_signup=mailer.configured(),
+        google_client_id=settings.google_client_id or None,
+        music_url=settings.public_music_url,
+    )
 
 
 @router.post("/login", response_model=MeOut)
-async def login(body: LoginIn, request: Request, response: Response, s: AsyncSession = Depends(get_session, scope="function")):
+async def login(
+    body: LoginIn, request: Request, response: Response, s: AsyncSession = Depends(get_session, scope="function")
+):
     username = await accounts.username_for_login(s, body.username)
     user, token = await auth.password_login(s, username, body.password)
     auth.set_session_cookie(request, response, token)
@@ -44,8 +56,9 @@ async def login(body: LoginIn, request: Request, response: Response, s: AsyncSes
 
 
 @router.post("/register", response_model=MeOut)
-async def register(body: RegisterIn, request: Request, response: Response,
-                   s: AsyncSession = Depends(get_session, scope="function")):
+async def register(
+    body: RegisterIn, request: Request, response: Response, s: AsyncSession = Depends(get_session, scope="function")
+):
     user, token = await accounts.register(s, body.code, body.username, body.password)
     auth.set_session_cookie(request, response, token)
     return me_out(user)
@@ -57,29 +70,39 @@ async def email_code(body: EmailCodeIn):
 
 
 @router.post("/email/register", response_model=MeOut)
-async def email_register(body: EmailRegisterIn, request: Request, response: Response,
-                         s: AsyncSession = Depends(get_session, scope="function")):
+async def email_register(
+    body: EmailRegisterIn,
+    request: Request,
+    response: Response,
+    s: AsyncSession = Depends(get_session, scope="function"),
+):
     user, token = await accounts.register_by_email(s, body.email, body.code, body.username, body.password)
     auth.set_session_cookie(request, response, token)
     return me_out(user)
 
 
 @router.post("/google", response_model=GoogleLoginOut)
-async def google(body: GoogleIn, request: Request, response: Response,
-                 s: AsyncSession = Depends(get_session, scope="function")):
+async def google(
+    body: GoogleIn, request: Request, response: Response, s: AsyncSession = Depends(get_session, scope="function")
+):
     user, token, password = await accounts.google_login(s, body.id_token, body.code, body.username)
     auth.set_session_cookie(request, response, token)
     return GoogleLoginOut(**me_out(user).model_dump(), password=password)
 
 
 @router.post("/google/link", response_model=MeOut)
-async def google_link(body: GoogleLinkIn, user: User = Depends(auth.current_user),
-                      s: AsyncSession = Depends(get_session, scope="function")):
+async def google_link(
+    body: GoogleLinkIn,
+    user: User = Depends(auth.current_user),
+    s: AsyncSession = Depends(get_session, scope="function"),
+):
     return me_out(await accounts.link_google(s, user, body.id_token))
 
 
 @router.delete("/google/link", response_model=MeOut)
-async def google_unlink(user: User = Depends(auth.current_user), s: AsyncSession = Depends(get_session, scope="function")):
+async def google_unlink(
+    user: User = Depends(auth.current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
     user.google_sub = user.google_email = None
     return me_out(user)
 

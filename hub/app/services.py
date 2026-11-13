@@ -47,8 +47,9 @@ class Services:
             from app.providers.soulseek import SoulseekProvider
 
             # not in `sources`: library downloads try it first (`jobs.downloads`), listening never does
-            self.providers["soulseek"] = SoulseekProvider(settings.slskd_url, settings.slskd_api_key,
-                                                          settings.slskd_download_dir, cfg.soulseek, cfg.matching)
+            self.providers["soulseek"] = SoulseekProvider(
+                settings.slskd_url, settings.slskd_api_key, settings.slskd_download_dir, cfg.soulseek, cfg.matching
+            )
         self.deezer = DeezerClient(cfg.catalog)
         self.hitmoz_catalog = HitmozCatalog(hitmoz)
         self.musicbrainz = MusicBrainzClient(cfg.catalog)

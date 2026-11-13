@@ -47,8 +47,11 @@ def ranged(request: httpx.Request, body: bytes = AUDIO) -> httpx.Response:
         return httpx.Response(200, content=body, headers={"content-type": "audio/mpeg"})
     a, _, b = rng.removeprefix("bytes=").partition("-")
     start, end = int(a), min(int(b) if b else len(body) - 1, len(body) - 1)
-    return httpx.Response(206, content=body[start : end + 1], headers={
-        "content-type": "audio/mpeg", "content-range": f"bytes {start}-{end}/{len(body)}"})
+    return httpx.Response(
+        206,
+        content=body[start : end + 1],
+        headers={"content-type": "audio/mpeg", "content-range": f"bytes {start}-{end}/{len(body)}"},
+    )
 
 
 class Partway(httpx.AsyncByteStream):
@@ -93,7 +96,8 @@ async def env(hub_env):
             mock.route(host="cdn.test", path="/good.mp3").mock(side_effect=ranged)
             mock.route(host="cdn.test", path="/dead.mp3").mock(return_value=httpx.Response(404))
             mock.route(host="cdn.test", path="/page.mp3").mock(
-                return_value=httpx.Response(200, text="<html>", headers={"content-type": "text/html"}))
+                return_value=httpx.Response(200, text="<html>", headers={"content-type": "text/html"})
+            )
             mock.route(host="preview.test").mock(side_effect=ranged)
             hm = FakeProvider("hitmoz", [], client=upstream)
             fm = FakeProvider("hitmos_fm", [], client=upstream)
@@ -217,12 +221,18 @@ async def test_russian_track_takes_soundcloud_uploaded_before_the_cutoff_over_yo
 
     get_settings().cfg.sources.ru = SourcesCfg().ru
     up = env["hm"].client
-    sc = FakeProvider("soundcloud", [
-        # the better file, but uploaded since May 2026: it may be edited
-        cand("new", "https://cdn.test/good.mp3", provider="soundcloud").model_copy(
-            update={"upload_date": date(2026, 5, 1)}),
-        cand("old", "https://cdn.test/good.mp3", provider="soundcloud", bitrate=160),
-    ], client=up, streams=False)
+    sc = FakeProvider(
+        "soundcloud",
+        [
+            # the better file, but uploaded since May 2026: it may be edited
+            cand("new", "https://cdn.test/good.mp3", provider="soundcloud").model_copy(
+                update={"upload_date": date(2026, 5, 1)}
+            ),
+            cand("old", "https://cdn.test/good.mp3", provider="soundcloud", bitrate=160),
+        ],
+        client=up,
+        streams=False,
+    )
     yt = FakeProvider("ytdlp", [cand("yt", "https://cdn.test/good.mp3", provider="ytdlp")], client=up)
     svc.providers.update(soundcloud=sc, ytdlp=yt)
     r = await env["client"].get("/api/listen", params={"ref": "dz:100"})
@@ -239,16 +249,18 @@ async def test_pick_outranked_by_a_new_source_order_is_picked_again(env, picked)
     c, hm, up = env["client"], env["hm"], env["hm"].client
     sources = get_settings().cfg.sources
     sources.ru = ["hitmoz", "hitmos_fm", "ytdlp"]  # the order before SoundCloud came ahead of YouTube
-    svc.providers["ytdlp"] = FakeProvider("ytdlp", [cand("yt", "https://cdn.test/good.mp3", provider="ytdlp")],
-                                          client=up)
+    svc.providers["ytdlp"] = FakeProvider(
+        "ytdlp", [cand("yt", "https://cdn.test/good.mp3", provider="ytdlp")], client=up
+    )
     if picked == "hitmoz":
         hm.cands = [cand("1", "https://cdn.test/good.mp3")]
     assert (await c.get("/api/listen", params={"ref": "dz:100"})).json()["provider"] == picked
     await listen.reset()
 
     sources.ru = SourcesCfg().ru
-    sc = FakeProvider("soundcloud", [cand("sc", "https://cdn.test/good.mp3", provider="soundcloud")], client=up,
-                      streams=False)
+    sc = FakeProvider(
+        "soundcloud", [cand("sc", "https://cdn.test/good.mp3", provider="soundcloud")], client=up, streams=False
+    )
     svc.providers["soundcloud"] = sc
     r = await c.get("/api/listen", params={"ref": "dz:100"})
     # a hitmoz pick still comes first; a YouTube one gives way to SoundCloud, which was not asked then
@@ -265,8 +277,9 @@ async def test_youtube_pick_gives_way_when_hitmoz_moves_ahead(env):
     c, hm, up = env["client"], env["hm"], env["hm"].client
     sources = get_settings().cfg.sources
     sources.ru = ["ytdlp", "hitmoz"]
-    svc.providers["ytdlp"] = FakeProvider("ytdlp", [cand("yt", "https://cdn.test/good.mp3", provider="ytdlp")],
-                                          client=up)
+    svc.providers["ytdlp"] = FakeProvider(
+        "ytdlp", [cand("yt", "https://cdn.test/good.mp3", provider="ytdlp")], client=up
+    )
     hm.cands = [cand("1", "https://cdn.test/good.mp3")]
     assert (await c.get("/api/listen", params={"ref": "dz:100"})).json()["provider"] == "ytdlp"
     await listen.reset()
@@ -294,7 +307,10 @@ async def test_prefetch_picks_and_opens_tracks_on_screen(env):
     from app import listen
 
     c, hm = env["client"], env["hm"]
-    hm.cands = [cand("1", "https://cdn.test/dead.mp3", bitrate=None), cand("2", "https://cdn.test/good.mp3", bitrate=256)]
+    hm.cands = [
+        cand("1", "https://cdn.test/dead.mp3", bitrate=None),
+        cand("2", "https://cdn.test/good.mp3", bitrate=256),
+    ]
     r = await c.post("/api/listen/prefetch", json={"refs": ["dz:100", "dz:100", "bad"]})
     assert r.status_code == 200 and r.json()["queued"] == 2
     for _ in range(200):
@@ -336,10 +352,12 @@ async def test_expired_link_is_renewed(env):
     c, hm, mock = env["client"], env["hm"], env["mock"]
     exp = {"n": 1}
     # hitmoz-like: /get/music/ redirects to a signed CDN link; only the newest link works
-    mock.route(host="hm.test").mock(side_effect=lambda req: httpx.Response(
-        302, headers={"location": f"https://signed.test/a.mp3?exp={exp['n']}"}))
-    mock.route(host="signed.test").mock(side_effect=lambda req: ranged(req) if req.url.params["exp"] == str(exp["n"])
-                                        else httpx.Response(403))
+    mock.route(host="hm.test").mock(
+        side_effect=lambda req: httpx.Response(302, headers={"location": f"https://signed.test/a.mp3?exp={exp['n']}"})
+    )
+    mock.route(host="signed.test").mock(
+        side_effect=lambda req: ranged(req) if req.url.params["exp"] == str(exp["n"]) else httpx.Response(403)
+    )
     hm.cands = [cand("1", "https://hm.test/get/music/1.mp3")]
     url = (await c.get("/api/listen", params={"ref": "dz:100"})).json()["stream_url"]
     assert (await c.get(url, headers={"Range": "bytes=0-9"})).status_code == 206
@@ -461,11 +479,14 @@ async def test_full_song_replaces_a_cached_preview_with_the_download_fallback(en
 
     c = env["client"]
     assert (await c.get("/api/listen", params={"ref": "dz:100"})).json()["kind"] == "preview"
-    svc.providers["soundcloud"] = FakeProvider("soundcloud", [
-        cand("full", "https://cdn.test/good.mp3", provider="soundcloud"),
-    ], client=env["hm"].client)
-    response = await c.get("/api/listen/stream", params={"ref": "dz:100", "full": "1"},
-                           headers={"Range": "bytes=0-"})
+    svc.providers["soundcloud"] = FakeProvider(
+        "soundcloud",
+        [
+            cand("full", "https://cdn.test/good.mp3", provider="soundcloud"),
+        ],
+        client=env["hm"].client,
+    )
+    response = await c.get("/api/listen/stream", params={"ref": "dz:100", "full": "1"}, headers={"Range": "bytes=0-"})
     assert response.status_code == 206, response.text
     assert response.headers["X-HomeMusic-Listen-Kind"] == "full"
     assert response.content == AUDIO
@@ -478,9 +499,13 @@ async def test_slow_regular_sources_have_a_deadline_before_full_song_fallback(en
 
     # Expire the regular-source budget immediately; no real timer is waited out.
     monkeypatch.setattr(listen, "SEARCH_TIMEOUT_S", 0)
-    svc.providers["soundcloud"] = FakeProvider("soundcloud", [
-        cand("full", "https://cdn.test/good.mp3", provider="soundcloud"),
-    ], client=env["hm"].client)
+    svc.providers["soundcloud"] = FakeProvider(
+        "soundcloud",
+        [
+            cand("full", "https://cdn.test/good.mp3", provider="soundcloud"),
+        ],
+        client=env["hm"].client,
+    )
     response = await env["client"].get("/api/listen", params={"ref": "dz:100"})
     assert response.status_code == 200, response.text
     assert response.json()["kind"] == "full" and response.json()["provider"] == "soundcloud"
@@ -542,9 +567,18 @@ async def test_import_finishing_during_resolution_replaces_the_preview(env, monk
         path.parent.mkdir(parents=True)
         path.write_bytes(AUDIO)
         async with session_scope() as s:
-            s.add(Track(uid="imported-during-search", path=rel, artist="Кино", title="Группа крови",
-                        duration_s=245, isrc="RUA1D8800001", nd_song_id="qa-song",
-                        fingerprint=fingerprint("Кино", "Группа крови")))
+            s.add(
+                Track(
+                    uid="imported-during-search",
+                    path=rel,
+                    artist="Кино",
+                    title="Группа крови",
+                    duration_s=245,
+                    isrc="RUA1D8800001",
+                    nd_song_id="qa-song",
+                    fingerprint=fingerprint("Кино", "Группа крови"),
+                )
+            )
     finally:
         release.set()
         response = await asyncio.wait_for(pending, 1)
@@ -607,8 +641,17 @@ async def test_owned_track_plays_the_library_file(env, monkeypatch):
     f.parent.mkdir(parents=True)
     f.write_bytes(AUDIO)
     async with session_scope() as s:
-        s.add(Track(uid="u1", path=rel, artist="Кино", title="Группа крови", duration_s=245, isrc="RUA1D8800001",
-                    fingerprint=fingerprint("Кино", "Группа крови")))
+        s.add(
+            Track(
+                uid="u1",
+                path=rel,
+                artist="Кино",
+                title="Группа крови",
+                duration_s=245,
+                isrc="RUA1D8800001",
+                fingerprint=fingerprint("Кино", "Группа крови"),
+            )
+        )
     c = env["client"]
     album_lookup = AsyncMock(return_value=svc.deezer.album)
     monkeypatch.setattr(svc.deezer, "get_album", album_lookup)
@@ -640,8 +683,17 @@ async def test_library_song_of_a_mix_plays_its_file(env):
     f.parent.mkdir(parents=True)
     f.write_bytes(AUDIO)
     async with session_scope() as s:
-        s.add(Track(uid="u2", path=rel, artist="Кино", title="Закрой за мной дверь", duration_s=260,
-                    nd_song_id="nd9", fingerprint=fingerprint("Кино", "Закрой за мной дверь")))
+        s.add(
+            Track(
+                uid="u2",
+                path=rel,
+                artist="Кино",
+                title="Закрой за мной дверь",
+                duration_s=260,
+                nd_song_id="nd9",
+                fingerprint=fingerprint("Кино", "Закрой за мной дверь"),
+            )
+        )
     c = env["client"]
     r = await c.get("/api/listen", params={"ref": "nd:nd9"})
     assert r.status_code == 200, r.text
@@ -683,7 +735,11 @@ async def test_file_from_the_search_is_listened_to_by_its_ref(env):
     assert r.status_code == 200, r.text
     out = r.json()
     assert (out["kind"], out["provider"], out["page_url"], out["bitrate_kbps"]) == (
-        "full", "hitmoz", "https://hitmoz.test/song/1", 128)
+        "full",
+        "hitmoz",
+        "https://hitmoz.test/song/1",
+        128,
+    )
     r = await c.get(out["stream_url"], headers={"Range": "bytes=100-199"})
     assert r.status_code == 206 and r.content == AUDIO[100:200]
     # that very file: no search or pick of its own, no track page check
@@ -770,7 +826,9 @@ async def test_file_listened_to_is_downloaded_by_its_ref(env):
     assert r.status_code == 200, r.text
     assert r.json()["queued"] == 1
     items = (await c.get("/api/downloads")).json()
-    assert [(i["track_ref"], i["chosen"]["page_url"]) for i in items] == [("file:hitmoz:1", "https://hitmoz.test/song/1")]
+    assert [(i["track_ref"], i["chosen"]["page_url"]) for i in items] == [
+        ("file:hitmoz:1", "https://hitmoz.test/song/1")
+    ]
     # ♥ on it then joins that download
     r = await c.post("/api/downloads", json={"track_refs": ["file:hitmoz:1"], "star": True})
     assert r.status_code == 200, r.text
@@ -789,7 +847,8 @@ async def test_file_liked_in_the_search_is_downloaded_to_be_starred(env):
     assert r.json()["queued"] == 1
     items = (await c.get("/api/downloads")).json()
     assert [(i["track_ref"], i["star"], i["chosen"]["page_url"]) for i in items] == [
-        ("file:hitmoz:1", True, "https://hitmoz.test/song/1")]
+        ("file:hitmoz:1", True, "https://hitmoz.test/song/1")
+    ]
 
 
 async def test_listen_needs_login(env):

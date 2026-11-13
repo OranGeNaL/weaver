@@ -99,9 +99,19 @@ def radio_hit(row: dict) -> Hit | None:
     runs = (row.get("longBylineText") or {}).get("runs") or []
     if not vid or not title or not runs:
         return None
-    artists = [r["text"] for r in runs if (((r.get("navigationEndpoint") or {}).get("browseEndpoint") or {})
-                                           .get("browseEndpointContextSupportedConfigs") or {})
-               .get("browseEndpointContextMusicConfig", {}).get("pageType") == "MUSIC_PAGE_TYPE_ARTIST"]
+    artists = [
+        r["text"]
+        for r in runs
+        if (
+            ((r.get("navigationEndpoint") or {}).get("browseEndpoint") or {}).get(
+                "browseEndpointContextSupportedConfigs"
+            )
+            or {}
+        )
+        .get("browseEndpointContextMusicConfig", {})
+        .get("pageType")
+        == "MUSIC_PAGE_TYPE_ARTIST"
+    ]
     artist = ", ".join(artists) or "".join(r.get("text", "") for r in runs).split(" • ")[0].strip()
     length = _runs_text(row.get("lengthText"))
     return Hit(artist=artist, title=title, duration_s=_parse_duration(length) if length else None, source_id=vid)
@@ -109,9 +119,15 @@ def radio_hit(row: dict) -> Hit | None:
 
 async def _ytm_video_id(c: httpx.AsyncClient, artist: str, title: str) -> str | None:
     version = ytm_client_version()
-    r = await c.post(YTM_API_URL, headers=_ytm_headers(version), json={
-        "context": {"client": {"clientName": "WEB_REMIX", "clientVersion": version, "hl": "en"}},
-        "query": f"{artist} - {title}", "params": YTM_SONGS_PARAMS})
+    r = await c.post(
+        YTM_API_URL,
+        headers=_ytm_headers(version),
+        json={
+            "context": {"client": {"clientName": "WEB_REMIX", "clientVersion": version, "hl": "en"}},
+            "query": f"{artist} - {title}",
+            "params": YTM_SONGS_PARAMS,
+        },
+    )
     r.raise_for_status()
     from app.matching.score import score
 
@@ -134,10 +150,17 @@ async def ytm_radio(artist: str, title: str) -> list[Hit]:
                 if vid is None:
                     return []
                 version = ytm_client_version()
-                r = await c.post(YTM_NEXT_URL, headers=_ytm_headers(version), json={
-                    "context": {"client": {"clientName": "WEB_REMIX", "clientVersion": version, "hl": "en"}},
-                    "videoId": vid, "playlistId": f"RDAMVM{vid}", "isAudioOnly": True,
-                    "enablePersistentPlaylistPanel": True})
+                r = await c.post(
+                    YTM_NEXT_URL,
+                    headers=_ytm_headers(version),
+                    json={
+                        "context": {"client": {"clientName": "WEB_REMIX", "clientVersion": version, "hl": "en"}},
+                        "videoId": vid,
+                        "playlistId": f"RDAMVM{vid}",
+                        "isAudioOnly": True,
+                        "enablePersistentPlaylistPanel": True,
+                    },
+                )
                 r.raise_for_status()
                 rows = radio_rows(r.json())
         except (httpx.HTTPError, ValueError) as e:
@@ -161,8 +184,13 @@ async def _lastfm(method: str, **params: Any) -> dict[str, Any]:
     global _lastfm_limiter
     if _lastfm_limiter is None:
         _lastfm_limiter = RateLimiter(LASTFM_RATE)
-    q = {"method": method, "api_key": get_settings().lastfm_api_key.strip(), "format": "json", "autocorrect": 1,
-         **params}
+    q = {
+        "method": method,
+        "api_key": get_settings().lastfm_api_key.strip(),
+        "format": "json",
+        "autocorrect": 1,
+        **params,
+    }
     try:
         async with make_client(timeout=20) as c:
             r = await request_with_backoff(c, "GET", LASTFM_URL, limiter=_lastfm_limiter, params=q, retries=2)
@@ -183,10 +211,17 @@ def _as_list(v: Any) -> list[dict]:
 async def lastfm_similar_tracks(artist: str, title: str, limit: int = 50) -> list[Hit]:
     async def produce() -> list[Hit]:
         body = await _lastfm("track.getSimilar", artist=artist, track=title, limit=limit)
-        return [Hit(artist=(t.get("artist") or {}).get("name") or "", title=t.get("name") or "",
-                    duration_s=int(t["duration"]) if str(t.get("duration") or "").isdigit() and int(t["duration"])
-                    else None)
-                for t in _as_list((body.get("similartracks") or {}).get("track")) if t.get("name")]
+        return [
+            Hit(
+                artist=(t.get("artist") or {}).get("name") or "",
+                title=t.get("name") or "",
+                duration_s=int(t["duration"])
+                if str(t.get("duration") or "").isdigit() and int(t["duration"])
+                else None,
+            )
+            for t in _as_list((body.get("similartracks") or {}).get("track"))
+            if t.get("name")
+        ]
 
     return await _cached_hits(f"mix:lfm_track_sim:{_key(artist, title)}", produce)
 
@@ -219,8 +254,14 @@ def _yandex_rows(tracks: Any) -> list[Hit]:
     for t in tracks or []:
         if (row := yandex_track_row(t)) is not None:
             artists = row.get("artists") or [row["artist"]]
-            out.append(Hit(artist=artists[0] if artists else row["artist"], title=row["title"],
-                           duration_s=row.get("duration_s"), source_id=str(getattr(t, "id", "") or "") or None))
+            out.append(
+                Hit(
+                    artist=artists[0] if artists else row["artist"],
+                    title=row["title"],
+                    duration_s=row.get("duration_s"),
+                    source_id=str(getattr(t, "id", "") or "") or None,
+                )
+            )
     return out
 
 

@@ -56,10 +56,21 @@ def test_split_suffix() -> None:
 
 
 async def test_remix_with_guests_searches_main_artist_and_catalog_suffix(monkeypatch) -> None:
-    monkeypatch.setattr(yandex, "_search_tracks", fake_search([
-        {"artist": "ЛСП, Oxxxymiron", "artists": ["ЛСП", "Oxxxymiron"], "title": "Безумие (Remix; feat. Oxxxymiron)",
-         "base": "Безумие", "duration_s": 225},
-    ]))
+    monkeypatch.setattr(
+        yandex,
+        "_search_tracks",
+        fake_search(
+            [
+                {
+                    "artist": "ЛСП, Oxxxymiron",
+                    "artists": ["ЛСП", "Oxxxymiron"],
+                    "title": "Безумие (Remix; feat. Oxxxymiron)",
+                    "base": "Безумие",
+                    "duration_s": 225,
+                },
+            ]
+        ),
+    )
     q = TrackQuery(artist="LSP", title="Bezumie (Remix)", duration_s=225)
     tag_q, pq = await yandex.russian_original(q)
     assert (pq.artist, pq.title, pq.lang) == ("ЛСП", "Безумие (Remix)", "ru")
@@ -86,18 +97,30 @@ async def test_cyrillic_original_switches_to_russian_order(monkeypatch) -> None:
 
 
 async def test_other_song_or_duration_is_not_taken(monkeypatch) -> None:
-    monkeypatch.setattr(yandex, "_search_tracks", fake_search([
-        {"artist": "ЛСП", "title": "Монетка", "duration_s": 240},
-        {"artist": "ЛСП", "title": "Что-то ещё", "duration_s": 300},
-    ]))
+    monkeypatch.setattr(
+        yandex,
+        "_search_tracks",
+        fake_search(
+            [
+                {"artist": "ЛСП", "title": "Монетка", "duration_s": 240},
+                {"artist": "ЛСП", "title": "Что-то ещё", "duration_s": 300},
+            ]
+        ),
+    )
     q = TrackQuery(artist="LSP", title="Chto-to eshhyo", duration_s=240)
     assert await yandex.russian_original(q) == (q, q)
 
 
 async def test_international_track_keeps_default_order(monkeypatch) -> None:
-    monkeypatch.setattr(yandex, "_search_tracks", fake_search([
-        {"artist": "Daft Punk, Pharrell Williams, Nile Rodgers", "title": "Get Lucky", "duration_s": 248},
-    ]))
+    monkeypatch.setattr(
+        yandex,
+        "_search_tracks",
+        fake_search(
+            [
+                {"artist": "Daft Punk, Pharrell Williams, Nile Rodgers", "title": "Get Lucky", "duration_s": 248},
+            ]
+        ),
+    )
     q = TrackQuery(artist="Daft Punk", title="Get Lucky", duration_s=248, isrc="USQX91300809")
     tag_q, pq = await yandex.russian_original(q, upc="886443927087")
     assert tag_q == q and pq == q and not is_russian_query(pq)

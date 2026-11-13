@@ -8,8 +8,11 @@ from app import net
 
 @respx.mock
 async def test_proxy_mount_matches_domain_and_subdomains_only(monkeypatch):
-    monkeypatch.setattr(net, "get_settings", lambda: SimpleNamespace(
-        outbound_proxy="http://proxy.test:3128", proxy_hosts={"sndcdn.com"}))
+    monkeypatch.setattr(
+        net,
+        "get_settings",
+        lambda: SimpleNamespace(outbound_proxy="http://proxy.test:3128", proxy_hosts={"sndcdn.com"}),
+    )
     proxy = httpx.MockTransport(lambda request: httpx.Response(200, text="proxy"))
     monkeypatch.setattr(httpx, "AsyncHTTPTransport", lambda **kwargs: proxy)
     unrelated = respx.get("https://notsndcdn.com/").respond(200, text="direct")

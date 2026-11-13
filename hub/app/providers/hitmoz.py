@@ -503,7 +503,12 @@ class HitmozProvider:
             t0 = time.monotonic()
             try:
                 resp = await request_with_backoff(
-                    self.client, "GET", url, limiter=self.limiter, headers=self.headers, retries=0,
+                    self.client,
+                    "GET",
+                    url,
+                    limiter=self.limiter,
+                    headers=self.headers,
+                    retries=0,
                     timeout=DOMAIN_PROBE_TIMEOUT_S,
                 )
             except httpx.HTTPError as e:

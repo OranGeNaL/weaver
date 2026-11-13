@@ -28,8 +28,11 @@ def configured() -> bool:
 def _deliver(msg: EmailMessage) -> None:
     st = get_settings()
     ctx = ssl.create_default_context()
-    smtp = (smtplib.SMTP_SSL(st.smtp_host, st.smtp_port, timeout=TIMEOUT_S, context=ctx) if st.smtp_port == 465
-            else smtplib.SMTP(st.smtp_host, st.smtp_port, timeout=TIMEOUT_S))
+    smtp = (
+        smtplib.SMTP_SSL(st.smtp_host, st.smtp_port, timeout=TIMEOUT_S, context=ctx)
+        if st.smtp_port == 465
+        else smtplib.SMTP(st.smtp_host, st.smtp_port, timeout=TIMEOUT_S)
+    )
     with smtp:
         if st.smtp_port != 465:
             smtp.starttls(context=ctx)
