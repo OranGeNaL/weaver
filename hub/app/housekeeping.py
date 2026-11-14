@@ -133,7 +133,8 @@ async def run_daily() -> None:
     from app.accounts import purge_email_codes
     from app.api.uploads import purge_stale_uploads
     from app.catalog.cache import cache_purge_expired
-    from app.library.editor import purge_trash
+    from app.storage import cache as storage_cache
+    from app.storage.gc import gc_tracks_and_blobs
 
     cfg = get_settings().cfg
     try:
@@ -144,13 +145,22 @@ async def run_daily() -> None:
     except Exception:
         log.exception("hub db backup failed")
     try:
-        n = await asyncio.to_thread(purge_trash, cfg.library.trash_days)
+        gc_stats = await gc_tracks_and_blobs(cfg.library.trash_days)
         m = await asyncio.to_thread(purge_stale_uploads)
         c = await cache_purge_expired()
         e = await purge_email_codes()
-        log.info("housekeeping: trash dirs %s, stale uploads %s, cache rows %s, email codes %s removed", n, m, c, e)
+        evicted = await storage_cache().evict()
+        log.info(
+            "housekeeping: trash+gc %s, stale uploads %s, cache rows %s, email codes %s, hot-cache evicted %s",
+            gc_stats,
+            m,
+            c,
+            e,
+            evicted,
+        )
     except Exception:
         log.exception("housekeeping failed")
+    # the provider smoke test is isolated: a cleanup failure must not skip it
     await smoke_test_providers()
 
 

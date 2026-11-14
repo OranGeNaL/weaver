@@ -95,7 +95,11 @@ async def search_library(s: AsyncSession, q: str, limit: int = 20) -> list[Track
     cond = ilike_all(q)
     if cond is None:
         return []
-    rows = (await s.execute(select(Track).where(Track.search_text.ilike(cond)).limit(limit))).scalars().all()
+    rows = (
+        (await s.execute(select(Track).where(Track.search_text.ilike(cond), Track.deleted_at.is_(None)).limit(limit)))
+        .scalars()
+        .all()
+    )
     return list(rows)
 
 

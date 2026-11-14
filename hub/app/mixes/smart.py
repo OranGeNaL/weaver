@@ -208,9 +208,17 @@ async def own_infos(ids: list[str]) -> dict[str, OwnInfo]:
     async with session_scope() as s:
         rows: list[Track] = []
         for k in range(0, len(nd_ids), 500):
-            rows += (await s.execute(select(Track).where(Track.nd_song_id.in_(nd_ids[k : k + 500])))).scalars()
+            rows += (
+                await s.execute(
+                    select(Track).where(Track.nd_song_id.in_(nd_ids[k : k + 500]), Track.deleted_at.is_(None))
+                )
+            ).scalars()
         for k in range(0, len(dz), 500):
-            rows += (await s.execute(select(Track).where(Track.deezer_track_id.in_(list(dz)[k : k + 500])))).scalars()
+            rows += (
+                await s.execute(
+                    select(Track).where(Track.deezer_track_id.in_(list(dz)[k : k + 500]), Track.deleted_at.is_(None))
+                )
+            ).scalars()
         for t in rows:
             i = t.nd_song_id if t.nd_song_id in out else dz.get(str(t.deezer_track_id))
             if i is None or out[i].title:

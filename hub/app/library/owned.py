@@ -51,20 +51,27 @@ async def find_existing(
     newest = Track.id.desc()
     if isrc:
         t = (
-            await s.execute(select(Track).where(Track.isrc == isrc.upper()).order_by(newest).limit(1))
+            await s.execute(
+                select(Track).where(Track.isrc == isrc.upper(), Track.deleted_at.is_(None)).order_by(newest).limit(1)
+            )
         ).scalar_one_or_none()
         if t:
             return t
     if deezer_track_id:
         t = (
             await s.execute(
-                select(Track).where(Track.deezer_track_id == str(deezer_track_id)).order_by(newest).limit(1)
+                select(Track)
+                .where(Track.deezer_track_id == str(deezer_track_id), Track.deleted_at.is_(None))
+                .order_by(newest)
+                .limit(1)
             )
         ).scalar_one_or_none()
         if t:
             return t
     fp = fingerprint(artist, title)
-    for t in (await s.execute(select(Track).where(Track.fingerprint == fp).order_by(newest))).scalars():
+    for t in (
+        await s.execute(select(Track).where(Track.fingerprint == fp, Track.deleted_at.is_(None)).order_by(newest))
+    ).scalars():
         if _duration_ok(t.duration_s, duration_s):
             return t
     return None
@@ -95,7 +102,10 @@ async def annotate_tracks(
         (
             await s.execute(
                 select(Track)
-                .where(or_(Track.isrc.in_(isrcs), Track.deezer_track_id.in_(dz_ids), Track.fingerprint.in_(fps)))
+                .where(
+                    or_(Track.isrc.in_(isrcs), Track.deezer_track_id.in_(dz_ids), Track.fingerprint.in_(fps)),
+                    Track.deleted_at.is_(None),
+                )
                 .order_by(Track.id.desc())
             )
         )

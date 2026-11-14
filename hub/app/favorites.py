@@ -717,7 +717,11 @@ async def enrich_pending_subjects(s: AsyncSession, nd) -> None:
                     await s.execute(
                         select(Track.nd_song_id)
                         .join(Album, Album.id == Track.album_id)
-                        .where(Album.deezer_album_id == id_, Track.nd_song_id.is_not(None))
+                        .where(
+                            Album.deezer_album_id == id_,
+                            Track.nd_song_id.is_not(None),
+                            Track.deleted_at.is_(None),
+                        )
                         .limit(1)
                     )
                 ).scalar_one_or_none()
@@ -778,7 +782,11 @@ async def recover_import_subjects(s: AsyncSession, user_id: int, body: dict, nd)
                     await s.execute(
                         select(Track.nd_song_id)
                         .join(Album, Album.id == Track.album_id)
-                        .where(Album.deezer_album_id == catalog_id, Track.nd_song_id.is_not(None))
+                        .where(
+                            Album.deezer_album_id == catalog_id,
+                            Track.nd_song_id.is_not(None),
+                            Track.deleted_at.is_(None),
+                        )
                         .limit(1)
                     )
                 ).scalar_one_or_none()

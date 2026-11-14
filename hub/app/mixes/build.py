@@ -542,9 +542,32 @@ def known_of(c: Cand, p: Profile) -> dict[str, Any] | None:
 
 
 async def library_items() -> list[dict[str, str]]:
+    """Library songs as `{key, url}`: a presigned blob URL, or the Hub fallback endpoint when presign is unavailable."""
+    from app.config import get_settings
+    from app.models import Blob
+    from app.storage import PresignUnavailable
+    from app.storage import backend as storage_backend
+
     async with session_scope() as s:
-        rows = (await s.execute(select(Track.nd_song_id, Track.path).where(Track.nd_song_id.is_not(None)))).all()
-    return [{"key": embedder.song_key(song), "path": path} for song, path in rows if song is not None]
+        rows = (
+            await s.execute(
+                select(Track.nd_song_id, Blob.sha256)
+                .join(Blob, Blob.id == Track.blob_id)
+                .where(Track.nd_song_id.is_not(None), Track.deleted_at.is_(None), Blob.status == "committed")
+            )
+        ).all()
+    b = storage_backend()
+    out: list[dict[str, str]] = []
+    fallback_base = get_settings().hub_internal_url.rstrip("/")
+    for song, sha in rows:
+        if song is None or sha is None:
+            continue
+        try:
+            url = await b.presign_get(f"audio/{sha}", get_settings().media_blob_ttl_s)
+        except PresignUnavailable:
+            url = f"{fallback_base}/api/media/blob/{sha}"
+        out.append({"key": embedder.song_key(song), "url": url})
+    return out
 
 
 async def _preview(c: CatalogTrack) -> str | None:

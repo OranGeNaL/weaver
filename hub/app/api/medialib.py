@@ -66,7 +66,7 @@ async def songs_out(s: AsyncSession, songs: list[dict]) -> list[NdSongOut]:
     ids = [x["id"] for x in songs if x.get("id")]
     rows: dict[str, Track] = {}
     for i in range(0, len(ids), 500):
-        q = select(Track).where(Track.nd_song_id.in_(ids[i : i + 500]))
+        q = select(Track).where(Track.nd_song_id.in_(ids[i : i + 500]), Track.deleted_at.is_(None))
         rows.update((cast(str, t.nd_song_id), t) for t in (await s.execute(q)).scalars())
     out = []
     for x in songs:

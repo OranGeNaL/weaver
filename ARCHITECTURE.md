@@ -51,8 +51,8 @@ HomeMusic — это персональный музыкальный серви�
 │         │                ├──► slskd (опционально, Soulseek)  │
 │         │                └──► внешние сервисы                │
 │         │                                                   │
-│  MUSIC_ROOT = /srv/music                                    │
-│    library/ staging/ .trash/ .backups/                      │
+│  MUSIC_ROOT = /srv/music (staging/, .backups/)              │
+│  S3/RustFS = audio/ + covers/ (blobs sha256), версии        │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -85,7 +85,8 @@ HomeMusic — это персональный музыкальный серви�
 | Сервис | Роль | Порты | Тома / особенности |
 |---|---|---|---|
 | `navidrome` | медиасервер | `4533:4533` | `navidrome-data`, `library` read-only, `.backups/navidrome` |
-| `hub` | основной backend + PWA | `8080:8080` | `hub-data`, `MUSIC_ROOT`, `config.yaml` read-only, `soulseek-downloads` |
+| `hub` | основной backend + PWA | `8080:8080` | `hub-data`, `MUSIC_ROOT`, `S3_*`, `config.yaml` read-only, `soulseek-downloads` |
+| `rustfs` | S3-хранилище библиотеки (по умолчанию) | только `expose: 9000` | `rustfs-data`; внешний S3 — через `.env` |
 | `youtube-pot` | выдача PO-токенов для yt-dlp | только `expose: 4416` | изолирован, без пользовательских данных |
 | `slskd` | Soulseek-демон | только `expose: 5030` | профиль `soulseek`, включается вручную |
 | `embedder` | векторы звука | только `expose: 8090` | `embedder-data`, `embedder-models`, GPU reservation, `mem_limit: 4g` |
@@ -93,7 +94,9 @@ HomeMusic — это персональный музыкальный серви�
 Важные архитектурные решения:
 
 1. **Postgres лежит в именованном Docker-томе** на файловой системе Linux-хоста (внешний Postgres — через `DATABASE_URL`).
-2. **Медиатека — каталог Linux-хоста** `/srv/music` (меняется через `MUSIC_ROOT`), примонтированный в контейнеры.
+2. **Аудио и обложки библиотеки — S3-совместимый бакет** (RustFS в compose или внешний S3): иммутабельные
+   content-addressed блобы `audio/<sha256>`, `covers/<sha256>`, `manifests/<sha256>/<uid>.json`. `/srv/music`
+   (`MUSIC_ROOT`) — только staging, hot-cache и бэкапы.
 3. **Navidrome не использует watcher**: сканирование выполняет Hub (`startScan`) после импорта, плюс раз в час по расписанию.
 4. **Navidrome и Hub публикуют порты** `4533` и `8080`; embedder, slskd и youtube-pot доступны только внутри compose-сети.
 5. **Внешний доступ — вне проекта**: туннель, reverse proxy, DNS и TLS обеспечивает NetBird или аналогичная VPN/mesh-сеть.
@@ -133,7 +136,7 @@ HomeMusic — это персональный музыкальный серви�
 - `create_app()` создаёт `FastAPI`, подключает роутеры.
 - `lifespan()` — composition root:
   - инициализирует настройки и логирование;
-  - создаёт каталоги `library`, `staging`, `.trash`, `.backups`;
+  - создаёт каталоги `staging`, `.backups`, объектный root (`fs`-бэкенд) и hot-cache блобов;
   - прогоняет Alembic-миграции;
   - инициализирует SQLAlchemy engine;
   - запускает `Services` — глобальные клиенты провайдеров и каталогов;
@@ -184,8 +187,9 @@ HomeMusic — это персональный музыкальный серви�
 |---|---|---|
 | **Аккаунты** | `accounts.py`, `auth.py`, `security.py`, `mailer.py`, `google_auth.py`, `api/auth.py` | инвайты, email-коды, Google ID-token, сессии, Fernet-шифрование паролей |
 | **Каталог** | `catalog/models.py`, `deezer.py`, `hitmoz_catalog.py`, `musicbrainz.py`, `yandex.py`, `cache.py` | единый `ref` вида `dz:…`, `hm:…`; TTL-кэш в `catalog_cache` |
-| **Загрузки** | `jobs/downloads.py`, `providers/*`, `matching/*`, `library/*` | полный конвейер: каталог → дедупликация → поиск → выбор → скачивание → проверка → теги → импорт |
-| **Библиотека** | `library/importer.py`, `tagger.py`, `layout.py`, `probe.py`, `editor.py`, `owned.py`, `navidrome.py` | раскладка файлов, теги, ffprobe/ffmpeg, поиск уже имеющегося, правки, Navidrome |
+| **Загрузки** | `jobs/downloads.py`, `providers/*`, `matching/*`, `library/*` | полный конвейер: каталог → дедупликация → поиск → выбор → скачивание → проверка → импорт (блобы; теги — только при экспорте) |
+| **Библиотека** | `library/importer.py`, `editor.py`, `export.py`, `covers.py`, `owned.py`, `navidrome.py`, `storage/*` | блобы в S3, двуфазная запись, логические пути, теги только при экспорте, ffprobe/ffmpeg, правки, Navidrome |
+| **Хранилище** | `storage/base.py`, `local.py`, `s3.py`, `cache.py`, `blobs.py`, `gc.py` | контракт `StorageBackend`, hot-cache с LRU, дедупликация по `sha256`, GC осиротевших объектов |
 | **Прослушивание** | `listen.py`, `light.py`, `api/listen.py` | выбор файла, серверные копии, Range-стриминг, лёгкий Opus-вариант |
 | **История** | `plays.py`, `listening_summary.py`, `favorites.py`, `api/plays.py` | события, скробблы Navidrome, дедупликация, звёзды, дизлайки |
 | **Рекомендации** | `mixes/*`, `api/mixes.py`, `api/wave.py`, `api/smart_shuffle.py` | вкус, генераторы, отбор, порядок, волна, умный шаффл |
@@ -232,7 +236,7 @@ HomeMusic — это персональный музыкальный серви�
 
 - **`ref`** — каталожный идентификатор: `dz:<id>`, `hm:<id>`.
 - **`nd_song_id`** — ID песни в Navidrome.
-- **`uid`** — UUID, записываемый в теги `HOMEMUSIC_TRACK_ID` / `HOMEMUSIC_ALBUM_ID`; именно его Navidrome использует как стабильный PID.
+- **`uid`** — UUID трека/альбома; в legacy-файлы и при экспорте/материализации пишется как `HOMEMUSIC_TRACK_ID` / `HOMEMUSIC_ALBUM_ID`. Для новых импортов это только идентификатор БД: Navidrome-ID появятся после этапа 6.
 - **`fingerprint`** — нормализованный `artist|title` для дедупликации.
 - **`event_id`** — клиентский ID события; повторная отправка не создаёт дубль.
 - **`mix_id` / `session_id`** — контекст рекомендаций.
@@ -371,9 +375,9 @@ GET /api/listen/stream?ref=…
   → Range → 206
 ```
 
-- Серверные копии лежат в `staging/listen`.
+- Серверные копии лежат в `DATA_DIR/cache/listen`.
 - Для источников без plain HTTP audio (SoundCloud/HLS) сначала скачивается копия.
-- `q=mobile` → Ogg Opus 160 kbps, копии в `staging/listen-light`.
+- `q=mobile` → Ogg Opus 160 kbps, копии в `DATA_DIR/cache/listen-light`.
 - `X-HomeMusic-Listen-Kind` и `X-HomeMusic-Variant` сообщают клиенту, что именно отдано.
 
 ### 6.5. История и вкус
@@ -695,7 +699,7 @@ Navidrome доступен по `http://<navidrome-host>:4533`.
    Hub хранит зашифрованный пароль и действует от имени пользователя через Subsonic API.
 
 2. **Стабильные ID важнее путей.**
-   `HOMEMUSIC_TRACK_ID` и `HOMEMUSIC_ALBUM_ID` записываются в теги, поэтому перемещение и перетегирование не ломают плейлисты и историю.
+   `HOMEMUSIC_TRACK_ID` и `HOMEMUSIC_ALBUM_ID` пишутся только при экспорте/материализации (и остаются в legacy-файлах), поэтому правка метаданных и логического пути не перезаписывает блоб.
 
 3. **Двухуровневая конфигурация.**
    Секреты — только `.env`; поведение — `config.yaml`. `config.yaml` монтируется read-only.
@@ -806,8 +810,30 @@ Navidrome доступен по `http://<navidrome-host>:4533`.
         │        │                                               │
         │        └────────────── slskd (опционально) ────────────┘
         │                                                        │
-        │  MUSIC_ROOT: library/ staging/ .trash/ .backups/       │
+        │  MUSIC_ROOT: staging/ .backups/                        │
+        │  S3: audio/ covers/ manifests/ (blobs sha256)          │
         └────────────────────────────────────────────────────────┘
 ```
 
-Ключевая идея архитектуры: **Hub — это оркестратор**, который соединяет внешние источники музыки, каталог, Navidrome, локальную файловую библиотеку, историю прослушивания и рекомендательную систему. Navidrome отвечает за воспроизведение и пользовательские данные, embedder — за звуковую близость, а PWA/Android — за интерфейс.
+Ключевая идея архитектуры: **Hub — это оркестратор**, который соединяет внешние источники музыки, каталог, Navidrome, объектное хранилище библиотеки (S3/блобы), историю прослушивания и рекомендательную систему. Navidrome отвечает за воспроизведение и пользовательские данные, embedder — за звуковую близость, а PWA/Android — за интерфейс.
+
+### S3 capability checklist (RustFS / external S3)
+
+The `storage.backend` seam is written against the common S3 subset; the Hub does not rely on provider-specific
+features. Verified on RustFS (`rustfs/rustfs:1.0.0-alpha.80`, the compose default) and exercised by the `s3`
+test marker (`HUB_S3_TESTS=1`):
+
+| Capability | Supported subset used by the Hub |
+|---|---|
+| `PUT` / `GET` / `HEAD` / `DELETE` | whole objects; a `Path` upload uses the SDK's multipart handling |
+| Range reads | single `bytes=start-end` and suffix ranges (`get_range`, `iter_range`) |
+| Multipart | provider-managed for large uploads; no explicit abort/list API used |
+| Server-side copy | `CopyObject` for `pending/<uuid>` → `audio/<sha256>` promotion |
+| Listing | `ListObjectsV2` by prefix, used by GC (`audio/`, `covers/`, `pending/`) |
+| Presigned GET | `GET` with a short TTL; a backend without presign falls back to `/api/media/blob/<sha256>` |
+| Versioning | enabled at startup when the provider supports it (RustFS does); absence is logged, not fatal |
+| Conditional GET | `ETag` is the `sha256`; the Hub does not depend on `If-Match`/`If-None-Match` for correctness |
+| Quotas | no standard S3 API: the Hub reports `bucket_bytes`; a quota is provider configuration or absent |
+
+Objects are immutable after promotion, so conditional writes are not needed. A provider that lacks presign,
+versioning or a quota still works: those paths are optional and degrade to the fallbacks above.

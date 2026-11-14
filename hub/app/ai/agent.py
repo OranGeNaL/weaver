@@ -296,7 +296,9 @@ class ChatTools:
         out: dict[str, Any] = {
             "user": self.user.nd_username,
             "library": {
-                "tracks": (await s.execute(select(func.count(Track.id)))).scalar_one(),
+                "tracks": (
+                    await s.execute(select(func.count(Track.id)).where(Track.deleted_at.is_(None)))
+                ).scalar_one(),
                 "albums": (await s.execute(select(func.count(Album.id)))).scalar_one(),
             },
             "starred": {
@@ -725,7 +727,11 @@ class ChatTools:
         return {"status": "waiting_for_user_confirmation"}
 
     async def delete_library_tracks(self, track_ids: list[int]) -> Any:
-        rows = (await self.s.execute(select(Track).where(Track.id.in_(track_ids)))).scalars().all()
+        rows = (
+            (await self.s.execute(select(Track).where(Track.id.in_(track_ids), Track.deleted_at.is_(None))))
+            .scalars()
+            .all()
+        )
         if not rows:
             raise ValueError("no such tracks")
         self.proposal.append(
@@ -897,7 +903,11 @@ async def confirm_chat(s: AsyncSession, user: User, task: AssistantTask, token: 
                 await nd.aclose()
             playlists.append(a["playlist_id"])
             continue
-        for t in (await s.execute(select(Track).where(Track.id.in_(a.get("track_ids") or [])))).scalars().all():
+        for t in (
+            (await s.execute(select(Track).where(Track.id.in_(a.get("track_ids") or []), Track.deleted_at.is_(None))))
+            .scalars()
+            .all()
+        ):
             albums.add(t.album_id)
             await editor.trash_track(s, t)
             tracks += 1

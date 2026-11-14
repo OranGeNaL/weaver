@@ -73,7 +73,9 @@ async def stream(
     if m.variant:
         variant["X-HomeMusic-Variant"] = m.variant
     if m.path is not None:
-        return FileResponse(m.path, media_type=m.media_type, headers={"Cache-Control": "no-store", **variant})
+        return FileResponse(
+            m.path, media_type=m.media_type, headers={"Cache-Control": "no-store", **m.headers, **variant}
+        )
     headers = {**m.headers, "accept-ranges": "bytes", "cache-control": "no-store", **variant}
     if m.body is None:
         return Response(status_code=m.status, headers=headers)

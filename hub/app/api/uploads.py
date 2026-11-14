@@ -222,6 +222,9 @@ async def commit(
             log.exception("upload import failed")
             u.status, u.error = "failed", str(e)[:500]
             continue
+        finally:
+            # the bytes live in the object store now; staging keeps no copy of an upload
+            src.unlink(missing_ok=True)
         u.status, u.track_id = "imported", track.id
         imported += 1
     await enqueue_scan(s)

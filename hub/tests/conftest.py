@@ -127,6 +127,10 @@ def hub_env(db_url: str, tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator:
     monkeypatch.setenv("MUSIC_ROOT", str(music))
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("CONFIG_FILE", str(tmp_path / "none.yaml"))
+    # the local backend is dev/test only; S3 smoke tests are opt-in (`HUB_S3_TESTS=1`, marker `s3`)
+    monkeypatch.setenv("STORAGE_BACKEND", "fs")
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("MEDIA_BLOB_TOKEN", "test-blob-token")
     monkeypatch.setenv("NAVIDROME_URL", ND)
     monkeypatch.setenv("NAVIDROME_ADMIN_USER", "admin")
     monkeypatch.setenv("NAVIDROME_ADMIN_PASSWORD", "adminpw")
@@ -145,12 +149,13 @@ def hub_env(db_url: str, tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator:
 
 
 def _clear_caches() -> None:
-    from app import accounts, auth, config, google_auth, security
+    from app import accounts, auth, config, google_auth, security, storage
     from app.library.navidrome import NavidromeAdmin, NavidromeHistory
     from app.mixes import sources, wave
     from app.providers import ytdlp
 
     config.get_settings.cache_clear()
+    storage.reset()
     security._fernet.cache_clear()
     accounts._failures.clear()
     auth._password_attempts.clear()
@@ -160,3 +165,15 @@ def _clear_caches() -> None:
     ytdlp._media_hosts.clear()
     sources._lastfm_limiter = None
     wave._rt.clear()
+
+
+def pytest_collection_modifyitems(config, items):
+    """`HUB_S3_TESTS=1` enables the `s3` marker; the default `pytest` run skips those tests."""
+    import os
+
+    if os.environ.get("HUB_S3_TESTS") == "1":
+        return
+    skip = pytest.mark.skip(reason="S3 smoke tests: set HUB_S3_TESTS=1 (and S3_ENDPOINT/S3_BUCKET)")
+    for item in items:
+        if "s3" in item.keywords:
+            item.add_marker(skip)

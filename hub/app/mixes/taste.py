@@ -335,7 +335,9 @@ async def _names(s: AsyncSession, p: Profile, b: _Builder) -> None:
     songs = [t.nd_song_id for t in p.tracks.values() if t.nd_song_id]
     lib: dict[str, Track] = {}
     for i in range(0, len(songs), 500):
-        for tr in (await s.execute(select(Track).where(Track.nd_song_id.in_(songs[i : i + 500])))).scalars():
+        for tr in (
+            await s.execute(select(Track).where(Track.nd_song_id.in_(songs[i : i + 500]), Track.deleted_at.is_(None)))
+        ).scalars():
             lib[tr.nd_song_id] = tr  # type: ignore[index]
     for t in p.tracks.values():
         if t.nd_song_id and (tr := lib.get(t.nd_song_id)):

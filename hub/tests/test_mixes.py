@@ -683,9 +683,9 @@ async def test_an_unheard_song_goes_to_the_trash(env) -> None:
 
     assert await core.remove_unheard([mix_id]) == 1
     async with session_scope() as s:
-        assert await s.get(Track, tid) is None
-    assert not (env["music"] / "library" / "Свой 7" / "Песня 7.mp3").exists()
-    assert list((env["music"] / ".trash").rglob("Песня 7.mp3"))
+        trashed = await s.get(Track, tid)
+        # trash marks the row; the blob is untouched until `trash_days` elapse and GC frees it
+        assert trashed is not None and trashed.deleted_at is not None
 
 
 # --- the API ---------------------------------------------------------------------------------------------------------

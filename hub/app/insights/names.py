@@ -71,11 +71,19 @@ async def resolve(
     by_song: dict[str, Track] = {}
     by_dz: dict[str, Track] = {}
     for chunk in _chunks(songs):
-        for tr in (await s.execute(select(Track).where(Track.nd_song_id.in_(chunk)).order_by(Track.id))).scalars():
+        for tr in (
+            await s.execute(
+                select(Track).where(Track.nd_song_id.in_(chunk), Track.deleted_at.is_(None)).order_by(Track.id)
+            )
+        ).scalars():
             by_song[tr.nd_song_id] = tr  # type: ignore[index]  # the newest row wins
     dz = sorted({r[3:] for r in refs if r.startswith("dz:")})
     for chunk in _chunks(dz):
-        for tr in (await s.execute(select(Track).where(Track.deezer_track_id.in_(chunk)).order_by(Track.id))).scalars():
+        for tr in (
+            await s.execute(
+                select(Track).where(Track.deezer_track_id.in_(chunk), Track.deleted_at.is_(None)).order_by(Track.id)
+            )
+        ).scalars():
             by_dz[f"dz:{tr.deezer_track_id}"] = tr
 
     out: dict[str, Name] = {}
@@ -169,7 +177,11 @@ async def library_songs(s: AsyncSession, songs: Iterable[str]) -> set[str]:
     out: set[str] = set()
     for chunk in _chunks(songs):
         out.update(
-            x for x in (await s.execute(select(Track.nd_song_id).where(Track.nd_song_id.in_(chunk)))).scalars() if x
+            x
+            for x in (
+                await s.execute(select(Track.nd_song_id).where(Track.nd_song_id.in_(chunk), Track.deleted_at.is_(None)))
+            ).scalars()
+            if x
         )
     return out
 

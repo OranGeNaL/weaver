@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
-import io
 import uuid
 from typing import cast
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import false, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.background import BackgroundTask
 
 from app.api.schemas import (
     AlbumCreateIn,
@@ -31,8 +30,7 @@ from app.events import bus
 from app.favorites import TargetType
 from app.jobs.downloads import enqueue_scan
 from app.jobs.queue import notify
-from app.library import editor, tagger
-from app.library.importer import album_reldir, library_abs
+from app.library import covers, editor, export
 from app.library.search import ilike_all
 from app.models import Album, Track, User
 
@@ -63,12 +61,18 @@ def track_out(t: Track) -> LibTrackOut:
 
 
 def _has_cover(a: Album) -> bool:
-    return (library_abs(album_reldir(a)) / "cover.jpg").is_file()
+    return a.cover_blob_id is not None
 
 
 async def album_out(s: AsyncSession, a: Album, *, with_tracks: bool = False) -> LibAlbumOut:
     tracks = (
-        (await s.execute(select(Track).where(Track.album_id == a.id).order_by(Track.disc_no, Track.track_no, Track.id)))
+        (
+            await s.execute(
+                select(Track)
+                .where(Track.album_id == a.id, Track.deleted_at.is_(None))
+                .order_by(Track.disc_no, Track.track_no, Track.id)
+            )
+        )
         .scalars()
         .all()
     )
@@ -107,18 +111,18 @@ async def list_albums(
     offset: int = 0,
     limit: int = Query(50, le=200),
     user: User = Depends(current_user),
-    s: AsyncSession = Depends(get_session, scope="function"),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ):
     stmt = select(Album).order_by(Album.updated_at.desc())
     if q:
         cond = ilike_all(q)
         stmt = stmt.where(Album.search_text.ilike(cond) if cond is not None else false())
-    rows = (await s.execute(stmt.offset(offset).limit(limit))).scalars().all()
+    rows = (await session.execute(stmt.offset(offset).limit(limit))).scalars().all()
     counts = dict(
         (
-            await s.execute(
+            await session.execute(
                 select(Track.album_id, func.count(Track.id))
-                .where(Track.album_id.in_([a.id for a in rows]))
+                .where(Track.album_id.in_([a.id for a in rows]), Track.deleted_at.is_(None))
                 .group_by(Track.album_id)
             )
         ).all()
@@ -162,7 +166,9 @@ async def create_album(
 async def track_source(
     nd_song_id: str, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
 ):
-    t = (await s.execute(select(Track).where(Track.nd_song_id == nd_song_id).limit(1))).scalar_one_or_none()
+    t = (
+        await s.execute(select(Track).where(Track.nd_song_id == nd_song_id, Track.deleted_at.is_(None)).limit(1))
+    ).scalar_one_or_none()
     if t is None:
         raise HTTPException(404, "Трек не найден")
     return TrackSourceOut(source=t.source, source_url=t.source_url, acquired_at=t.acquired_at)
@@ -215,27 +221,10 @@ async def get_cover(
     s: AsyncSession = Depends(get_session, scope="function"),
 ):
     a = await _album(s, album_id)
-    p = library_abs(album_reldir(a)) / "cover.jpg"
-    data: bytes | None = await asyncio.to_thread(p.read_bytes) if p.is_file() else None
-    if data is None:
-        t = (await s.execute(select(Track).where(Track.album_id == a.id).limit(1))).scalar_one_or_none()
-        if t is not None and library_abs(t.path).is_file():
-            data = await asyncio.to_thread(tagger.read_cover, library_abs(t.path))
+    data = await covers.cached_or_resized(s, a, size)
     if data is None:
         raise HTTPException(404, "Нет обложки")
-    if size:
-        data = await asyncio.to_thread(_resize, data, size)
     return Response(data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
-
-
-def _resize(data: bytes, size: int) -> bytes:
-    from PIL import Image
-
-    im = Image.open(io.BytesIO(data)).convert("RGB")
-    im.thumbnail((size, size))
-    buf = io.BytesIO()
-    im.save(buf, "JPEG", quality=85)
-    return buf.getvalue()
 
 
 @router.post("/api/library/albums/merge", response_model=LibAlbumOut)
@@ -283,6 +272,35 @@ async def delete_track(
     album_id = t.album_id
     await editor.trash_track(s, t)
     await _after_edit(s, user, album_id)
+    return {"ok": True}
+
+
+@router.get("/api/library/tracks/{track_id}/download")
+async def download_track(
+    track_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
+    """A tagged copy of the blob (export/materialization); ordinary edits never rewrite the object."""
+    t = await s.get(Track, track_id)
+    if t is None or t.deleted_at is not None:
+        raise HTTPException(404, "Трек не найден")
+    try:
+        path = await export.materialize(s, t)
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+    return FileResponse(path, filename=path.name, background=BackgroundTask(export.cleanup, path))
+
+
+@router.post("/api/library/tracks/{track_id}/restore")
+async def restore_track(
+    track_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
+    t = await s.get(Track, track_id)
+    if t is None:
+        raise HTTPException(404, "Трек не найден")
+    if t.deleted_at is None:
+        return {"ok": True}
+    await editor.restore_track(s, t)
+    await _after_edit(s, user, t.album_id)
     return {"ok": True}
 
 
@@ -362,7 +380,7 @@ async def starred(user: User = Depends(current_user), s: AsyncSession = Depends(
 
 @router.post("/api/star")
 async def star(
-    body: StarIn, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+    body: StarIn, user: User = Depends(current_user), session: AsyncSession = Depends(get_session, scope="function")
 ):
     from app.api.schemas import FavoriteTarget
     from app.favorites import command
@@ -381,15 +399,21 @@ async def star(
             from app.models import PlayEvent
 
             duplicate_unlike = (
-                await s.execute(
+                await session.execute(
                     select(PlayEvent.id).where(PlayEvent.user_id == user.id, PlayEvent.event_id == body.event_id)
                 )
             ).first() is not None
         if body.catalog_album_ref:
             src, id_ = split_ref(body.catalog_album_ref)
-            q = select(Track.nd_song_id).join(Album, Album.id == Track.album_id).where(Track.nd_song_id.is_not(None))
-            q = q.where(Album.deezer_album_id == id_) if src == "dz" else q.where(Album.id == -1)
-            song_id = (await s.execute(q.limit(1))).scalar_one_or_none()
+            album_filter = Album.deezer_album_id == id_ if src == "dz" else Album.id == -1
+            song_id = (
+                await session.execute(
+                    select(Track.nd_song_id)
+                    .join(Album, Album.id == Track.album_id)
+                    .where(Track.nd_song_id.is_not(None), album_filter)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
             if song_id is None:
                 raise HTTPException(409, "Этого альбома ещё нет в библиотеке — сначала скачайте его")
             song = await nd.get_song(song_id)
@@ -404,7 +428,7 @@ async def star(
                 )
             )
         events = await command(
-            s,
+            session,
             user,
             targets,
             liked=not body.unstar,
@@ -419,21 +443,21 @@ async def star(
         if body.unstar and body.event_id:
             from app.favorites import clear_pending, snapshot
 
-            states = await snapshot(s, user.id)
+            states = await snapshot(session, user.id)
             for target in targets:
                 if target.target_type != "track" or not target.ref:
                     continue
                 state = next((x for x in states.values() if x.target_type == "track" and x.ref == target.ref), None)
                 if state and not state.liked:
-                    await clear_pending(s, user.id, target.ref)
+                    await clear_pending(session, user.id, target.ref)
                     if duplicate_unlike and state.nd_id:
                         await nd.unstar(song_ids=[state.nd_id])
     except Exception:
         # Preserve successful chunks of a bulk request even if a later chunk fails.
-        await s.commit()
+        await session.commit()
         raise
     finally:
         await nd.aclose()
-    await s.commit()
+    await session.commit()
     bus.publish(user.id, "library", {"kind": "unstarred" if body.unstar else "starred"})
     return {"ok": True, "event_ids": [e.event_id for e in events]}

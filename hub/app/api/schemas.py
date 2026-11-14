@@ -186,7 +186,7 @@ class LibTrackOut(BaseModel):
     source: str | None
     locked: bool
     warnings: list[Any] = []
-    path: str
+    path: str | None  # logical library path (display/export), no longer a file on disk
 
 
 class TrackSourceOut(BaseModel):
@@ -669,7 +669,8 @@ class ImportStatsOut(BaseModel):
     owned: int = 0  # of them in the library already
     to_download: int = 0  # the rest (an estimate before matching)
     est_bytes: int = 0  # disk space `to_download` takes (320 kbps)
-    free_bytes: int | None = None  # free space on the music disk
+    free_bytes: int | None = None  # free space for staging/hot-cache on the local disk
+    bucket_bytes: int | None = None  # bytes the library occupies in the bucket (no quota on most providers)
     pending: int = 0  # rows not matched yet
     exact: int = 0
     probable: int = 0
@@ -755,6 +756,8 @@ class HealthOut(BaseModel):
     ok: bool
     navidrome: bool
     providers: dict[str, Any] = Field(default_factory=dict)
+    # storage health: backend, bucket availability, library/cache occupancy (degradation never makes ok false)
+    storage: dict[str, Any] = Field(default_factory=dict)
     version: str = "0.1.0"
     today: date | None = None
     # id of the PWA build the Hub serves (index.html <meta name="hm-build">); pages compare it with their own

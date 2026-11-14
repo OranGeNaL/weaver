@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import storage
 from app.api.schemas import HealthOut, SoulseekStatusOut
 from app.auth import admin_user
 from app.config import get_settings
@@ -59,9 +60,36 @@ def web_build(static_dir: Path) -> str | None:
     return _build_cache[1]
 
 
+async def _storage_status() -> dict:
+    try:
+        return await asyncio.wait_for(storage.status(), timeout=5)
+    except Exception as e:
+        log.warning("storage health: %r", e)
+        return {"backend": get_settings().storage_backend, "available": False}
+
+
+async def _library_bytes() -> int:
+    from sqlalchemy import func, select
+
+    from app.db import session_scope
+    from app.models import Blob
+
+    try:
+        async with session_scope() as s:
+            return int((await s.execute(select(func.coalesce(func.sum(Blob.size), 0)))).scalar_one())
+    except Exception:
+        return 0
+
+
 @router.get("/healthz", response_model=HealthOut)
 async def healthz():
-    return HealthOut(ok=True, navidrome=await _navidrome_ok(), web_build=web_build(get_settings().static_dir))
+    # storage degradation is reported, never fatal: clients keep working with the rest of the Hub
+    return HealthOut(
+        ok=True,
+        navidrome=await _navidrome_ok(),
+        storage=await _storage_status(),
+        web_build=web_build(get_settings().static_dir),
+    )
 
 
 @router.get("/api/system/health", response_model=HealthOut)
@@ -77,8 +105,14 @@ async def health(user: User = Depends(admin_user)):
         except Exception as e:
             providers["hitmoz_domain"] = {"ok": False, "error": repr(e)}
     providers["search"] = await smoke_test_providers()
+    status = await _storage_status()
+    status["library_bytes"] = await _library_bytes()
     return HealthOut(
-        ok=True, navidrome=await _navidrome_ok(), providers=providers, web_build=web_build(get_settings().static_dir)
+        ok=True,
+        navidrome=await _navidrome_ok(),
+        providers=providers,
+        storage=status,
+        web_build=web_build(get_settings().static_dir),
     )
 
 

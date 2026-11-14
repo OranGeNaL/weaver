@@ -118,7 +118,9 @@ async def _stats(s: AsyncSession, user_ids: list[int]) -> dict[int, dict[str, An
         if key:
             out[uid][key] = out[uid].get(key, 0) + n
     rows = await s.execute(
-        select(Track.added_by, func.count(Track.id)).where(Track.added_by.in_(user_ids)).group_by(Track.added_by)
+        select(Track.added_by, func.count(Track.id))
+        .where(Track.added_by.in_(user_ids), Track.deleted_at.is_(None))
+        .group_by(Track.added_by)
     )
     for uid, n in rows:
         if uid is not None:
@@ -188,7 +190,7 @@ async def users(_: User = Depends(admin_user), s: AsyncSession = Depends(get_ses
             )
         )
     ).one()
-    tracks = (await s.execute(select(func.count(Track.id)))).scalar_one()
+    tracks = (await s.execute(select(func.count(Track.id)).where(Track.deleted_at.is_(None)))).scalar_one()
     return AdminUsersOut(
         users=out, ai_cost_usd=round(total or 0, 6), ai_cost_30d_usd=round(last30 or 0, 6), library_tracks=tracks
     )

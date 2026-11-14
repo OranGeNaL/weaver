@@ -973,7 +973,12 @@ async def _artist_songs(nd, artist_id: str, name: str) -> list[CatalogTrack]:
                 songs.setdefault(x["id"], x)
     picked = random.sample(list(songs), min(ARTIST_SONGS_MAX, len(songs)))
     async with session_scope() as s:
-        rows = {t.nd_song_id: t for t in (await s.execute(select(Track).where(Track.nd_song_id.in_(picked)))).scalars()}
+        rows = {
+            t.nd_song_id: t
+            for t in (
+                await s.execute(select(Track).where(Track.nd_song_id.in_(picked), Track.deleted_at.is_(None)))
+            ).scalars()
+        }
     out = []
     for sid in picked:
         if (t := rows.get(sid)) is not None:
@@ -1042,7 +1047,9 @@ async def _seed(seed: dict[str, Any], user: User | None = None) -> tuple[Catalog
         raise WaveError(404, "Исполнитель трека не найден")
     if nd := seed.get("nd_song_id"):
         async with session_scope() as s:
-            t = (await s.execute(select(Track).where(Track.nd_song_id == nd).limit(1))).scalar_one_or_none()
+            t = (
+                await s.execute(select(Track).where(Track.nd_song_id == nd, Track.deleted_at.is_(None)).limit(1))
+            ).scalar_one_or_none()
             lt = library_track(t) if t is not None else None
         if lt is None:
             raise WaveError(404, "Песни нет в библиотеке")

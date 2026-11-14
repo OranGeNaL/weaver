@@ -247,6 +247,27 @@ class Settings(BaseSettings):
     def soulseek_enabled(self) -> bool:
         return bool(self.slskd_url and self.slskd_api_key and self.slskd_slsk_username and self.slskd_slsk_password)
 
+    # --- storage (S3 primary; fs is dev/test only) ------------------------------------------------
+    # `s3` stores library bytes in the bucket below, `fs` keeps them on the local disk (never production)
+    storage_backend: Literal["fs", "s3"] = "s3"
+    environment: Literal["development", "production"] = "development"
+    s3_endpoint: str = ""  # e.g. http://rustfs:9000; empty — AWS
+    s3_bucket: str = "homemusic"
+    s3_region: str = "us-east-1"
+    s3_access_key: str = ""
+    s3_secret_key: str = ""
+    s3_path_style: bool = True  # RustFS/MinIO need path-style requests
+    s3_create_bucket: bool = True
+    s3_versioning: bool = True
+    # local objects for `STORAGE_BACKEND=fs` and the hot cache of blobs (streaming, ffprobe, embedder)
+    storage_local_dir: Path | None = None
+    storage_cache_max_bytes: int = 10 * 1024**3
+    # service token of `/api/media/blob/<sha256>` (the embedder's fallback when presign is unavailable)
+    media_blob_token: str = ""
+    media_blob_ttl_s: int = 3600
+    # address the embedder uses for the blob fallback inside the compose network (PUBLIC_HUB_URL may be external)
+    hub_internal_url: str = "http://hub:8080"
+
     # set by tests to skip background workers / scheduled tasks
     disable_background: bool = False
     # how often an import polls Navidrome for the end of its scan (tests set 0)
@@ -256,6 +277,7 @@ class Settings(BaseSettings):
 
     @property
     def library_dir(self) -> Path:
+        """Legacy on-disk library root: from now on only logical paths and exports touch it."""
         return self.music_root / "library"
 
     @property
@@ -264,11 +286,29 @@ class Settings(BaseSettings):
 
     @property
     def trash_dir(self) -> Path:
+        """Legacy trash folder; storage trash is `tracks.deleted_at` now."""
         return self.music_root / ".trash"
 
     @property
     def backups_dir(self) -> Path:
         return self.music_root / ".backups"
+
+    @property
+    def objects_dir(self) -> Path:
+        """Local object store root (fs backend)."""
+        return self.storage_local_dir or (self.data_dir / "storage")
+
+    @property
+    def cache_dir(self) -> Path:
+        return self.data_dir / "cache" / "blobs"
+
+    def validate_storage(self) -> None:
+        """`fs` is a dev/test backend: production must use the bucket."""
+        if self.environment == "production" and self.storage_backend == "fs":
+            raise RuntimeError(
+                "STORAGE_BACKEND=fs недопустим в production: библиотека должна храниться в S3. "
+                "Укажите STORAGE_BACKEND=s3 и параметры бакета"
+            )
 
     @property
     def proxy_hosts(self) -> set[str]:

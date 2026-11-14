@@ -52,6 +52,30 @@ services:
   # it over the compose network as postgres:5432.
   # External Postgres: point DATABASE_URL in .env at it
   # and drop this service.
+  # Library bytes: S3-compatible RustFS by default. An external S3 is used by pointing
+  # S3_ENDPOINT/S3_* in .env at it and dropping this service.
+  rustfs:
+    image: rustfs/rustfs:1.0.0-alpha.80
+    container_name: homemusic_rustfs
+    restart: unless-stopped
+    environment:
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY:-hub}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY in .env}
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+    expose:
+      - "9000"
+    volumes:
+      - rustfs-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    logging: *logging
+
   postgres:
     image: postgres:17
     container_name: homemusic_postgres
@@ -93,6 +117,8 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      rustfs:
+        condition: service_healthy
     ports:
       - "8080:8080"
     env_file: .env
@@ -108,6 +134,17 @@ services:
       NAVIDROME_URL: http://navidrome:4533
       YTDLP_POT_BASE_URL: http://youtube-pot:4416
       YTDLP_CACHE_DIR: /data/yt-dlp-cache
+      # production refuses the dev-only fs backend: library bytes live in the bucket
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-s3}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://rustfs:9000}
+      S3_BUCKET: ${S3_BUCKET:-homemusic}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-hub}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY in .env}
+      S3_PATH_STYLE: ${S3_PATH_STYLE:-true}
+      STORAGE_CACHE_MAX_BYTES: ${STORAGE_CACHE_MAX_BYTES:-10737418240}
+      HUB_INTERNAL_URL: ${HUB_INTERNAL_URL:-http://hub:8080}
     volumes:
       - hub-data:/data
       - ${MUSIC_ROOT}:/music
@@ -178,6 +215,9 @@ services:
       - "8090"
     environment:
       EMBEDDER_TOKEN: ${EMBEDDER_TOKEN:-}
+      # the Hub's /api/media/blob/<sha256> fallback when a presigned URL is unavailable
+      MEDIA_BLOB_TOKEN: ${MEDIA_BLOB_TOKEN:-}
+      HUB_INTERNAL_URL: ${HUB_INTERNAL_URL:-http://hub:8080}
       DATA_DIR: /data
       MODELS_DIR: /models
       HF_HOME: /models/hf
@@ -212,6 +252,7 @@ volumes:
   # Service state lives in named Docker volumes on the Linux host.
   # The Hub writes daily pg_dump backups into MUSIC_ROOT/.backups.
   postgres-data:
+  rustfs-data:
   navidrome-data:
   hub-data:
   embedder-data:

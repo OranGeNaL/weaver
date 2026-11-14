@@ -54,3 +54,35 @@ def test_library_path_stays_inside(tmp_path, path, ok):
     else:
         with pytest.raises(audio.AudioError):
             audio.library_path(tmp_path, path)
+
+
+async def test_service_token_is_sent_only_to_the_hub_blob_endpoint(tmp_path):
+    import httpx
+
+    seen: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.host, request.headers.get("authorization")))
+        return httpx.Response(200, content=tone(440, seconds=2))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        hub = tmp_path / "hub.wav"
+        await audio.download(
+            client,
+            "http://hub.test:8080/api/media/blob/x",
+            hub,
+            max_bytes=2**20,
+            token="svc",
+            hub_url="http://hub.test:8080",
+        )
+        external = tmp_path / "external.wav"
+        await audio.download(
+            client,
+            "https://preview.test/p.mp3",
+            external,
+            max_bytes=2**20,
+            token="svc",
+            hub_url="http://hub.test:8080",
+        )
+    assert seen == [("hub.test", "Bearer svc"), ("preview.test", None)]
+    assert hub.read_bytes() == tone(440, seconds=2) and external.read_bytes() == tone(440, seconds=2)

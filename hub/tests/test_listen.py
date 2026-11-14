@@ -789,7 +789,10 @@ async def test_file_without_http_audio_plays_from_a_local_copy(env, tmp_path):
     r = await c.get("/api/listen/stream", params={"ref": "file:soundcloud:5"})
     assert r.status_code == 200 and r.content == AUDIO
     assert sc.fetched == 1
-    assert len(list((env["music"] / "staging" / listen.LOCAL_DIR).glob("*/*.mp3"))) == 1
+    from app.config import get_settings
+
+    local_root = get_settings().data_dir / "cache" / listen.LOCAL_DIR
+    assert len(list(local_root.glob("*/*.mp3"))) == 1
 
 
 def test_local_copies_are_pruned(tmp_path, monkeypatch):

@@ -4,6 +4,7 @@ import asyncio
 import json
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 import numpy as np
@@ -29,9 +30,29 @@ def library_path(music_root: Path, path: str) -> Path:
     return full
 
 
-async def download(client: httpx.AsyncClient, url: str, dest: Path, *, max_bytes: int) -> None:
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def is_hub_blob_url(url: str, hub_url: str) -> bool:
+    """True only for `<hub>/api/media/blob/...`: the service token must never reach an external host."""
     try:
-        async with client.stream("GET", url) as r:
+        target, hub = urlsplit(url), urlsplit(hub_url)
+    except ValueError:
+        return False
+    if target.scheme != hub.scheme or target.hostname != hub.hostname:
+        return False
+    if (target.port or _DEFAULT_PORTS.get(target.scheme)) != (hub.port or _DEFAULT_PORTS.get(hub.scheme)):
+        return False
+    base = hub.path.rstrip("/")
+    return target.path.startswith(base + "/api/media/blob/")
+
+
+async def download(
+    client: httpx.AsyncClient, url: str, dest: Path, *, max_bytes: int, token: str = "", hub_url: str = ""
+) -> None:
+    headers = {"Authorization": f"Bearer {token}"} if token and is_hub_blob_url(url, hub_url) else None
+    try:
+        async with client.stream("GET", url, headers=headers) as r:
             if r.status_code >= 500 or r.status_code == 429:
                 raise AudioError(f"HTTP {r.status_code}", retry=True)
             if r.status_code >= 400:
@@ -84,7 +105,16 @@ async def decode(path: Path, *, sr: int, clip_s: float) -> np.ndarray:
 
 
 async def load(
-    client: httpx.AsyncClient, kind: str, source: str, *, music_root: Path, sr: int, clip_s: float, max_bytes: int
+    client: httpx.AsyncClient,
+    kind: str,
+    source: str,
+    *,
+    music_root: Path,
+    sr: int,
+    clip_s: float,
+    max_bytes: int,
+    token: str = "",
+    hub_url: str = "",
 ) -> np.ndarray:
     if kind == "path":
         p = library_path(music_root, source)
@@ -93,5 +123,5 @@ async def load(
         return await decode(p, sr=sr, clip_s=clip_s)
     with tempfile.TemporaryDirectory(prefix="emb-") as tmp:
         f = Path(tmp) / "audio"
-        await download(client, source, f, max_bytes=max_bytes)
+        await download(client, source, f, max_bytes=max_bytes, token=token, hub_url=hub_url)
         return await decode(f, sr=sr, clip_s=clip_s)

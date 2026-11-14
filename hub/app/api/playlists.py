@@ -55,7 +55,13 @@ async def add(
 ):
     ids = cast(list[str], list(body.song_ids))
     if body.library_track_ids:
-        rows = (await s.execute(select(Track.id, Track.nd_song_id).where(Track.id.in_(body.library_track_ids)))).all()
+        rows = (
+            await s.execute(
+                select(Track.id, Track.nd_song_id).where(
+                    Track.id.in_(body.library_track_ids), Track.deleted_at.is_(None)
+                )
+            )
+        ).all()
         by_id = dict(rows)
         ids += [cast(str, by_id[i]) for i in body.library_track_ids if by_id.get(i)]
     if not ids:

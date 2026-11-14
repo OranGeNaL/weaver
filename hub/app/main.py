@@ -33,12 +33,18 @@ def _import_handlers() -> None:
 async def lifespan(app: FastAPI):
     s = get_settings()
     setup_logging(s.log_level)
-    for d in (s.library_dir, s.staging_dir, s.trash_dir, s.backups_dir):
+    s.validate_storage()  # `fs` must not run as production
+    for d in (s.staging_dir, s.backups_dir, s.cache_dir):
         d.mkdir(parents=True, exist_ok=True)
+    if s.storage_backend == "fs":
+        s.objects_dir.mkdir(parents=True, exist_ok=True)
     db.init_engine()  # fails with a clear error without DATABASE_URL
     await db.connect_with_retry()
     await db.ensure_search_locale()
     await asyncio.to_thread(db.run_migrations)
+    from app import storage
+
+    await storage.startup()
 
     from app import listen
     from app.housekeeping import scheduler_loop
@@ -70,6 +76,9 @@ async def lifespan(app: FastAPI):
             t.cancel()
         await pool.stop()
         await listen.reset()
+        from app import storage as storage_layer
+
+        storage_layer.reset()
         await wave.reset()
         await smart.reset()
         await svc.stop()
@@ -87,6 +96,7 @@ def create_app() -> FastAPI:
         insights,
         library,
         listen,
+        media,
         medialib,
         mixes,
         playlists,
@@ -113,6 +123,7 @@ def create_app() -> FastAPI:
         downloads.router,
         listen.router,
         library.router,
+        media.router,
         medialib.router,
         uploads.router,
         playlists.router,

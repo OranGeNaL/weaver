@@ -383,7 +383,7 @@ async def test_economy_import_likes_and_playlists_in_order(env):
     }
 
 
-async def test_likes_are_downloaded_from_the_oldest(env):
+async def test_all_likes_are_downloaded_once(env):
     from app.catalog.models import CatalogTrack
     from app.imports.sources.base import SnapCollection, SnapItem, Snapshot
     from app.services import svc
@@ -408,11 +408,10 @@ async def test_likes_are_downloaded_from_the_oldest(env):
         f"/api/imports/{imp['id']}/start", json={"collection_ids": [imp["collections"][0]["id"]], "mode": "full"}
     )
     await run_imports()
-    # a downloaded like lands on top of «Понравившиеся»: so the oldest goes first
-    assert [d["title"] for d in reversed((await c.get("/api/downloads")).json())] == [
-        "Группа крови",
-        "Звезда по имени Солнце",
-    ]
+    # the Navidrome «Понравившиеся» order is not preserved any more (the server is being decommissioned):
+    # every like is downloaded exactly once, in any completion order
+    titles = [d["title"] for d in (await c.get("/api/downloads")).json()]
+    assert sorted(titles) == sorted(["Группа крови", "Звезда по имени Солнце"])
 
 
 async def test_full_import_downloads_in_the_background(env):

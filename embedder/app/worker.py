@@ -112,6 +112,8 @@ class Worker:
                     sr=self.sr,
                     clip_s=self.s.clip_s,
                     max_bytes=self.s.max_download_mb * 2**20,
+                    token=self.s.media_blob_token,
+                    hub_url=self.s.hub_internal_url,
                 )
             except audio.AudioError as e:
                 self._fail(it.key, str(e), retry=e.retry)

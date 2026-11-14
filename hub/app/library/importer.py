@@ -1,5 +1,7 @@
-"""Import an audio file into MUSIC_ROOT/library: album row, tags, atomic move, Track row (PLAN 8.4).
+"""Import an audio file into the library: album row, immutable blob, Track row (PLAN 8.4).
 
+The original bytes are hashed and uploaded to the object store unchanged: no tags are written on import, so the
+same file imported twice yields one blob shared by both tracks. The staging file stays where the caller put it.
 Navidrome is not notified here: callers enqueue an `nd_scan` job (coalesced) that scans and links nd ids.
 """
 
@@ -7,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import shutil
 import uuid
 from datetime import date, datetime
@@ -20,10 +21,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.library import tagger
-from app.library.layout import album_dirname, next_version_path, sanitize_component, track_filename, unique_path
+from app.library.layout import album_dirname, sanitize_component, track_filename, version_suffixed
 from app.library.tagger import ReleaseType
 from app.matching.normalize import fingerprint, normalize_artist, normalize_title
 from app.models import Album, Track, utcnow
+from app.storage import blobs
 
 log = logging.getLogger(__name__)
 
@@ -152,41 +154,71 @@ def tagdata_for(
     )
 
 
-def _move(src: Path, dest: Path) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.replace(src, dest)
-    except OSError:
-        shutil.move(str(src), str(dest))
-
-
-def _write_cover_file(album_dir: Path, cover: bytes) -> None:
-    album_dir.mkdir(parents=True, exist_ok=True)
-    tmp = album_dir / ".cover.jpg.part"
-    tmp.write_bytes(cover)
-    os.replace(tmp, album_dir / "cover.jpg")
-
-
 def is_original(source_date: date | None, explicit: bool | None) -> bool:
     """Pre-censorship upload or explicit version: never replaced automatically (PLAN 8.6)."""
     cutoff = get_settings().cfg.matching.original_before
     return bool(explicit) or (source_date is not None and source_date < cutoff)
 
 
+def _cover_relpath(album: Album) -> str:
+    return (album_reldir(album) / "cover.jpg").as_posix()
+
+
+def manifest_payload(track: Track, album: Album, sha256: str) -> dict[str, object]:
+    """What `manifests/<sha256>/<uid>.json` keeps: enough to rebuild the track's metadata without the DB."""
+    return {
+        "sha256": sha256,
+        "uid": track.uid,
+        "album_uid": album.uid,
+        "artist": track.artist,
+        "title": track.title,
+        "album": track.album,
+        "album_artist": track.album_artist,
+        "track_no": track.track_no,
+        "disc_no": track.disc_no,
+        "year": track.year,
+        "genre": track.genre,
+        "isrc": track.isrc,
+        "duration_s": track.duration_s,
+        "source": track.source,
+        "source_url": track.source_url,
+        "deezer_track_id": track.deezer_track_id,
+        "deezer_album_id": album.deezer_album_id,
+    }
+
+
+async def logical_path_free(s: AsyncSession, rel: PurePosixPath) -> bool:
+    return (await s.execute(select(Track.id).where(Track.path == rel.as_posix()).limit(1))).scalar_one_or_none() is None
+
+
+async def unique_logical_path(s: AsyncSession, rel: PurePosixPath, *, force: bool = False) -> PurePosixPath:
+    """A logical path unique within the library; `force` puts a re-download next to the old one as `[vN]`."""
+    if await logical_path_free(s, rel):
+        return rel
+    stem, ext = rel.stem, rel.suffix
+    n = 2
+    while True:
+        candidate = rel.with_name(version_suffixed(rel.name, n) if force else f"{stem} ({n}){ext}")
+        if await logical_path_free(s, candidate):
+            return candidate
+        n += 1
+
+
 async def import_file(s: AsyncSession, src: Path, spec: ImportSpec) -> Track:
-    """Tag `src` (a file in staging/), move it into the library and create the Track row (caller commits)."""
+    """Hash `src` (a staging file), upload it as a blob and create the Track row (caller commits)."""
     async with library_lock:
         album = await get_or_create_album(s, spec)
-        cover = tagger.prepare_cover(spec.cover) if spec.cover else None
-        album_dir_rel = album_reldir(album)
-        album_dir = library_abs(album_dir_rel)
-        if cover is None and (album_dir / "cover.jpg").is_file():
-            cover = (album_dir / "cover.jpg").read_bytes()
+        cover = await asyncio.to_thread(tagger.prepare_cover, spec.cover) if spec.cover else None
+        sha256, size = await asyncio.to_thread(blobs.sha256_file, src)
+
+        ext = src.suffix.lstrip(".").lower() or "mp3"
+        name = track_filename(spec.disc_no, spec.track_no, spec.title, ext)
+        rel = await unique_logical_path(s, PurePosixPath(album_reldir(album), name), force=spec.force)
 
         track = Track(
             uid=str(uuid.uuid4()),
             album_id=album.id,
-            path="",
+            path=rel.as_posix(),
             artist=spec.artist,
             title=spec.title,
             album=album.title,
@@ -211,32 +243,35 @@ async def import_file(s: AsyncSession, src: Path, spec: ImportSpec) -> Track:
             added_by=spec.added_by,
         )
 
-        await asyncio.to_thread(
-            tagger.write_tags,
-            src,
-            tagdata_for(track, album, cover=cover, artists=spec.artists, track_total=spec.track_total),
-        )
+        metadata = {
+            "sha256": sha256,
+            "uid": track.uid,
+            "artist": spec.artist,
+            "title": spec.title,
+            "album": album.title,
+        }
+        blob = await blobs.store_audio(s, src, metadata=metadata, sha256=sha256, size=size)
+        track.blob_id = blob.id
 
-        ext = src.suffix.lstrip(".").lower() or "mp3"
-        name = track_filename(spec.disc_no, spec.track_no, spec.title, ext)
-        dest = album_dir / name
-        if dest.exists():
-            dest = next_version_path(dest) if spec.force else unique_path(album_dir, name)
-        await asyncio.to_thread(_move, src, dest)
-        if cover and not (album_dir / "cover.jpg").is_file():
-            await asyncio.to_thread(_write_cover_file, album_dir, cover)
-            album.cover_path = (album_dir_rel / "cover.jpg").as_posix()
+        if cover is not None:
+            cover_blob = await blobs.store_cover(s, cover)
+            if album.cover_blob_id is None:
+                album.cover_blob_id = cover_blob.id
+                album.cover_path = _cover_relpath(album)
 
-        track.path = PurePosixPath(album_dir_rel, dest.name).as_posix()
         s.add(track)
         await s.flush()
-        log.info("imported %s", track.path, extra={"user_id": spec.added_by})
+        await blobs.write_manifest(sha256, track.uid, manifest_payload(track, album, sha256))
+        log.info("imported %s as blob %s", track.path, sha256[:12], extra={"user_id": spec.added_by})
         return track
 
 
 def staging_dir_for(kind: str, key: str | int) -> Path:
     d = get_settings().staging_dir / kind / str(key)
-    d.mkdir(parents=True, exist_ok=True)
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise RuntimeError(f"cannot create staging directory {d}: {e}") from e
     return d
 
 

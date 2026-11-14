@@ -75,7 +75,7 @@ async def _song_of_ref(session: AsyncSession, ref: str) -> str | None:
         nd = (
             await session.execute(
                 select(Track.nd_song_id)
-                .where(Track.deezer_track_id == id_, Track.nd_song_id.is_not(None))
+                .where(Track.deezer_track_id == id_, Track.nd_song_id.is_not(None), Track.deleted_at.is_(None))
                 .order_by(Track.id.desc())
                 .limit(1)
             )
@@ -86,7 +86,11 @@ async def _song_of_ref(session: AsyncSession, ref: str) -> str | None:
     by_download = (
         select(Track.nd_song_id)
         .join(DownloadItem, DownloadItem.track_id == Track.id)
-        .where(DownloadItem.query_json["meta"]["track_ref"].astext == ref, Track.nd_song_id.is_not(None))
+        .where(
+            DownloadItem.query_json["meta"]["track_ref"].astext == ref,
+            Track.nd_song_id.is_not(None),
+            Track.deleted_at.is_(None),
+        )
         .order_by(DownloadItem.id.desc())
         .limit(1)
     )
@@ -96,7 +100,7 @@ async def _song_of_ref(session: AsyncSession, ref: str) -> str | None:
     by_import = (
         select(Track.nd_song_id)
         .join(ImportItem, ImportItem.track_id == Track.id)
-        .where(ImportItem.ref == ref, Track.nd_song_id.is_not(None))
+        .where(ImportItem.ref == ref, Track.nd_song_id.is_not(None), Track.deleted_at.is_(None))
         .order_by(ImportItem.id.desc())
         .limit(1)
     )
@@ -106,7 +110,12 @@ async def _song_of_ref(session: AsyncSession, ref: str) -> str | None:
 async def _ref_of_song(s: AsyncSession, nd_song_id: str) -> str | None:
     """The catalog track of a library song."""
     t = (
-        await s.execute(select(Track).where(Track.nd_song_id == nd_song_id).order_by(Track.id.desc()).limit(1))
+        await s.execute(
+            select(Track)
+            .where(Track.nd_song_id == nd_song_id, Track.deleted_at.is_(None))
+            .order_by(Track.id.desc())
+            .limit(1)
+        )
     ).scalar_one_or_none()
     if t is None:
         return None
@@ -152,7 +161,7 @@ class Ids:
         for tr in (
             await self.s.execute(
                 select(Track)
-                .where(or_(Track.nd_song_id.in_(songs), Track.deezer_track_id.in_(dz)))
+                .where(or_(Track.nd_song_id.in_(songs), Track.deezer_track_id.in_(dz)), Track.deleted_at.is_(None))
                 .order_by(Track.id.desc())
             )
         ).scalars():
@@ -169,7 +178,11 @@ class Ids:
                 await self.s.execute(
                     select(column, Track.nd_song_id)
                     .join(Track, model.track_id == Track.id)
-                    .where(or_(column.in_(refs), Track.nd_song_id.in_(songs)), Track.nd_song_id.is_not(None))
+                    .where(
+                        or_(column.in_(refs), Track.nd_song_id.in_(songs)),
+                        Track.nd_song_id.is_not(None),
+                        Track.deleted_at.is_(None),
+                    )
                     .order_by(model.id.desc())
                 )
             ).all()
@@ -220,7 +233,9 @@ class Recorded:
 async def _track_length(s: AsyncSession, nd_song_id: str, duration_s: float | None) -> timedelta:
     if not duration_s:
         duration_s = (
-            await s.execute(select(Track.duration_s).where(Track.nd_song_id == nd_song_id).limit(1))
+            await s.execute(
+                select(Track.duration_s).where(Track.nd_song_id == nd_song_id, Track.deleted_at.is_(None)).limit(1)
+            )
         ).scalar_one_or_none()
     return timedelta(seconds=min(float(duration_s or 0), 3600))
 
@@ -251,7 +266,12 @@ async def _listening_metadata(s: AsyncSession, e: PlayEventIn, nd: str | None) -
         provenance = {key: "client" for key in data}
     if nd:
         track = (
-            await s.execute(select(Track).where(Track.nd_song_id == nd).order_by(Track.id.desc()).limit(1))
+            await s.execute(
+                select(Track)
+                .where(Track.nd_song_id == nd, Track.deleted_at.is_(None))
+                .order_by(Track.id.desc())
+                .limit(1)
+            )
         ).scalar_one_or_none()
         if track:
             for key, value in {

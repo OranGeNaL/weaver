@@ -695,9 +695,9 @@ async def handle_scan(job: Job) -> None:
         log.warning("navidrome scan: %s tracks still not found in Navidrome", still)
 
 
-def _same_path(nd_path: str | None, rel: str) -> bool:
+def _same_path(nd_path: str | None, rel: str | None) -> bool:
     """Navidrome reports the real path with its music folder prefix (e.g. `/music/Artist/...`)."""
-    if not nd_path:
+    if not nd_path or not rel:
         return False
     nd_path, rel = _nfc(nd_path), _nfc(rel)
     return nd_path == rel or nd_path.endswith("/" + rel)

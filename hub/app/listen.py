@@ -41,7 +41,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, NamedTuple, cast
 
 import httpx
 from sqlalchemy import select
@@ -62,10 +62,12 @@ from app.jobs.downloads import (
 )
 from app.library.owned import find_existing
 from app.matching.select import rank_candidates
-from app.models import Track
+from app.models import Blob, Track
 from app.net import Priority, in_background, make_client, priority_context
 from app.providers.base import FILE_REF, Candidate, StreamSource, TrackQuery, file_ref
 from app.services import svc
+from app.storage import backend as storage_backend
+from app.storage import cache as storage_cache
 
 log = logging.getLogger(__name__)
 
@@ -84,7 +86,7 @@ HEARD_CHECK_WAIT_S = 10  # a download waits this long for the check of the file 
 PREFETCH_WORKERS = 3
 PREFETCH_MAX = 40  # tracks per user
 _PLAYABLE_TYPES = ("audio/", "video/")  # googlevideo may label audio-only formats video/*
-LOCAL_DIR = "listen"  # under staging: server copies, and copies of files of sources without plain HTTP audio
+LOCAL_DIR = "listen"  # under DATA_DIR/cache: server copies, and copies of files without plain HTTP audio
 LOCAL_KEEP_S = MEM_TTL_S  # a copy, since its last use
 LOCAL_MAX_BYTES = 500 * 2**20
 LOCAL_MEDIA_TYPES = {
@@ -125,7 +127,10 @@ class Choice:
     alternates: list[Candidate] = field(default_factory=list)  # "full": next files when `candidate` doesn't open
     query: dict | None = None  # catalog query + deezer_track_id (the library check of a remembered pick)
     pquery: dict | None = None  # the query the providers were searched with (Cyrillic original)
-    path: Path | None = None  # kind "library"
+    path: Path | None = None  # kind "library": a cached local copy once known
+    sha256: str | None = None  # kind "library": the immutable blob address
+    blob_size: int | None = None  # kind "library": its size
+    media_type: str | None = None  # kind "library": by the logical file name
     nd_song_id: str | None = None  # kind "library", once Navidrome has scanned the file
     source: StreamSource | None = None  # upstream that opened last (URL after redirects); renewed when it fails
     local: Path | None = None  # "full" from a source without plain HTTP audio: the copy the Hub downloaded
@@ -236,7 +241,10 @@ async def choose(ref: str, *, background: bool = False, stale: Choice | None = N
 
 
 def _usable(c: Choice) -> bool:
-    # an owned file Navidrome hadn't scanned yet is looked up again: its song id makes ♥ work
+    # an owned blob is playable while the bucket has it; a cached copy makes it cheap
+    if c.kind == "library":
+        # an unscanned track is looked up again: its Navidrome song id makes ♥ work
+        return bool(c.nd_song_id) and (c.path is None or c.path.is_file())
     return c.path is None or (c.path.is_file() and bool(c.nd_song_id))
 
 
@@ -254,12 +262,7 @@ async def open_media(
     lite = quality == MOBILE
     for retry in (False, True):
         if c.kind == "library":
-            assert c.path is not None
-            return (
-                await _lighten(c, Media(c, path=c.path), c.path, _library_ident(c.path), ahead)
-                if lite
-                else Media(c, path=c.path)
-            )
+            return await _library_media(c, range_header, lite=lite, ahead=ahead)
         if _downloads_only(c):
             await _predownload(c)
             _heard(c)
@@ -295,9 +298,74 @@ async def open_media(
     return media
 
 
-def _library_ident(path: Path) -> str:
+def _blob_ident(c: Choice) -> str:
+    assert c.sha256 is not None
+    return f"blob|{c.sha256}|{c.blob_size}"
+
+
+def _path_ident(path: Path) -> str:
     st = path.stat()
     return f"lib|{path}|{st.st_size}|{st.st_mtime_ns}"
+
+
+def _parse_range(header: str | None, size: int) -> tuple[int, int | None, bool]:
+    """(start, end, partial) of a single `bytes=` Range; a whole file when there is none."""
+    if not header or not header.startswith("bytes="):
+        return 0, None, False
+    spec = header[len("bytes=") :].split(",", 1)[0].strip()
+    first, _, last = spec.partition("-")
+    try:
+        if not first:  # suffix range: last N bytes
+            n = int(last or 0)
+            return max(0, size - n), size - 1, True
+        start = int(first)
+        end = int(last) if last else None
+    except ValueError:
+        return 0, None, False  # a malformed Range is served as the whole file, not 500
+    if end is not None and end >= size:
+        end = size - 1
+    return start, end, True
+
+
+async def _library_media(c: Choice, range_header: str | None, *, lite: bool, ahead: bool) -> Media:
+    """A library blob: cache-first; a miss is proxied from S3 by Range while the cache fills in the background."""
+    media_type = c.media_type or "audio/mpeg"
+    if c.sha256 is None:
+        # a row from before the blob model: the old on-disk library still plays
+        assert c.path is not None
+        if lite:
+            return await _lighten(c, Media(c, path=c.path, media_type=media_type), c.path, _path_ident(c.path), ahead)
+        return Media(c, path=c.path, media_type=media_type)
+    sha = c.sha256
+    assert c.blob_size is not None
+    cache = storage_cache()
+    hit = cache.cached(sha)
+    if lite:
+        src = hit or await cache.ensure(storage_backend(), sha, expected_size=c.blob_size)
+        c.path = src
+        return await _lighten(c, Media(c, path=src, media_type=media_type), src, _blob_ident(c), ahead)
+    if hit is not None:
+        c.path = hit
+        await cache.touch(sha)
+        return Media(c, path=hit, media_type=media_type, headers={"etag": sha})
+    if await storage_backend().head(f"audio/{sha}") is None:
+        raise ListenError(404, "Файла нет в хранилище")
+    # fill the cache in the background; this request is proxied straight from the bucket
+    fill = asyncio.create_task(cache.ensure(storage_backend(), sha, expected_size=c.blob_size))
+    _tasks.add(fill)
+    fill.add_done_callback(_tasks.discard)
+    start, end, partial = _parse_range(range_header, c.blob_size)
+    if start >= c.blob_size:
+        return Media(c, status=416, headers={"content-range": f"bytes */{c.blob_size}"}, media_type=media_type)
+    headers = {
+        "content-length": str(c.blob_size if end is None else end - start + 1),
+        "content-range": f"bytes {start}-{(c.blob_size - 1) if end is None else end}/{c.blob_size}" if partial else "",
+        "etag": sha,
+    }
+    headers = {k: v for k, v in headers.items() if v}
+    body = storage_backend().iter_range(f"audio/{sha}", start, end)
+    _heard(c)
+    return Media(c, body=body, status=206 if partial else 200, headers=headers, media_type=media_type)
 
 
 def _file_ident(c: Choice) -> str:
@@ -352,8 +420,14 @@ async def _make_light(c: Choice, cp: _Copy) -> None:
 async def _light_source(c: Choice) -> tuple[Path, str] | None:
     """The file the light copy of a pick is made from, ready to be read (a catalog track: its server copy is loaded
     in the background first); None: nothing to make (a preview, a copy that did not load)."""
+    if c.kind == "library" and c.sha256 is not None and c.blob_size is not None:
+        path = storage_cache().cached(c.sha256) or await storage_cache().ensure(
+            storage_backend(), c.sha256, expected_size=c.blob_size
+        )
+        c.path = path
+        return path, _blob_ident(c)
     if c.kind == "library" and c.path is not None:
-        return c.path, _library_ident(c.path)
+        return c.path, _path_ident(c.path)
     if c.kind != "full":
         return None
     if _downloads_only(c):
@@ -679,12 +753,24 @@ async def _resolve_file(ref: str, *, probe: bool, remembered: bool) -> Choice:
 async def _resolve_song(ref: str, song_id: str) -> Choice:
     """A song only the library has (`nd:<song>`, in a mix): its file."""
     async with session_scope() as s:
-        t = (await s.execute(select(Track).where(Track.nd_song_id == song_id).limit(1))).scalar_one_or_none()
-        found = (t.path, t.artist, t.title, t.duration_s) if t else None
-    path = get_settings().library_dir / found[0] if found else None
-    if not found or not path or not path.is_file():
+        t = (
+            await s.execute(select(Track).where(Track.nd_song_id == song_id, Track.deleted_at.is_(None)).limit(1))
+        ).scalar_one_or_none()
+        found = await _library_ref(s, t)
+    if t is None or found is None:
         raise ListenError(404, "Песни нет в библиотеке")
-    choice = Choice(ref, "library", found[1], found[2], found[3], path=path, nd_song_id=song_id)
+    choice = Choice(
+        ref,
+        "library",
+        t.artist,
+        t.title,
+        t.duration_s,
+        path=found.local_path,
+        sha256=found.sha256,
+        blob_size=found.size,
+        media_type=found.media_type,
+        nd_song_id=song_id,
+    )
     _choices[ref] = choice
     return choice
 
@@ -700,9 +786,9 @@ async def _resolve_deezer(ref: str, id_: str, probe: bool, *, full_only: bool = 
     q = query_from_track(t)
     query = {**q.model_dump(), "deezer_track_id": t.id}
     # An owned song never waits for optional album/name metadata from external services.
-    path, nd_song_id = await _library_file(query)
-    if path:
-        return Choice(ref, "library", q.artist, q.title, q.duration_s, path=path, nd_song_id=nd_song_id, query=query)
+    found = await _library_track(query)
+    if found is not None:
+        return _library_choice(ref, q.artist, q.title, q.duration_s, found, query=query)
 
     # the same steps as handle_download_item: Cyrillic original, source order, ranking
     try:
@@ -754,9 +840,9 @@ async def _resolve_deezer(ref: str, id_: str, probe: bool, *, full_only: bool = 
             trouble.append(f"{p.name}: файлы не открываются")
 
     # A queued heart may have finished importing while these sources were being searched.
-    path, nd_song_id = await _library_file(query)
-    if path:
-        return Choice(ref, "library", q.artist, q.title, q.duration_s, path=path, nd_song_id=nd_song_id, query=query)
+    found = await _library_track(query)
+    if found is not None:
+        return _library_choice(ref, q.artist, q.title, q.duration_s, found, query=query)
     choice = Choice(ref, "preview", q.artist, q.title, PREVIEW_S, query=query, transient=bool(trouble))
     if t.preview_url and (full_only or not probe or await _opens_bounded(choice)):
         return choice
@@ -824,8 +910,37 @@ async def _resolve_hitmoz(ref: str, id_: str, probe: bool) -> Choice:
     return choice
 
 
-async def _library_file(query: dict) -> tuple[Path | None, str | None]:
-    """The owned file of this track and its Navidrome song id."""
+class _LibraryTrack(NamedTuple):
+    sha256: str | None
+    size: int | None
+    nd_song_id: str | None
+    logical_path: str | None
+    media_type: str
+    local_path: Path | None  # a pre-blob row, still served from the old on-disk library
+
+
+def _logical_media_type(path: str | None) -> str:
+    return LOCAL_MEDIA_TYPES.get(Path(path or "").suffix.lower(), "audio/mpeg")
+
+
+async def _library_ref(s, t: Track | None) -> _LibraryTrack | None:
+    """Blob address of the track; a legacy row without one falls back to its local file when it still exists."""
+    if t is None or t.deleted_at is not None:
+        return None
+    media_type = _logical_media_type(t.path)
+    if t.blob_id is not None:
+        blob = await s.get(Blob, t.blob_id)
+        if blob is not None:
+            return _LibraryTrack(blob.sha256, blob.size, t.nd_song_id, t.path, media_type, None)
+    if t.path:
+        legacy = get_settings().library_dir / Path(*t.path.split("/"))
+        if legacy.is_file():
+            return _LibraryTrack(None, None, t.nd_song_id, t.path, media_type, legacy)
+    return None
+
+
+async def _library_track(query: dict) -> _LibraryTrack | None:
+    """What the owned track plays as: its blob address, Navidrome id and logical file name."""
     async with session_scope() as s:
         t = await find_existing(
             s,
@@ -835,9 +950,25 @@ async def _library_file(query: dict) -> tuple[Path | None, str | None]:
             isrc=query.get("isrc"),
             deezer_track_id=query.get("deezer_track_id"),
         )
-        rel, nd_song_id = (t.path, t.nd_song_id) if t else (None, None)
-    path = get_settings().library_dir / rel if rel else None
-    return (path, nd_song_id) if path and path.is_file() else (None, None)
+        return await _library_ref(s, t)
+
+
+def _library_choice(
+    ref: str, artist: str, title: str, duration_s: int | None, found: _LibraryTrack, *, query: dict | None = None
+) -> Choice:
+    return Choice(
+        ref,
+        "library",
+        artist,
+        title,
+        duration_s,
+        path=found.local_path,
+        sha256=found.sha256,
+        blob_size=found.size,
+        media_type=found.media_type,
+        nd_song_id=found.nd_song_id,
+        query=query,
+    )
 
 
 async def _opens(choice: Choice) -> bool:
@@ -926,7 +1057,7 @@ async def _fetch_local(ref: str, cand: Candidate) -> Path:
     if provider is None:
         raise ListenError(404, "Источник отключён")
     t0 = time.monotonic()
-    root = get_settings().staging_dir / LOCAL_DIR
+    root = get_settings().data_dir / "cache" / LOCAL_DIR
     await asyncio.to_thread(prune_local, root, _busy_dirs() - {_local_name(ref)})
     dest = root / _local_name(ref)
     try:
@@ -940,7 +1071,7 @@ async def _fetch_local(ref: str, cand: Candidate) -> Path:
 
 
 def _local_name(ref: str) -> str:
-    return hashlib.sha1(ref.encode()).hexdigest()[:16]
+    return hashlib.sha256(ref.encode()).hexdigest()[:16]
 
 
 def prune_local(root: Path, busy: set[str], now: float | None = None) -> None:
@@ -959,7 +1090,10 @@ def prune_local(root: Path, busy: set[str], now: float | None = None) -> None:
     for used, size, d in sorted(dirs, key=lambda x: x[0]):
         if now - used < LOCAL_KEEP_S and total <= LOCAL_MAX_BYTES:
             break
-        shutil.rmtree(d, ignore_errors=True)
+        try:
+            shutil.rmtree(d, ignore_errors=True)
+        except OSError:
+            continue
         total -= size
 
 
@@ -986,7 +1120,9 @@ def _server_copy(c: Choice, *, background: bool) -> _Copy:
         del _copies[ref]
     assert c.candidate is not None
     cp = _Copy(
-        c.candidate, get_settings().staging_dir / LOCAL_DIR / _local_name(c.ref) / COPY_NAME, Priority(background)
+        c.candidate,
+        get_settings().data_dir / "cache" / LOCAL_DIR / _local_name(c.ref) / COPY_NAME,
+        Priority(background),
     )
     cp.task = _spawn(_download_copy(c, cp), prio=cp.prio)
     _copies[c.ref] = cp
@@ -1366,9 +1502,7 @@ async def _remembered(ref: str, *, library: bool = True) -> Choice | None:
     ):
         return None  # picked before a preferred source was added (YouTube after SoundCloud for Russian tracks)
     if library and c.query:
-        path, nd_song_id = await _library_file(c.query)
-        if path:
-            return Choice(
-                ref, "library", c.artist, c.title, c.duration_s, path=path, nd_song_id=nd_song_id, query=c.query
-            )
+        found = await _library_track(c.query)
+        if found is not None:
+            return _library_choice(ref, c.artist, c.title, c.duration_s, found, query=c.query)
     return c

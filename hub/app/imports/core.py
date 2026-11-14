@@ -70,9 +70,28 @@ async def get_import(s: AsyncSession, import_id: int) -> Import | None:
 
 
 def _free_bytes() -> int | None:
+    """Free space of the local staging/hot-cache volume (the bucket has no standard free-space API)."""
     try:
-        return shutil.disk_usage(get_settings().music_root).free
+        return shutil.disk_usage(get_settings().staging_dir).free
     except OSError:
+        return None
+
+
+async def _bucket_bytes() -> int | None:
+    """How many bytes the library occupies in the bucket; a provider quota, when it exists, is not an S3 API."""
+    from sqlalchemy import func, select
+
+    from app.db import session_scope
+    from app.models import Blob
+
+    try:
+        async with session_scope() as s:
+            return int(
+                (
+                    await s.execute(select(func.coalesce(func.sum(Blob.size), 0)).where(Blob.status == "committed"))
+                ).scalar_one()
+            )
+    except Exception:
         return None
 
 
@@ -89,7 +108,7 @@ async def stats(s: AsyncSession, imp: Import, colls: list[ImportCollection]) -> 
             ).where(ImportItem.import_id == imp.id)
         )
     ).all()
-    out = ImportStatsOut(free_bytes=_free_bytes())
+    out = ImportStatsOut(free_bytes=_free_bytes(), bucket_bytes=await _bucket_bytes())
     tracks: dict[str, tuple[str | None, str, dict]] = {}
     for cid, ext, match, status, raw in rows:
         if cid in selected and status != "skipped":

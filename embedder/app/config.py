@@ -18,6 +18,10 @@ class Settings:
     music_root: Path = field(default_factory=lambda: Path(_env("MUSIC_ROOT", "/music")))
     # empty: no auth (the service is reachable only from the compose network)
     token: str = field(default_factory=lambda: _env("EMBEDDER_TOKEN", ""))
+    # service token of the Hub's /api/media/blob/<sha256> fallback (no presigned URL, e.g. fs backend);
+    # sent only to this Hub, never to catalog/preview hosts
+    media_blob_token: str = field(default_factory=lambda: _env("MEDIA_BLOB_TOKEN", ""))
+    hub_internal_url: str = field(default_factory=lambda: _env("HUB_INTERNAL_URL", "http://hub:8080"))
     # muq-mulan | fake (tests, a machine without a GPU)
     model: str = field(default_factory=lambda: _env("EMBEDDER_MODEL", "muq-mulan"))
     model_repo: str = field(default_factory=lambda: _env("EMBEDDER_MODEL_REPO", "OpenMuQ/MuQ-MuLan-large"))

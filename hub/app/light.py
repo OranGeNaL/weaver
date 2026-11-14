@@ -4,7 +4,7 @@ A file above `HEAVY_KBPS` (mp3 320, flac, heavy aac) is re-encoded by ffmpeg to 
 half the bytes at a sound that is hard to tell apart. A file at or below the threshold is served as it is: encoding
 lossy audio again only costs quality, and the file is light already.
 
-Copies live on disk under staging (`LIGHT_DIR`), a file per source (named by a hash of what identifies the source
+Copies live in the local hot-cache (`DATA_DIR/cache/listen-light`), a file per source (named by a hash of what identifies the source
 bytes), served like any file: with Content-Length and Range, so the phone can seek and cache. They are made ahead of
 time (a mix's songs, a wave's tracks) and, failing that, on the first request. A request waits for a copy for a
 moment only (`get`): a stream must start at once, so when the copy is not ready the original is served, the copy is
@@ -31,7 +31,7 @@ from app.net import Priority, PrioritySemaphore, in_background, priority_context
 
 log = logging.getLogger(__name__)
 
-LIGHT_DIR = "listen-light"  # under staging
+LIGHT_DIR = "listen-light"  # under DATA_DIR/cache
 LIGHT_KBPS = 160
 HEAVY_KBPS = 192  # a file above this is re-encoded
 MAX_BYTES = 2500 * 2**20
@@ -57,13 +57,13 @@ _failed: dict[str, float] = {}  # key -> monotonic time ffmpeg failed
 
 
 def root() -> Path:
-    return get_settings().staging_dir / LIGHT_DIR
+    return get_settings().data_dir / "cache" / LIGHT_DIR
 
 
 def key_of(ident: str) -> str:
     """The copy's name: `ident` says which bytes the source is (a library file: path, size, mtime; a server copy:
     its ref and file)."""
-    return hashlib.sha1(ident.encode()).hexdigest()[:24]
+    return hashlib.sha256(ident.encode()).hexdigest()[:24]
 
 
 def copy_path(key: str) -> Path:

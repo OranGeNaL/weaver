@@ -122,6 +122,25 @@ class Session(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class Blob(Base):
+    """Immutable content-addressed object: one row per `sha256`, shared by every track with these bytes."""
+
+    __tablename__ = "blobs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sha256: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    content_type: Mapped[str | None] = mapped_column(String(128))
+    kind: Mapped[str] = mapped_column(String(16), default="audio")  # audio/covers
+    # pending -> committed -> deleted; a committed row may still be shared by several tracks
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # `manifests/<sha256>/`: one JSON per track, because one blob may serve several tracks
+    manifest_key: Mapped[str | None] = mapped_column(String(128))
+
+
 class Album(Base):
     """Album as the Hub manages it. `uid` is written into files as HOMEMUSIC_ALBUM_ID (Navidrome album PID)."""
 
@@ -138,7 +157,8 @@ class Album(Base):
     deezer_album_id: Mapped[str | None] = mapped_column(String(32), index=True)
     upc: Mapped[str | None] = mapped_column(String(32))
     genre: Mapped[str | None] = mapped_column(String(128))
-    cover_path: Mapped[str | None] = mapped_column(String(1024))  # relative to library/, cover.jpg in album dir
+    cover_path: Mapped[str | None] = mapped_column(String(1024))  # logical album cover path (display/export)
+    cover_blob_id: Mapped[int | None] = mapped_column(ForeignKey("blobs.id", ondelete="SET NULL"))
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
@@ -151,7 +171,10 @@ class Track(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     uid: Mapped[str] = mapped_column(String(36), unique=True)  # HOMEMUSIC_TRACK_ID (Navidrome track PID)
     album_id: Mapped[int | None] = mapped_column(ForeignKey("albums.id", ondelete="SET NULL"), index=True)
-    path: Mapped[str] = mapped_column(String(1024), unique=True)  # relative to library/, forward slashes
+    path: Mapped[str | None] = mapped_column(String(1024), index=True)  # logical library path (display/export)
+    blob_id: Mapped[int | None] = mapped_column(ForeignKey("blobs.id", ondelete="SET NULL"), index=True)
+    # trash: a deleted track keeps its row (and blob) until `library.trash_days` elapses
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     nd_song_id: Mapped[str | None] = mapped_column(String(64), index=True)
     artist: Mapped[str] = mapped_column(String(512))
     title: Mapped[str] = mapped_column(String(512))

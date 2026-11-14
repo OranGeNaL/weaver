@@ -183,6 +183,7 @@ async def load_snapshot(session, user_id: int, *, now: datetime) -> TasteSnapsho
             or_(
                 Track.nd_song_id.in_(songs),
                 Track.deezer_track_id.in_([r[3:] for r in refs if r.startswith("dz:")]),
+                Track.deleted_at.is_(None),
                 Album.deezer_album_id.in_([r[3:] for r in album_refs if r.startswith("dz:")]),
             )
         )
