@@ -1,5 +1,8 @@
-"""Accounts: by invitation (the admin creates a one-time code, the person registers with it) or by email (a code in
-a letter, no admin involved); each is a new Navidrome user, who may sign in with a linked Google account later."""
+"""Accounts: by invitation, by email, or through an external OIDC provider — always a local Hub account.
+
+Stage 4: the Hub owns accounts. Registration creates `users.username`/`password_hash` and never a Navidrome user;
+an OIDC identity is linked as `(issuer, subject)` in `oauth_links` and is never auto-linked by email.
+"""
 
 from __future__ import annotations
 
@@ -21,15 +24,14 @@ from app import auth, mailer
 from app.config import get_settings
 from app.db import session_scope
 from app.google_auth import GoogleTokenError, verify_id_token
-from app.library.navidrome import AuthError, NavidromeAdmin, NavidromeUserExists
-from app.models import EmailCode, Invite, User, utcnow
-from app.security import decrypt
+from app.models import EmailCode, Invite, OAuthLink, User, utcnow
+from app.passwords import check_password_policy, hash_password
 
 log = logging.getLogger(__name__)
 
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I: the code is read out and typed by hand
 CODE_LEN = 8
-# letters of any script, digits, "._-": Navidrome takes them, and the name is typed in the player too
+# letters of any script, digits, "._-": the name is typed in the player too
 USERNAME_RE = re.compile(r"^[\w.\-]{2,32}$")
 MIN_PASSWORD = 6
 
@@ -42,6 +44,8 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 EMAIL_RESEND_S = 60  # a new letter to the same address
 EMAIL_HOURLY = 5  # letters to one address an hour
 EMAIL_ATTEMPTS = 5  # wrong codes before the letter's code stops working
+
+GOOGLE_ISSUER = "https://accounts.google.com"
 
 
 def new_code() -> str:
@@ -90,24 +94,50 @@ def _fail(status: int, detail: str) -> HTTPException:
 def check_new_account(username: str, password: str) -> None:
     if not USERNAME_RE.match(username):
         raise HTTPException(400, "Имя: от 2 до 32 букв или цифр, можно «.», «_», «-», без пробелов")
-    if len(password) < MIN_PASSWORD:
-        raise HTTPException(400, f"Пароль — не короче {MIN_PASSWORD} символов")
+    check_password_policy(username, password)
 
 
-async def register(
-    s: AsyncSession, code: str, username: str, password: str, google: dict[str, Any] | None = None
-) -> tuple[User, str]:
-    """Creates the Navidrome user for an unused invite and signs in. Returns (user, session token)."""
-    _check_rate()
-    username = username.strip()
-    check_new_account(username, password)
+async def _check_name_free(s: AsyncSession, username: str) -> None:
+    taken = await s.execute(select(User.id).where(func.lower(User.username) == username.lower()))
+    if taken.first() is not None:
+        raise HTTPException(409, "Это имя уже занято, выберите другое")
+
+
+async def _create_account(
+    s: AsyncSession,
+    username: str,
+    password: str | None,
+    device_id: str,
+    *,
+    email: str | None = None,
+    claims: dict[str, Any] | None = None,
+    provider: str | None = None,
+) -> auth.AuthResult:
+    """A local Hub account (argon2id hash, an optional OIDC link) and a session for it."""
+    # an OIDC-only account has no password at all until its owner sets one in the settings
+    user = User(username=username, password_hash=hash_password(password) if password else None, email=email)
+    s.add(user)
+    await s.flush()
+    if claims is not None:
+        s.add(
+            OAuthLink(
+                user_id=user.id,
+                provider=provider or "google",
+                issuer=str(claims["iss"]),
+                subject=str(claims["sub"]),
+            )
+        )
+        if provider in (None, "google"):
+            user.google_sub, user.google_email = str(claims["sub"]), claims.get("email")
+    await s.flush()
+    return await auth.sign_in_user(s, user, device_id)
+
+
+async def _consume_invite(s: AsyncSession, code: str) -> Invite:
     norm = normalize_code(code)
     inv = (await s.execute(select(Invite).where(Invite.code == norm))).scalar_one_or_none() if norm else None
     if inv is None or invite_status(inv) != "active":
         raise _fail(400, "Код приглашения не подходит: проверьте его или попросите новый")
-    await _check_name_free(s, username)
-    if google is not None:
-        await _check_google_free(s, google)
     # Taken first, within this transaction: a second registration with the same code waits for it and finds it used.
     res = await s.execute(
         update(Invite)
@@ -117,31 +147,31 @@ async def register(
     )
     if res.first() is None:
         raise _fail(400, "Код приглашения уже использован")
-    user, token = await _create_account(s, username, password, inv.note or username)
-    inv.used_by = user.id
+    return inv
+
+
+async def register(
+    s: AsyncSession,
+    code: str,
+    username: str,
+    password: str,
+    device_id: str,
+    google: dict[str, Any] | None = None,
+) -> auth.AuthResult:
+    """Creates a local Hub account for an unused invite and signs in."""
+    _check_rate()
+    username = username.strip()
+    check_new_account(username, password)
+    inv = await _consume_invite(s, code)
+    await _check_name_free(s, username)
     if google is not None:
-        user.google_sub, user.google_email = str(google["sub"]), google.get("email")
-    log.info("registered %s by invite %s", username, inv.id, extra={"user_id": user.id})
-    return user, token
-
-
-async def _check_name_free(s: AsyncSession, username: str) -> None:
-    taken = await s.execute(select(User.id).where(func.lower(User.nd_username) == username.lower()))
-    if taken.first() is not None:
-        raise HTTPException(409, "Это имя уже занято, выберите другое")
-
-
-async def _create_account(s: AsyncSession, username: str, password: str, name: str) -> tuple[User, str]:
-    """The Navidrome user, then a Hub session for it."""
-    try:
-        async with NavidromeAdmin() as nd:
-            await nd.create_user(username, password, name=name)
-    except NavidromeUserExists as e:
-        raise HTTPException(409, "Это имя уже занято, выберите другое") from e
-    except AuthError as e:
-        log.error("navidrome admin login failed: check NAVIDROME_ADMIN_USER/PASSWORD")
-        raise HTTPException(502, "Сервер музыки не принял учётную запись администратора") from e
-    return await auth.login(s, username, password)
+        await _check_oidc_free(s, GOOGLE_ISSUER, str(google["sub"]))
+    result = await _create_account(
+        s, username, password, device_id, claims=google, provider="google" if google is not None else None
+    )
+    inv.used_by = result.user.id
+    log.info("registered %s by invite %s", username, inv.id, extra={"user_id": result.user.id})
+    return result
 
 
 # --- registration by email ------------------------------------------------------------------
@@ -224,8 +254,10 @@ async def send_email_code(email: str) -> int:
     return EMAIL_RESEND_S
 
 
-async def register_by_email(s: AsyncSession, email: str, code: str, username: str, password: str) -> tuple[User, str]:
-    """Creates the Navidrome user for an address confirmed by the code from its letter and signs in."""
+async def register_by_email(
+    s: AsyncSession, email: str, code: str, username: str, password: str, device_id: str
+) -> auth.AuthResult:
+    """Creates a local Hub account for an address confirmed by the code from its letter and signs in."""
     _check_email_signup()
     _check_rate()
     email, username = normalize_email(email), username.strip()
@@ -262,10 +294,9 @@ async def register_by_email(s: AsyncSession, email: str, code: str, username: st
     )
     if res.first() is None:
         raise _fail(400, "Код уже использован: запросите новое письмо")
-    user, token = await _create_account(s, username, password, username)
-    user.email = email
-    log.info("registered %s by email", username, extra={"user_id": user.id})
-    return user, token
+    result = await _create_account(s, username, password, device_id, email=email)
+    log.info("registered %s by email", username, extra={"user_id": result.user.id})
+    return result
 
 
 async def purge_email_codes() -> int:
@@ -278,13 +309,134 @@ async def purge_email_codes() -> int:
 
 
 async def username_for_login(s: AsyncSession, login: str) -> str:
-    """Sign-in takes the name, or the email the account registered with."""
-    login = login.strip()
-    if "@" in login:
-        name = (await s.execute(select(User.nd_username).where(User.email == normalize_email(login)))).scalar()
-        if name:
-            return name
-    return login
+    """Sign-in takes the name, or the email the account registered with (kept for callers of the old helper)."""
+    user = await auth.find_user_for_login(s, login)
+    return user.username if user is not None else login
+
+
+# --- external OIDC identities ---------------------------------------------------------------
+
+
+def username_from_email(email: str | None) -> str:
+    local = (email or "").split("@", 1)[0].lower()
+    name = re.sub(r"[^\w.\-]", "", local)[:32]
+    return name if len(name) >= 2 else f"user{secrets.randbelow(10000):04d}"
+
+
+def username_from_claims(claims: dict[str, Any]) -> str:
+    """A name for a new account from the provider's claims: preferred name, local part of the email, subject."""
+    for key in ("preferred_username", "nickname", "email", "name"):
+        value = claims.get(key)
+        if isinstance(value, str) and value.strip():
+            name = re.sub(r"[^\w.\-]", "", username_from_email(value) if "@" in value else value)
+            if USERNAME_RE.match(name):
+                return name
+    return f"user{secrets.randbelow(10000):04d}"
+
+
+async def free_username(s: AsyncSession, username: str) -> str:
+    """`username` itself, or `username2`, `username3`… when the wanted name is taken."""
+    base = username[:30]
+    candidate, n = base, 1
+    while (await s.execute(select(User.id).where(func.lower(User.username) == candidate.lower()))).first() is not None:
+        n += 1
+        candidate = f"{base}{n}"
+    return candidate
+
+
+async def linked_user(s: AsyncSession, issuer: str, subject: str) -> User | None:
+    link = (
+        await s.execute(select(OAuthLink).where(OAuthLink.issuer == issuer, OAuthLink.subject == subject))
+    ).scalar_one_or_none()
+    return await s.get(User, link.user_id) if link is not None else None
+
+
+async def _check_oidc_free(s: AsyncSession, issuer: str, subject: str, user: User | None = None) -> None:
+    other = await linked_user(s, issuer, subject)
+    if other is not None and (user is None or other.id != user.id):
+        raise HTTPException(409, f"Этот внешний аккаунт уже привязан к пользователю «{other.username}»")
+
+
+async def oidc_login(
+    s: AsyncSession,
+    provider: str,
+    issuer: str,
+    claims: dict[str, Any],
+    device_id: str,
+    *,
+    invite: str | None = None,
+    username: str | None = None,
+) -> auth.AuthResult:
+    """Sign-in through an external provider: the linked account, or a new one with an active invite.
+
+    An unlinked account without an invite is `409`: the Hub MUST NOT link accounts by email (account takeover).
+    """
+    user = await linked_user(s, issuer, str(claims["sub"]))
+    if user is not None:
+        return await auth.sign_in_user(s, user, device_id)
+    if not invite:
+        raise HTTPException(
+            409,
+            "Этот внешний аккаунт ещё не привязан. Введите код приглашения, "
+            "а если аккаунт уже есть — войдите паролем и привяжите его в настройках",
+        )
+    _check_rate()
+    inv = await _consume_invite(s, invite)
+    wanted = (username or "").strip() or username_from_claims(claims)
+    if username and not USERNAME_RE.match(username.strip()):
+        raise HTTPException(400, "Имя: от 2 до 32 букв или цифр, можно «.», «_», «-», без пробелов")
+    name = await free_username(s, wanted)
+    result = await _create_account(
+        s,
+        name,
+        None,  # no password of its own: only this OIDC identity, until the owner sets one
+        device_id,
+        claims=claims,
+        provider=provider,
+        email=claims.get("email") if claims.get("email_verified") in (True, "true") else None,
+    )
+    inv.used_by = result.user.id
+    log.info("registered %s by OIDC %s and invite %s", name, provider, inv.id, extra={"user_id": result.user.id})
+    return result
+
+
+async def link_oidc(s: AsyncSession, user: User, provider: str, issuer: str, claims: dict[str, Any]) -> User:
+    """Links `(issuer, subject)` to the signed-in user; a conflict with another account is `409`."""
+    await _check_oidc_free(s, issuer, str(claims["sub"]), user)
+    link = (
+        await s.execute(select(OAuthLink).where(OAuthLink.user_id == user.id, OAuthLink.provider == provider))
+    ).scalar_one_or_none()
+    if link is None:
+        s.add(OAuthLink(user_id=user.id, provider=provider, issuer=issuer, subject=str(claims["sub"])))
+    else:
+        link.issuer, link.subject = issuer, str(claims["sub"])
+    if provider == "google":
+        user.google_sub, user.google_email = str(claims["sub"]), claims.get("email")
+    await s.flush()
+    return user
+
+
+async def unlink_oidc(s: AsyncSession, user: User, provider: str) -> User:
+    """Removes a link when the account keeps another way in (a password or another link)."""
+    links = list((await s.execute(select(OAuthLink).where(OAuthLink.user_id == user.id))).scalars())
+    mine = [link for link in links if link.provider == provider]
+    if not mine:
+        raise HTTPException(404, "Этот внешний аккаунт не привязан")
+    if not user.password_hash and len(links) == 1:
+        raise HTTPException(409, "Это единственный способ входа: сначала задайте пароль")
+    for link in mine:
+        await s.delete(link)
+    if provider == "google":
+        user.google_sub = user.google_email = None
+    await s.flush()
+    return user
+
+
+def linked_providers(links: list[OAuthLink]) -> list[str]:
+    return sorted({link.provider for link in links})
+
+
+# --- the legacy Google ID-token endpoint (Android app) --------------------------------------
 
 
 async def _google_claims(id_token: str) -> dict[str, Any]:
@@ -297,48 +449,14 @@ async def _google_claims(id_token: str) -> dict[str, Any]:
         raise HTTPException(401, "Google не подтвердил вход, попробуйте ещё раз") from e
 
 
-async def _check_google_free(s: AsyncSession, claims: dict[str, Any], user: User | None = None) -> None:
-    other = (await s.execute(select(User).where(User.google_sub == str(claims["sub"])))).scalar_one_or_none()
-    if other is not None and (user is None or other.id != user.id):
-        raise HTTPException(409, f"Этот Google-аккаунт уже привязан к пользователю «{other.nd_username}»")
-
-
-def username_from_email(email: str | None) -> str:
-    local = (email or "").split("@", 1)[0].lower()
-    name = re.sub(r"[^\w.\-]", "", local)[:32]
-    return name if len(name) >= 2 else f"user{secrets.randbelow(10000):04d}"
-
-
-async def google_login(s: AsyncSession, id_token: str, code: str | None, username: str | None) -> tuple[User, str, str]:
-    """Sign-in with Google: the linked user, or a new one with an invite code. Returns (user, token, password)."""
+async def google_login(
+    s: AsyncSession, id_token: str, code: str | None, username: str | None, device_id: str
+) -> auth.AuthResult:
+    """Sign-in with a Google ID token (the app gets it from Credential Manager): linked account or invite."""
     claims = await _google_claims(id_token)
-    user = (await s.execute(select(User).where(User.google_sub == str(claims["sub"])))).scalar_one_or_none()
-    if user is not None:
-        password = decrypt(user.nd_password_enc)
-        try:
-            user, token = await auth.login(s, user.nd_username, password)
-        except HTTPException as e:
-            if e.status_code != 401:
-                raise
-            raise HTTPException(
-                401, "Пароль аккаунта сменили в Navidrome: войдите паролем и привяжите Google снова"
-            ) from e
-        return user, token, password
-    if not code:
-        raise HTTPException(
-            409,
-            "Этот Google-аккаунт ещё не привязан. Введите код приглашения, "
-            "а если аккаунт уже есть — войдите паролем и привяжите Google в настройках",
-        )
-    password = secrets.token_urlsafe(12)
-    user, token = await register(
-        s, code, (username or "").strip() or username_from_email(claims.get("email")), password, google=claims
-    )
-    return user, token, password
+    return await oidc_login(s, "google", GOOGLE_ISSUER, claims, device_id, invite=code, username=username)
 
 
 async def link_google(s: AsyncSession, user: User, id_token: str) -> User:
     claims = await _google_claims(id_token)
-    await _check_google_free(s, claims, user)
-    user.google_sub, user.google_email = str(claims["sub"]), claims.get("email")
-    return user
+    return await link_oidc(s, user, "google", GOOGLE_ISSUER, claims)

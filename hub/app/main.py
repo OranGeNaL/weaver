@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from app import db
 from app.config import get_settings
 from app.logging_setup import setup_logging
+from app.oidc import OidcError
 
 log = logging.getLogger("app")
 
@@ -29,10 +30,25 @@ def _import_handlers() -> None:
         log.warning("assistant pipeline not available")
 
 
+def _validate_secrets(s) -> None:
+    """The Hub never starts with an unsafe default: the JWT key and the secret key are required."""
+    missing = [
+        name
+        for name, value in (("JWT_SIGNING_KEY", s.jwt_signing_key), ("HUB_SECRET_KEY", s.hub_secret_key))
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(
+            f"Не заданы обязательные ключи: {', '.join(missing)}. "
+            "Без них Hub не стартует: сгенерируйте их (см. README, «Ключи и секреты»)."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     s = get_settings()
     setup_logging(s.log_level)
+    _validate_secrets(s)
     s.validate_storage()  # `fs` must not run as production
     for d in (s.staging_dir, s.backups_dir, s.cache_dir):
         d.mkdir(parents=True, exist_ok=True)
@@ -42,6 +58,10 @@ async def lifespan(app: FastAPI):
     await db.connect_with_retry()
     await db.ensure_search_locale()
     await asyncio.to_thread(db.run_migrations)
+
+    from app import bootstrap
+
+    await bootstrap.bootstrap_from_env()
     from app import storage
 
     await storage.startup()
@@ -115,6 +135,12 @@ def create_app() -> FastAPI:
         openapi_url="/api/openapi.json",
         redoc_url=None,
     )
+
+    @app.exception_handler(OidcError)
+    async def _oidc_error(_request: Request, exc: OidcError) -> JSONResponse:
+        """An OIDC step failed: the provider's error becomes the API's Russian `detail` with its status."""
+        return JSONResponse(status_code=exc.status, content={"detail": exc.detail})
+
     for r in (
         auth.router,
         search.router,

@@ -19,7 +19,7 @@ from app.security import encrypt
 async def playlist_env(hub_env, db_url: str):
     db.init_engine(db_url)
     async with db.session_scope() as s:
-        user = User(nd_username="qa", nd_password_enc=encrypt("qa-password"))
+        user = User(username="qa", nd_username="qa", nd_password_enc=encrypt("qa-password"))
         s.add(user)
         await s.flush()
         user_id = user.id

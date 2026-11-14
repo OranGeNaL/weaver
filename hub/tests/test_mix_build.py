@@ -369,7 +369,7 @@ async def test_name_by_ai(db, monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(LLMClient, "call_tool", call_tool)
     async with session_scope() as s:
-        s.add(User(id=1, nd_username="u", nd_password_enc="x"))
+        s.add(User(id=1, username="u", nd_username="u", nd_password_enc="x"))
     songs = [cand(1, "Кино", familiar=True), cand(2, "Сплин")]
 
     title, desc = await b.name_mix(1, songs, b.local_now(NOW), {})

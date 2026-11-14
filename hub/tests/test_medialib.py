@@ -13,7 +13,7 @@ import httpx
 import pytest
 import respx
 
-from tests.support import app_client
+from tests.support import app_client, grant_navidrome
 
 OK = {"status": "ok", "version": "1.16.1"}
 SONGS = [
@@ -113,6 +113,7 @@ async def env(hub_env):
         with respx.mock(assert_all_called=False) as mock:
             mock.route(host="navidrome.test").mock(side_effect=nd)
             async with app_client(app) as client:
+                await grant_navidrome("admin")  # stage-4 transition: the ND proxy tests need ND credentials
                 await add_track("Кино", "Группа крови", "ndK", deezer_track_id="100")
                 yield {"client": client, "state": state}
 
@@ -169,7 +170,7 @@ async def test_catalog_like_is_listed_before_download_and_unlike_removes_it(env)
 
     c = env["client"]
     async with session_scope() as s:
-        uid = (await s.execute(select(User.id).where(User.nd_username == "admin"))).scalar_one()
+        uid = (await s.execute(select(User.id).where(User.username == "admin"))).scalar_one()
     queue = bus.subscribe(uid)
     try:
         target = {
@@ -227,8 +228,8 @@ async def test_pending_import_likes_are_visible_only_to_their_user_and_own_unlik
     from app.models import Import, ImportCollection, ImportItem, User
 
     async with session_scope() as s:
-        uid = (await s.execute(select(User.id).where(User.nd_username == "admin"))).scalar_one()
-        other = User(nd_username="other", nd_password_enc="unused")
+        uid = (await s.execute(select(User.id).where(User.username == "admin"))).scalar_one()
+        other = User(username="other", nd_username="other", nd_password_enc="unused")
         s.add(other)
         await s.flush()
         for user_id, ref in ((uid, "dz:998"), (other.id, "dz:997")):

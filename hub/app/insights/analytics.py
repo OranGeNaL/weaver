@@ -416,7 +416,7 @@ async def overview(
         versions = [r for r in h.rows if r.client.startswith("app/")]
         rows.append(
             {
-                "user": {"id": u.id, "username": u.nd_username, "is_admin": u.is_admin, "excluded": excluded},
+                "user": {"id": u.id, "username": u.username, "is_admin": u.is_admin, "excluded": excluded},
                 "counted_listens": t["counted_listens"],
                 "heard_events": t["heard_events"],
                 "listened_ms": t["listened_ms"],

@@ -19,6 +19,33 @@ export interface MeOut {
   public_hub_url?: string;
   google_email?: string | null;
   email?: string | null;
+  // the first password from bootstrap/CLI: everything but the password screen answers 403 until it changes
+  must_change_password?: boolean;
+  // external identities linked to the account: "google", a generic provider's name
+  oidc_links?: string[];
+}
+
+export interface OidcProviderOut {
+  name: string;
+  title: string;
+}
+
+export interface PasswordIn {
+  current_password?: string | null;
+  new_password: string;
+}
+
+export interface AuthSessionOut {
+  id: string;
+  device: string;
+  created_at: ISODateTime;
+  last_used_at: ISODateTime;
+  expires_at: ISODateTime;
+  current: boolean;
+}
+
+export interface AuthSessionsOut {
+  sessions: AuthSessionOut[];
 }
 
 export interface RegisterIn {
@@ -32,6 +59,7 @@ export interface AuthOptionsOut {
   email_signup?: boolean;
   google_client_id: string | null;
   music_url?: string;
+  oidc_providers?: OidcProviderOut[];
 }
 
 export interface EmailCodeOut {

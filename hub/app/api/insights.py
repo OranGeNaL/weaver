@@ -57,7 +57,7 @@ def _period(start: date | None, end: date | None) -> tuple[date, date]:
 async def _users(s: AsyncSession, include_excluded: bool) -> list[tuple[User, bool]]:
     excluded = set(get_settings().cfg.analytics.exclude_users)
     users = (await s.execute(select(User).order_by(User.id))).scalars()
-    return [(u, u.nd_username in excluded) for u in users if include_excluded or u.nd_username not in excluded]
+    return [(u, u.username in excluded) for u in users if include_excluded or u.username not in excluded]
 
 
 @router.get("/insights/overview", response_model=InsightsOverviewOut)

@@ -33,7 +33,7 @@ import { LibraryAlbumPage } from './pages/LibraryAlbum';
 import { LoginPage } from './pages/Login';
 import { ArtistsPage, LikedPage, NdAlbumPage, NdAlbumsPage, NdArtistPage, PlaylistPage } from './pages/MediaLibrary';
 import { MixPage, TastePage } from './pages/Mix';
-import { MorePage } from './pages/More';
+import { MorePage, PasswordPage } from './pages/More';
 import { PlayerPage } from './pages/Player';
 import { PlaylistsPage } from './pages/Playlists';
 import { SearchPage, searchTab } from './pages/Search';
@@ -90,6 +90,7 @@ const ROUTES: RouteDef[] = [
     ),
   ],
   ['/more', 'more', () => <MorePage />],
+  ['/password', 'more', () => <PasswordPage />],
   ['/admin', 'more', () => <AdminPage />],
   ['/admin/user/:id', 'more', (p) => <AdminUserPage key={p.id} id={Number(p.id)} />],
   ['/admin/insights', 'more', () => <InsightsOverviewPage />],
@@ -162,6 +163,14 @@ export function App() {
     if (me && !resolved) navigate(START, { replace: true });
   }, [me, resolved]);
 
+  const refreshMe = useCallback(async () => {
+    try {
+      setMe(await api.me());
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) setMe(null);
+    }
+  }, []);
+
   const logout = useCallback(async () => {
     try {
       await api.logout();
@@ -200,12 +209,24 @@ export function App() {
     );
   }
 
+  // the first password of bootstrap/the CLI must be changed before the rest of the app opens
+  if (me.must_change_password) {
+    return (
+      <SessionContext.Provider value={{ me, logout, refreshMe }}>
+        <main className="mx-auto min-h-dvh max-w-2xl pb-8">
+          <PasswordPage forced />
+        </main>
+        <Overlays />
+      </SessionContext.Provider>
+    );
+  }
+
   // the full player covers the screen: no mini player and tab bar under it, so no room kept for them
   const fullPlayer = route.path === '/player';
   // the admin's analytics are wide (tables, two columns on a desktop)
   const wide = route.path.startsWith('/admin/');
   return (
-    <SessionContext.Provider value={{ me, logout }}>
+    <SessionContext.Provider value={{ me, logout, refreshMe }}>
       <main className={cx('mx-auto min-h-dvh', wide ? 'max-w-6xl' : 'max-w-2xl', !fullPlayer && 'pb-[calc(var(--tabbar-h)+16px+env(safe-area-inset-bottom))]')}>
         {resolved?.node}
         {!fullPlayer && <PlayerSpacer />}

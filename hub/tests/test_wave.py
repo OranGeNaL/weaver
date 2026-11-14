@@ -20,7 +20,7 @@ from sqlalchemy import select
 from app.catalog.models import CatalogTrack
 from app.mixes import build, wave
 from app.mixes.taste import Profile, artist_key
-from tests.support import FakeDeezer, app_client
+from tests.support import FakeDeezer, app_client, grant_navidrome
 from tests.test_mixes import ND, add_user, history, user_id
 
 NOW = datetime(2026, 10, 23, 12, 0)
@@ -261,6 +261,7 @@ async def env(hub_env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         with respx.mock(assert_all_called=False) as mock:
             mock.route(host="navidrome.test").mock(side_effect=nd.handler)
             async with app_client(app) as client:
+                await grant_navidrome("admin")  # stage-4 transition: the ND proxy tests need ND credentials
                 yield {
                     "client": client,
                     "nd": nd,

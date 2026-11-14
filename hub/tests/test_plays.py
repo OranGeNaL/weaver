@@ -14,7 +14,7 @@ import pytest
 import respx
 from sqlalchemy import select
 
-from tests.support import app_client
+from tests.support import app_client, grant_navidrome
 
 NOW = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
 
@@ -57,6 +57,7 @@ async def env(hub_env):
         with respx.mock(assert_all_called=False) as mock:
             mock.route(host="navidrome.test").mock(side_effect=nd_handler)
             async with app_client(app) as client:
+                await grant_navidrome("admin")  # stage-4 transition: the ND proxy tests need ND credentials
                 await add_track("Кино", "Группа крови", "ndK", deezer_track_id="100")
                 await add_track("Кто-то", "Своё", "ndX")
                 yield {"client": client, "state": state}
@@ -768,7 +769,7 @@ async def test_launch_fields_are_stored_and_never_change_the_taste(env):
 
     async def taste():
         async with session_scope() as s:
-            me = (await s.execute(select(User.id).where(User.nd_username == "admin"))).scalar_one()
+            me = (await s.execute(select(User.id).where(User.username == "admin"))).scalar_one()
             p = calculate_profile(await load_snapshot(s, me, now=now), now=now, timezone="Europe/Moscow")
         return p, build.score(song, get_settings().cfg.mixes.weights, p)
 

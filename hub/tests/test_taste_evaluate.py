@@ -37,7 +37,7 @@ async def seed(db_url, events, extra_objects=()):
         async with session_scope() as s:
             have = {getattr(obj, "id", None) for obj in extra_objects if isinstance(obj, User)}
             for user_id in {e.user_id for e in events} - have:
-                s.add(User(id=user_id, nd_username=f"user{user_id}", nd_password_enc="x"))
+                s.add(User(id=user_id, username=f"user{user_id}", nd_username=f"user{user_id}", nd_password_enc="x"))
             await s.flush()
             for e in events:
                 s.add(
@@ -122,8 +122,8 @@ async def test_history_ignores_current_mutable_state_and_limits_occurred_availab
             replace(ev("other"), user_id=2),
         ],
         [
-            User(id=1, nd_username="taste", nd_password_enc="x"),
-            User(id=2, nd_username="other", nd_password_enc="x"),
+            User(id=1, username="taste", nd_username="taste", nd_password_enc="x"),
+            User(id=2, username="other", nd_username="other", nd_password_enc="x"),
             Dislike(user_id=1, ref="dz:future-state", source="pwa", created_at=NOW - timedelta(days=1)),
             MixSettings(
                 user_id=1,
@@ -214,7 +214,7 @@ async def test_online_v2_adapter_loads_batches_without_network_or_writes(db_url,
     engine = init_engine(db_url)
     try:
         async with session_scope() as s:
-            user = User(nd_username="taste-test", nd_password_enc="unused")
+            user = User(username="taste-test", nd_username="taste-test", nd_password_enc="unused")
             s.add(user)
             album = Album(uid="hub-album-id", title="Album", album_artist="Artist", deezer_album_id="album")
             s.add(album)

@@ -17,7 +17,7 @@ import httpx
 import pytest
 import respx
 
-from tests.support import FakeDeezer, FakeProvider, app_client
+from tests.support import FakeDeezer, FakeProvider, app_client, grant_navidrome
 
 FFMPEG = os.environ.get("FFMPEG_BIN", "ffmpeg")
 pytestmark = pytest.mark.skipif(shutil.which(FFMPEG) is None, reason="ffmpeg not installed")
@@ -191,6 +191,7 @@ async def env(hub_env, src_mp3):
                 return_value=httpx.Response(200, content=jpeg_bytes(), headers={"content-type": "image/jpeg"})
             )
             async with app_client(app) as client:
+                await grant_navidrome("admin")  # stage-4 transition: the ND proxy tests need ND credentials
                 yield {"client": client, "state": state, "music": music, "fake": fake, "src": src, "mock": mock}
 
 

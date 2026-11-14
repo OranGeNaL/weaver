@@ -19,7 +19,7 @@ from sqlalchemy import select
 
 from app.catalog.models import CatalogTrack
 from app.mixes import smart
-from tests.support import FakeDeezer, app_client
+from tests.support import FakeDeezer, app_client, grant_navidrome
 from tests.test_mixes import ND, add_event, add_track, user_id
 
 
@@ -53,6 +53,7 @@ async def env(hub_env, monkeypatch: pytest.MonkeyPatch):
         with respx.mock(assert_all_called=False) as mock:
             mock.route(host="navidrome.test").mock(side_effect=nd.handler)
             async with app_client(app) as client:
+                await grant_navidrome("admin")  # stage-4 transition: the ND proxy tests need ND credentials
                 yield {"client": client, "nd": nd, "admin": await user_id("admin"), "prefetched": prefetched}
 
 

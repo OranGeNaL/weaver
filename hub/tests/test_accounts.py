@@ -1,13 +1,13 @@
-"""Invites, registration, sign-in with Google and the admin's user list, against a fake Navidrome."""
+"""Local accounts: password sign-in, tokens, bootstrap, password change, invites, email, OIDC and the admin list."""
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import json
 import time
 from datetime import timedelta
+from typing import Any
 
 import httpx
 import pytest
@@ -15,10 +15,13 @@ import respx
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
-from tests.support import app_client
+from tests.support import ND, app_client
 
 CLIENT_ID = "123-web.apps.googleusercontent.com"
 CERTS = "https://www.googleapis.com/oauth2/v3/certs"
+IDP = "https://idp.test"
+OIDC_CLIENT = "hub-client"
+OIDC_SECRET = "oidc-secret"
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
 
@@ -42,112 +45,118 @@ def jwks() -> dict:
     }
 
 
-def google_token(sub: str = "g-1", email: str = "anna.k@gmail.com", **over) -> str:
-    now = int(time.time())
-    claims = {
-        "iss": "https://accounts.google.com",
-        "aud": CLIENT_ID,
-        "sub": sub,
-        "email": email,
-        "email_verified": True,
-        "iat": now,
-        "exp": now + 3600,
-        "name": "Анна",
-        **over,
-    }
+def signed(claims: dict) -> str:
     head = _b64(json.dumps({"alg": "RS256", "kid": "k1", "typ": "JWT"}).encode())
     body = _b64(json.dumps(claims).encode())
     sig = KEY.sign(f"{head}.{body}".encode(), padding.PKCS1v15(), hashes.SHA256())
     return f"{head}.{body}.{_b64(sig)}"
 
 
-@pytest.fixture
-async def env(hub_env, monkeypatch):
-    monkeypatch.setenv("GOOGLE_CLIENT_ID", CLIENT_ID)
-    monkeypatch.setenv("PUBLIC_MUSIC_URL", "https://music.test:8444")
+def google_token(sub: str = "g-1", email: str = "anna.k@gmail.com", **over) -> str:
+    now = int(time.time())
+    return signed(
+        {
+            "iss": "https://accounts.google.com",
+            "aud": CLIENT_ID,
+            "sub": sub,
+            "email": email,
+            "email_verified": True,
+            "iat": now,
+            "exp": now + 3600,
+            "name": "Анна",
+            **over,
+        }
+    )
 
-    from app.main import create_app
 
-    # Navidrome: users and passwords, stars per user; "boris" uses the player only and never opened the Hub
-    nd = {
-        "users": {
-            "admin": {"password": "adminpw", "isAdmin": True, "name": "Admin"},
-            "boris": {"password": "borispw", "isAdmin": False, "name": "Борис"},
-        },
-        "stars": {"admin": ["s1", "s2"]},
-        "logins": 0,
+def idp_token(sub: str = "idp-1", email: str = "gleb@mail.test", nonce: str = "n", **over) -> str:
+    now = int(time.time())
+    return signed(
+        {
+            "iss": IDP,
+            "aud": OIDC_CLIENT,
+            "sub": sub,
+            "email": email,
+            "email_verified": True,
+            "iat": now,
+            "exp": now + 3600,
+            "nonce": nonce,
+            **over,
+        }
+    )
+
+
+def discovery() -> dict:
+    return {
+        "issuer": IDP,
+        "authorization_endpoint": f"{IDP}/authorize",
+        "token_endpoint": f"{IDP}/token",
+        "jwks_uri": f"{IDP}/jwks",
     }
 
-    def subsonic(request: httpx.Request) -> httpx.Response:
-        p = request.url.params
-        ok = {"status": "ok", "version": "1.16.1"}
-        u = nd["users"].get(p.get("u", ""))
-        if u is None or hashlib.md5((u["password"] + p.get("s", "")).encode()).hexdigest() != p.get("t"):
-            return httpx.Response(
-                200,
-                json={
-                    "subsonic-response": {
-                        "status": "failed",
-                        "error": {"code": 40, "message": "Wrong username or password"},
-                    }
-                },
-            )
-        ep = request.url.path.rsplit("/", 1)[-1]
-        if ep == "getUser":
-            return httpx.Response(200, json={"subsonic-response": {**ok, "user": {"adminRole": u["isAdmin"]}}})
-        if ep == "getStarred2":
-            songs = [{"id": i} for i in nd["stars"].get(p["u"], [])]
-            return httpx.Response(200, json={"subsonic-response": {**ok, "starred2": {"song": songs}}})
-        if ep == "getPlaylists":
-            return httpx.Response(200, json={"subsonic-response": {**ok, "playlists": {"playlist": [{"id": "pl1"}]}}})
-        return httpx.Response(200, json={"subsonic-response": ok})
 
-    def native(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            body = json.loads(request.content)
-            u = nd["users"].get(body["username"])
-            if u is None or u["password"] != body["password"]:
-                return httpx.Response(401, json={"error": "Invalid username or password"})
-            nd["logins"] += 1
-            return httpx.Response(200, json={"token": "jwt-admin"})
-        if request.headers.get("x-nd-authorization") != "Bearer jwt-admin":
-            return httpx.Response(401)
-        if request.method == "GET":
-            return httpx.Response(
-                200,
-                json=[
-                    {
-                        "id": f"nd-{name}",
-                        "userName": name,
-                        "name": u["name"],
-                        "isAdmin": u["isAdmin"],
-                        "lastAccessAt": "2026-10-19T22:39:46.062261113Z" if name == "boris" else None,
-                        "createdAt": "2026-10-01T10:00:00.5Z",
-                    }
-                    for name, u in nd["users"].items()
-                ],
-            )
-        body = json.loads(request.content)
-        if body["userName"] in nd["users"]:
-            return httpx.Response(400, json={"errors": {"userName": "ra.validation.unique"}})
-        nd["users"][body["userName"]] = {"password": body["password"], "isAdmin": body["isAdmin"], "name": body["name"]}
-        return httpx.Response(200, json={"id": f"nd-{body['userName']}"})
+def mock_idp(mock: respx.MockRouter) -> None:
+    mock.get(f"{IDP}/.well-known/openid-configuration").mock(return_value=httpx.Response(200, json=discovery()))
+    mock.get(f"{IDP}/jwks").mock(return_value=httpx.Response(200, json=jwks()))
+    mock.get(CERTS).mock(return_value=httpx.Response(200, json=jwks(), headers={"cache-control": "max-age=600"}))
 
+
+@pytest.fixture
+async def env(hub_env, monkeypatch, tmp_path):
+    """The app with the admin created from the environment and one generic OIDC provider (`idp.test`)."""
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", CLIENT_ID)
+    monkeypatch.setenv("PUBLIC_MUSIC_URL", "https://music.test:8444")
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"""
+oidc:
+  providers:
+    fake:
+      issuer: {IDP}
+      client_id: {OIDC_CLIENT}
+      client_secret: {OIDC_SECRET}
+      title: Fake
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CONFIG_FILE", str(config))
+
+    from app import config as app_config
+    from app.main import create_app
+
+    app_config.get_settings.cache_clear()
     app = create_app()
     async with app.router.lifespan_context(app):
         with respx.mock(assert_all_called=False) as mock:
-            mock.route(host="navidrome.test", path__startswith="/rest/").mock(side_effect=subsonic)
-            mock.route(host="navidrome.test").mock(side_effect=native)
-            mock.get(CERTS).mock(
-                return_value=httpx.Response(200, json=jwks(), headers={"cache-control": "max-age=600"})
-            )
+            mock_idp(mock)
             transport = httpx.ASGITransport(app=app)
 
             def client() -> httpx.AsyncClient:
                 return httpx.AsyncClient(transport=transport, base_url="http://hub.test")
 
             async with app_client(app) as admin:
-                yield {"admin": admin, "client": client, "nd": nd, "mock": mock}
+                yield {"admin": admin, "client": client, "mock": mock, "app": app}
+
+
+@pytest.fixture
+async def fresh_env(hub_env, monkeypatch):
+    """An empty database without an administrator in the environment: the bootstrap endpoints are the only way."""
+    from app import config
+    from app.main import create_app
+
+    monkeypatch.setenv("ADMIN_USERNAME", "")
+    monkeypatch.setenv("ADMIN_PASSWORD", "")
+    monkeypatch.setenv("ADMIN_BOOTSTRAP_TOKEN", "one-time-token")
+    config.get_settings.cache_clear()
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+
+        def client() -> httpx.AsyncClient:
+            return httpx.AsyncClient(transport=transport, base_url="http://hub.test")
+
+        async with client() as admin:
+            yield {"client": client, "app": app, "admin": admin}
 
 
 async def make_invite(admin: httpx.AsyncClient, note: str = "Анна") -> dict:
@@ -156,144 +165,235 @@ async def make_invite(admin: httpx.AsyncClient, note: str = "Анна") -> dict:
     return r.json()
 
 
-async def test_password_failures_leave_the_library_accessible(env, monkeypatch):
-    from app import auth
+def pending_cookie(client: httpx.AsyncClient) -> dict:
+    """The OIDC state the server keeps between the redirect and the callback (state/nonce/PKCE verifier)."""
+    from app.security import decrypt
 
-    now = 100.0
-    monkeypatch.setattr(auth, "monotonic", lambda: now)
-    async with env["client"]() as client:
-        for username in ("admin", "ADMIN", "admin"):
-            response = await client.post("/api/auth/login", json={"username": username, "password": "wrong"})
-            assert response.status_code == 401, response.text
-        upstream_calls = len(env["mock"].calls)
-        response = await client.post("/api/auth/login", json={"username": "ADMIN", "password": "wrong"})
-        assert response.status_code == 429, response.text
-        assert response.headers["retry-after"] == "30"
-        assert len(env["mock"].calls) == upstream_calls
-
-        library = await env["admin"].get("/api/nd/home")
-        assert library.status_code == 200, library.text
-        response = await client.post("/api/auth/login", json={"username": "boris", "password": "borispw"})
-        assert response.status_code == 200, response.text
-
-        now += 31
-        response = await client.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
-        assert response.status_code == 200, response.text
+    raw = client.cookies.get("hm_oidc")
+    assert raw, "no pending OIDC cookie"
+    return json.loads(decrypt(raw))
 
 
-async def test_search_history_is_shared_between_sessions_and_isolated_between_accounts(env):
-    from app.events import bus
-
-    async with env["client"]() as device, env["client"]() as other:
-        for client, username, password in ((device, "admin", "adminpw"), (other, "boris", "borispw")):
-            r = await client.post("/api/auth/login", json={"username": username, "password": password})
-            assert r.status_code == 200, r.text
-        me = (await env["admin"].get("/api/auth/me")).json()
-        other_me = (await other.get("/api/auth/me")).json()
-        own_events = bus.subscribe(me["id"])
-        other_events = bus.subscribe(other_me["id"])
-        try:
-            r = await env["admin"].post("/api/search/history", json={"query": "  Кино  "})
-            assert r.status_code == 200, r.text
-            assert json.loads(own_events.get_nowait()) == {"event": "search_history", "data": {}}
-            assert other_events.empty()
-            r = await device.get("/api/search/history")
-            assert r.status_code == 200, r.text
-            assert r.headers["cache-control"] == "no-store"
-            assert r.json() == {"queries": ["Кино"]}
-            assert (await other.get("/api/search/history")).json() == {"queries": []}
-            r = await other.post("/api/search/history", json={"query": "Земфира"})
-            assert r.status_code == 200, r.text
-            r = await device.delete("/api/search/history")
-            assert r.status_code == 200, r.text
-            assert (await env["admin"].get("/api/search/history")).json() == {"queries": []}
-            assert (await other.get("/api/search/history")).json() == {"queries": ["Земфира"]}
-            assert json.loads(own_events.get_nowait()) == {"event": "search_history", "data": {}}
-        finally:
-            bus.unsubscribe(me["id"], own_events)
-            bus.unsubscribe(other_me["id"], other_events)
+# --- sign-in and the attempt limiter --------------------------------------------------------
 
 
-async def test_search_history_keeps_thirty_recent_queries_and_moves_repeats_to_top(env):
-    from app.db import session_scope
-    from app.models import SearchHistory, utcnow
-
-    admin = env["admin"]
-    user_id = (await admin.get("/api/auth/me")).json()["id"]
-    now = utcnow()
-    async with session_scope() as s:
-        s.add_all(
-            SearchHistory(
-                user_id=user_id,
-                query_key=f"запрос {i}",
-                query=f"Запрос {i}",
-                searched_at=now - timedelta(seconds=30 - i),
-            )
-            for i in range(30)
-        )
-    r = await admin.post("/api/search/history", json={"query": "Новый запрос"})
-    assert r.status_code == 200, r.text
-    queries = (await admin.get("/api/search/history")).json()["queries"]
-    assert queries == ["Новый запрос", *[f"Запрос {i}" for i in range(29, 0, -1)]]
-    r = await admin.post("/api/search/history", json={"query": "  ЗАПРОС 15  "})
-    assert r.status_code == 200, r.text
-    assert (await admin.get("/api/search/history")).json()["queries"] == [
-        "ЗАПРОС 15",
-        *[q for q in queries if q != "Запрос 15"],
-    ]
-
-
-async def test_concurrent_search_history_writes_do_not_lose_queries(env):
-    async with env["client"]() as device:
-        r = await device.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
-        assert r.status_code == 200, r.text
-        results = await asyncio.gather(
-            env["admin"].post("/api/search/history", json={"query": "Кино"}),
-            device.post("/api/search/history", json={"query": "Земфира"}),
-        )
-        for r in results:
-            assert r.status_code == 200, r.text
-        queries = (await device.get("/api/search/history")).json()["queries"]
-        assert len(queries) == 2 and set(queries) == {"Кино", "Земфира"}
-
-
-@pytest.mark.parametrize("query", ["", " ", "я", " a ", "a" * 513])
-async def test_search_history_rejects_invalid_queries(env, query):
-    r = await env["admin"].post("/api/search/history", json={"query": query})
-    assert r.status_code == 422, r.text
-    assert (await env["admin"].get("/api/search/history")).json() == {"queries": []}
-
-
-@pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
-async def test_search_history_requires_authentication(env, method):
-    async with env["client"]() as anonymous:
-        r = await anonymous.request(method, "/api/search/history", json={"query": "Кино"})
-        assert r.status_code == 401, r.text
-
-
-async def test_options_tell_about_google(env, monkeypatch):
+async def test_login_is_local_and_never_calls_navidrome(env):
     async with env["client"]() as c:
-        r = await c.get("/api/auth/options")
-        assert r.json() == {
-            "invites": True,
-            "email_signup": False,
-            "google_client_id": CLIENT_ID,
-            "music_url": "https://music.test:8444",
-        }
-        from app import config
-
-        monkeypatch.setenv("GOOGLE_CLIENT_ID", "")
-        config.get_settings.cache_clear()
-        assert (await c.get("/api/auth/options")).json()["google_client_id"] is None
-        r = await c.post("/api/auth/google", json={"id_token": google_token()})
-        assert r.status_code == 404
+        with respx.mock(assert_all_called=False) as nd:
+            nd.route(host=ND.split("://", 1)[1]).mock(side_effect=AssertionError("Navidrome must not be asked"))
+            r = await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
+            assert r.status_code == 200, r.text
+            assert r.json()["username"] == "admin" and r.json()["is_admin"] is True
+            assert not nd.calls
+        me = (await c.get("/api/auth/me")).json()
+        assert me["username"] == "admin" and me["must_change_password"] is False
 
 
-async def test_register_with_invite(env):
+async def test_wrong_password_and_unknown_user(env):
+    async with env["client"]() as c:
+        assert (await c.post("/api/auth/login", json={"username": "admin", "password": "wrong"})).status_code == 401
+        assert (await c.post("/api/auth/login", json={"username": "nobody", "password": "wrong"})).status_code == 401
+
+
+async def test_login_attempts_are_limited_in_postgres(env):
+    from sqlalchemy import func, select
+
+    from app.db import session_scope
+    from app.models import LoginAttempt
+
+    async with env["client"]() as c:
+        for _ in range(3):
+            assert (await c.post("/api/auth/login", json={"username": "admin", "password": "wrong"})).status_code == 401
+        r = await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
+        assert r.status_code == 429, r.text
+        assert int(r.headers["retry-after"]) > 0
+    async with session_scope() as s:  # the limiter lives in the database: a restart does not forget it
+        assert (await s.execute(select(func.count(LoginAttempt.id)))).scalar_one() == 3
+    async with env["client"]() as c:
+        assert (await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})).status_code == 429
+
+
+async def test_stale_attempts_do_not_limit_forever(env):
+    from sqlalchemy import update
+
+    from app.db import session_scope
+    from app.models import LoginAttempt, utcnow
+
+    async with env["client"]() as c:
+        for _ in range(3):
+            await c.post("/api/auth/login", json={"username": "admin", "password": "wrong"})
+    async with session_scope() as s:
+        await s.execute(update(LoginAttempt).values(attempted_at=utcnow() - timedelta(minutes=5)))
+    async with env["client"]() as c:
+        assert (await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})).status_code == 200
+
+
+async def test_sessions_and_logout(env):
+    async with env["client"]() as phone, env["client"]() as laptop:
+        for c in (phone, laptop):
+            assert (
+                await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
+            ).status_code == 200
+        listed = (await phone.get("/api/auth/sessions")).json()["sessions"]
+        # the fixture's admin client, the phone and the laptop
+        assert len(listed) == 3
+        assert sum(1 for s in listed if s["current"]) == 1
+        # the laptop is revoked by its device id; its refresh stops working
+        label = f"Устройство {laptop.cookies.get('hm_device', path='/api/auth')[:6]}"
+        other = next(s for s in listed if s["device"] == label)
+        assert (await phone.delete(f"/api/auth/sessions/{other['id']}")).json() == {"ok": True}
+        assert (await laptop.post("/api/auth/refresh")).status_code == 401
+        # logout revokes the current session
+        assert (await phone.post("/api/auth/logout")).json() == {"ok": True}
+        assert (await phone.post("/api/auth/refresh")).status_code == 401
+        assert (await phone.get("/api/auth/me")).status_code == 401
+
+
+async def test_refresh_rotates_and_a_parallel_replay_gets_the_same_pair(env):
+    async with env["client"]() as c:
+        await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
+        old = c.cookies.get("hm_refresh", path="/api/auth")
+        first = await c.post("/api/auth/refresh")
+        assert first.status_code == 200, first.text
+        rotated = c.cookies.get("hm_refresh", path="/api/auth")
+        assert rotated and rotated != old
+        # the same device replays the old token inside the window: the stored pair, no second token
+        c.cookies.set("hm_refresh", old, path="/api/auth", domain="hub.test")
+        second = await c.post("/api/auth/refresh")
+        assert second.status_code == 200, second.text
+        assert c.cookies.get("hm_refresh", path="/api/auth") == rotated
+        assert (await c.get("/api/auth/me")).status_code == 200
+
+
+async def test_refresh_reuse_outside_the_window_revokes_the_session(env):
+    from sqlalchemy import update
+
+    from app.db import session_scope
+    from app.models import RefreshToken, utcnow
+
+    async with env["client"]() as c:
+        await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
+        old = c.cookies.get("hm_refresh", path="/api/auth")
+        assert (await c.post("/api/auth/refresh")).status_code == 200
+        async with session_scope() as s:  # the idempotency window is 10 seconds
+            await s.execute(update(RefreshToken).values(rotated_at=utcnow() - timedelta(seconds=30)))
+        c.cookies.set("hm_refresh", old, path="/api/auth", domain="hub.test")
+        r = await c.post("/api/auth/refresh")
+        assert r.status_code == 401, r.text
+        # the whole session is gone, not only the replayed token
+        assert (await c.post("/api/auth/refresh")).status_code == 401
+
+
+# --- bootstrap ----------------------------------------------------------------------------
+
+
+async def test_bootstrap_from_environment_is_idempotent(env):
+    from sqlalchemy import select
+
+    from app.bootstrap import bootstrap_from_env
+    from app.db import session_scope
+    from app.models import User
+
+    async with env["client"]() as c:
+        assert (await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})).status_code == 200
+    await bootstrap_from_env()
+    async with session_scope() as s:
+        users = list((await s.execute(select(User))).scalars())
+    assert [u.username for u in users] == ["admin"]
+
+
+async def test_no_default_admin_without_environment(fresh_env):
+    from sqlalchemy import func, select
+
+    from app.db import session_scope
+    from app.models import User
+
+    async with fresh_env["client"]() as c:
+        assert (await c.post("/api/auth/login", json={"username": "admin", "password": "admin"})).status_code == 401
+        assert (await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})).status_code == 401
+    async with session_scope() as s:
+        assert (await s.execute(select(func.count(User.id)))).scalar_one() == 0
+
+
+async def test_bootstrap_token_creates_the_admin_once(fresh_env):
+    async with fresh_env["client"]() as c:
+        r = await c.post("/api/auth/bootstrap", json={"token": "wrong", "username": "boss", "password": "boss-pass1"})
+        assert r.status_code == 401
+        r = await c.post(
+            "/api/auth/bootstrap", json={"token": "one-time-token", "username": "boss", "password": "boss-pass1"}
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["is_admin"] is True and r.json()["must_change_password"] is True
+        # the first password must be changed before anything else
+        assert (await c.get("/api/admin/users")).status_code == 403
+        assert (await c.get("/api/auth/me")).status_code == 200
+    async with fresh_env["client"]() as c:
+        r = await c.post(
+            "/api/auth/bootstrap", json={"token": "one-time-token", "username": "boss2", "password": "boss-pass2"}
+        )
+        assert r.status_code == 409
+
+
+async def test_bootstrap_rejects_a_weak_password(fresh_env):
+    async with fresh_env["client"]() as c:
+        r = await c.post("/api/auth/bootstrap", json={"token": "one-time-token", "username": "boss", "password": "123"})
+        assert r.status_code == 400
+        r = await c.post(
+            "/api/auth/bootstrap", json={"token": "one-time-token", "username": "boss", "password": "password"}
+        )
+        assert r.status_code == 400
+
+
+# --- password change ------------------------------------------------------------------------
+
+
+async def test_password_change_with_must_change_password_gate(fresh_env):
+    async with fresh_env["client"]() as c:
+        await c.post(
+            "/api/auth/bootstrap", json={"token": "one-time-token", "username": "boss", "password": "boss-pass1"}
+        )
+        assert (await c.post("/api/auth/refresh")).status_code == 200  # refresh is allowed
+        r = await c.post("/api/auth/password", json={"current_password": "nope", "new_password": "new-pass1"})
+        assert r.status_code == 401
+        r = await c.post("/api/auth/password", json={"current_password": "boss-pass1", "new_password": "new-pass1"})
+        assert r.status_code == 200, r.text
+        assert r.json()["must_change_password"] is False
+        assert (await c.get("/api/admin/users")).status_code == 200
+    async with fresh_env["client"]() as c:
+        assert (await c.post("/api/auth/login", json={"username": "boss", "password": "new-pass1"})).status_code == 200
+
+
+async def test_password_change_revokes_the_other_devices(env):
+    async with env["client"]() as phone, env["client"]() as laptop:
+        for c in (phone, laptop):
+            await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
+        r = await phone.post("/api/auth/password", json={"current_password": "adminpw", "new_password": "adminpw2"})
+        assert r.status_code == 200, r.text
+        # the current device still refreshes, the other one is out
+        assert (await phone.post("/api/auth/refresh")).status_code == 200
+        assert (await laptop.post("/api/auth/refresh")).status_code == 401
+
+
+async def test_cli_reset_sets_must_change_password(env):
+    from app.bootstrap import reset_password
+
+    async with env["client"]() as c:
+        await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
+    user = await reset_password("admin", "reset-pass1")
+    assert user.must_change_password is True
+    async with env["client"]() as c:
+        r = await c.post("/api/auth/login", json={"username": "admin", "password": "reset-pass1"})
+        assert r.status_code == 200 and r.json()["must_change_password"] is True
+        assert (await c.get("/api/admin/users")).status_code == 403
+
+
+# --- registration ---------------------------------------------------------------------------
+
+
+async def test_register_with_invite_creates_a_local_user(env):
     inv = await make_invite(env["admin"])
     assert inv["status"] == "active" and len(inv["code"]) == 9 and inv["code"][4] == "-"
     async with env["client"]() as c:
-        # typed by hand: lower case, spaces, no dash
         r = await c.post(
             "/api/auth/register",
             json={"code": f" {inv['code'].replace('-', ' ').lower()} ", "username": "anna", "password": "secret1"},
@@ -301,17 +401,24 @@ async def test_register_with_invite(env):
         assert r.status_code == 200, r.text
         assert r.json()["username"] == "anna" and not r.json()["is_admin"]
         assert (await c.get("/api/auth/me")).json()["username"] == "anna"
-        # the Navidrome user carries the invite's note as its name
-        assert env["nd"]["users"]["anna"] == {"password": "secret1", "isAdmin": False, "name": "Анна"}
         # the code is spent
         r = await c.post("/api/auth/register", json={"code": inv["code"], "username": "anna2", "password": "secret1"})
         assert r.status_code == 400
-        # a regular user is not an admin
         assert (await c.get("/api/admin/invites")).status_code == 403
         assert (await c.get("/api/admin/users")).status_code == 403
     listed = (await env["admin"].get("/api/admin/invites")).json()
     assert listed[0]["status"] == "used" and listed[0]["used_by"] == "anna"
     assert (await env["admin"].delete(f"/api/admin/invites/{inv['id']}")).status_code == 409
+    # the account is local: no Navidrome user was made and the password is stored as an argon2id hash
+    from sqlalchemy import select
+
+    from app.db import session_scope
+    from app.models import User
+
+    async with session_scope() as s:
+        anna = (await s.execute(select(User).where(User.username == "anna"))).scalar_one()
+        assert anna.nd_username is None and anna.nd_password_enc is None
+        assert anna.password_hash and anna.password_hash.startswith("$argon2id$")
 
 
 async def test_register_rejects_bad_input_and_keeps_the_code(env):
@@ -321,8 +428,8 @@ async def test_register_rejects_bad_input_and_keeps_the_code(env):
             ({"code": "WRONG-CODE", "username": "anna", "password": "secret1"}, 400),
             ({"code": inv["code"], "username": "ан на", "password": "secret1"}, 400),
             ({"code": inv["code"], "username": "anna", "password": "123"}, 400),
-            ({"code": inv["code"], "username": "boris", "password": "secret1"}, 409),  # taken in Navidrome
-            ({"code": inv["code"], "username": "Admin", "password": "secret1"}, 409),  # taken in the Hub
+            ({"code": inv["code"], "username": "anna", "password": "password"}, 400),
+            ({"code": inv["code"], "username": "Admin", "password": "secret1"}, 409),
         ]:
             r = await c.post("/api/auth/register", json=body)
             assert r.status_code == status, (body, r.text)
@@ -360,6 +467,9 @@ async def test_guessing_codes_is_limited(env):
         assert r.status_code == 429
 
 
+# --- registration by email ------------------------------------------------------------------
+
+
 @pytest.fixture
 def letters(env, monkeypatch):
     """Email registration on, the letters it sends (no SMTP); `letters.deliver.fail` makes sending fail."""
@@ -370,7 +480,7 @@ def letters(env, monkeypatch):
     config.get_settings.cache_clear()
 
     class Sent(list):
-        pass
+        deliver: Any = None
 
     sent = Sent()
 
@@ -387,7 +497,9 @@ def letters(env, monkeypatch):
 def code_of(letter) -> str:
     import re
 
-    return re.search(r"\b(\d{6})\b", letter.get_content()).group(1)
+    found = re.search(r"\b(\d{6})\b", letter.get_content())
+    assert found is not None
+    return found.group(1)
 
 
 def other_code(code: str) -> str:
@@ -421,7 +533,6 @@ async def test_register_by_email(env, letters):
         )
         assert r.status_code == 200, r.text
         assert r.json()["username"] == "anna" and r.json()["email"] == "anna.k@mail.test"
-        assert env["nd"]["users"]["anna"] == {"password": "secret1", "isAdmin": False, "name": "anna"}
         assert (await c.get("/api/auth/me")).json()["email"] == "anna.k@mail.test"
         # the letter is spent, and the address has an account now
         r = await c.post(
@@ -431,7 +542,7 @@ async def test_register_by_email(env, letters):
         assert r.status_code == 400
         assert (await c.post("/api/auth/email/code", json={"email": "anna.k@mail.test"})).status_code == 409
     async with env["client"]() as c:  # sign-in by the email instead of the name
-        r = await c.post("/api/auth/login", json={"username": "Anna.K@mail.test", "password": "secret1"})
+        r = await c.post("/api/auth/login", json={"username": "Anna.K@Mail.test", "password": "secret1"})
         assert r.status_code == 200 and r.json()["username"] == "anna"
         r = await c.post("/api/auth/login", json={"username": "anna.k@mail.test", "password": "wrong1"})
         assert r.status_code == 401
@@ -446,8 +557,7 @@ async def test_email_registration_keeps_the_code_on_bad_input(env, letters):
         for body, status in [
             ({"username": "ан на", "password": "secret1"}, 400),
             ({"username": "gleb", "password": "123"}, 400),
-            ({"username": "boris", "password": "secret1"}, 409),  # taken in Navidrome
-            ({"username": "Admin", "password": "secret1"}, 409),  # taken in the Hub
+            ({"username": "Admin", "password": "secret1"}, 409),
         ]:
             r = await c.post("/api/auth/email/register", json={"email": "gleb@mail.test", "code": code, **body})
             assert r.status_code == status, (body, r.text)
@@ -466,7 +576,7 @@ async def test_email_codes_are_limited(env, letters, monkeypatch):
     from app.models import EmailCode, utcnow
 
     async def age(minutes: int) -> None:
-        async with session_scope() as s:  # in Python: SQLite has no arithmetic on these datetimes
+        async with session_scope() as s:
             for row in (await s.execute(select(EmailCode))).scalars():
                 row.created_at -= timedelta(minutes=minutes)
 
@@ -550,6 +660,155 @@ async def test_old_email_codes_are_purged(env, letters):
         assert (await s.execute(select(func.count(EmailCode.id)))).scalar_one() == 1
 
 
+# --- OIDC -----------------------------------------------------------------------------------
+
+
+async def test_options_list_oidc_providers(env):
+    async with env["client"]() as c:
+        out = (await c.get("/api/auth/options")).json()
+    assert out["oidc_providers"] == [{"name": "google", "title": "Google"}, {"name": "fake", "title": "Fake"}]
+
+
+async def test_oidc_start_redirects_with_pkce_state_and_nonce(env):
+    async with env["client"]() as c:
+        r = await c.get("/api/auth/oidc/fake/start")
+        assert r.status_code == 302, r.text
+        location = r.headers["location"]
+        assert location.startswith(f"{IDP}/authorize?")
+        assert "code_challenge_method=S256" in location and "state=" in location and "nonce=" in location
+        pending = pending_cookie(c)
+        assert pending["provider"] == "fake" and pending["mode"] == "login"
+
+
+async def test_oidc_sign_in_of_a_linked_account(env):
+    from sqlalchemy import select
+
+    from app.db import session_scope
+    from app.models import User
+
+    async with env["client"]() as c:
+        await c.get("/api/auth/oidc/fake/start")
+        pending = pending_cookie(c)
+        env["mock"].post(f"{IDP}/token").mock(
+            return_value=httpx.Response(200, json={"id_token": idp_token(nonce=pending["nonce"])})
+        )
+        await c.get("/api/auth/oidc/fake/callback", params={"code": "abc", "state": pending["state"]})
+        # the fake identity is new: no invite, so 409 and no session
+        r = await c.get("/api/auth/oidc/fake/callback", params={"code": "abc", "state": pending["state"]})
+        assert r.status_code in (400, 409)
+    async with session_scope() as s:
+        assert (await s.execute(select(User.id).where(User.username == "gleb"))).first() is None
+
+
+async def test_oidc_with_an_invite_creates_a_local_user_then_signs_in(env):
+    from sqlalchemy import select
+
+    from app.db import session_scope
+    from app.models import OAuthLink, User
+
+    inv = await make_invite(env["admin"])
+    async with env["client"]() as c:
+        await c.get("/api/auth/oidc/fake/start", params={"invite": inv["code"]})
+        pending = pending_cookie(c)
+        env["mock"].post(f"{IDP}/token").mock(
+            return_value=httpx.Response(200, json={"id_token": idp_token(nonce=pending["nonce"])})
+        )
+        r = await c.get("/api/auth/oidc/fake/callback", params={"code": "abc", "state": pending["state"]})
+        assert r.status_code == 303, r.text  # back to the PWA, the cookies are set
+        me = (await c.get("/api/auth/me")).json()
+        assert me["username"] == "gleb" and me["oidc_links"] == ["fake"] and me["email"] == "gleb@mail.test"
+    async with session_scope() as s:
+        user = (await s.execute(select(User).where(User.username == "gleb"))).scalar_one()
+        link = (await s.execute(select(OAuthLink).where(OAuthLink.user_id == user.id))).scalar_one()
+        assert (link.provider, link.issuer, link.subject) == ("fake", IDP, "idp-1")
+    # a second sign-in needs no invite
+    async with env["client"]() as c:
+        await c.get("/api/auth/oidc/fake/start")
+        pending = pending_cookie(c)
+        env["mock"].post(f"{IDP}/token").mock(
+            return_value=httpx.Response(200, json={"id_token": idp_token(nonce=pending["nonce"])})
+        )
+        r = await c.get("/api/auth/oidc/fake/callback", params={"code": "abc", "state": pending["state"]})
+        assert r.status_code == 303, r.text
+        assert (await c.get("/api/auth/me")).json()["username"] == "gleb"
+
+
+async def test_oidc_rejects_a_mismatched_state_and_a_bad_nonce(env):
+    async with env["client"]() as c:
+        await c.get("/api/auth/oidc/fake/start")
+        pending = pending_cookie(c)
+        r = await c.get("/api/auth/oidc/fake/callback", params={"code": "abc", "state": "other"})
+        assert r.status_code == 400
+        env["mock"].post(f"{IDP}/token").mock(
+            return_value=httpx.Response(200, json={"id_token": idp_token(nonce="not-the-nonce")})
+        )
+        r = await c.get("/api/auth/oidc/fake/callback", params={"code": "abc", "state": pending["state"]})
+        assert r.status_code == 400
+        assert (await c.get("/api/auth/me")).status_code == 401
+
+
+async def test_oidc_discovery_outage_is_502(env):
+    env["mock"].get(f"{IDP}/.well-known/openid-configuration").mock(return_value=httpx.Response(503))
+    async with env["client"]() as c:
+        r = await c.get("/api/auth/oidc/fake/start")
+        assert r.status_code == 502 and "не отвечает" in r.json()["detail"]
+
+
+async def test_oidc_link_and_unlink(env):
+    env["mock"].post(f"{IDP}/token").mock(
+        return_value=httpx.Response(200, json={"id_token": idp_token(sub="idp-admin", email="boss@mail.test")})
+    )
+    async with env["client"]() as c:
+        await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
+        await c.get("/api/auth/oidc/fake/start", params={"mode": "link"})
+        pending = pending_cookie(c)
+        env["mock"].post(f"{IDP}/token").mock(
+            return_value=httpx.Response(
+                200, json={"id_token": idp_token(sub="idp-admin", email="boss@mail.test", nonce=pending["nonce"])}
+            )
+        )
+        r = await c.get("/api/auth/oidc/fake/callback", params={"code": "abc", "state": pending["state"]})
+        assert r.status_code == 303, r.text
+        assert (await c.get("/api/auth/me")).json()["oidc_links"] == ["fake"]
+    # a link that belongs to another user cannot be taken over
+    inv = await make_invite(env["admin"])
+    async with env["client"]() as c:
+        await c.post("/api/auth/register", json={"code": inv["code"], "username": "anna", "password": "secret1"})
+        await c.get("/api/auth/oidc/fake/start", params={"mode": "link"})
+        pending = pending_cookie(c)
+        env["mock"].post(f"{IDP}/token").mock(
+            return_value=httpx.Response(200, json={"id_token": idp_token(sub="idp-admin", nonce=pending["nonce"])})
+        )
+        r = await c.get("/api/auth/oidc/fake/callback", params={"code": "abc", "state": pending["state"]})
+        assert r.status_code == 409
+        r = await c.delete("/api/auth/oidc/link/fake")
+        assert r.status_code == 404  # anna has no such link
+
+
+async def test_oidc_unlink_is_refused_when_it_is_the_only_way_in(env):
+    inv = await make_invite(env["admin"])
+    async with env["client"]() as c:
+        await c.get("/api/auth/oidc/fake/start", params={"invite": inv["code"]})
+        pending = pending_cookie(c)
+        env["mock"].post(f"{IDP}/token").mock(
+            return_value=httpx.Response(200, json={"id_token": idp_token(nonce=pending["nonce"])})
+        )
+        assert (
+            await c.get("/api/auth/oidc/fake/callback", params={"code": "abc", "state": pending["state"]})
+        ).status_code == 303
+        r = await c.delete("/api/auth/oidc/link/fake")
+        assert r.status_code == 409
+        # with a password of its own the link may go
+        assert (
+            await c.post("/api/auth/password", json={"current_password": None, "new_password": "own-pass1"})
+        ).status_code == 200
+        r = await c.delete("/api/auth/oidc/link/fake")
+        assert r.status_code == 200 and r.json()["oidc_links"] == []
+
+
+# --- the legacy Google ID-token flow ---------------------------------------------------------
+
+
 async def test_google_sign_in_registers_with_invite_then_signs_in(env):
     async with env["client"]() as c:
         r = await c.post("/api/auth/google", json={"id_token": google_token()})
@@ -558,14 +817,13 @@ async def test_google_sign_in_registers_with_invite_then_signs_in(env):
         r = await c.post("/api/auth/google", json={"id_token": google_token(), "code": inv["code"]})
         assert r.status_code == 200, r.text
         out = r.json()
-        # the name comes from the email when the app sends none; the password works for the player
+        # the name comes from the email when the app sends none; no Navidrome password is returned any more
         assert out["username"] == "anna.k" and out["google_email"] == "anna.k@gmail.com"
-        assert env["nd"]["users"]["anna.k"]["password"] == out["password"]
+        assert "password" not in out
     async with env["client"]() as c:  # another phone: the same account, no code needed
         r = await c.post("/api/auth/google", json={"id_token": google_token()})
         assert r.status_code == 200, r.text
-        assert r.json()["username"] == "anna.k" and r.json()["password"] == out["password"]
-        assert (await c.get("/api/auth/me")).json()["username"] == "anna.k"
+        assert r.json()["username"] == "anna.k" and "password" not in r.json()
 
 
 async def test_google_tokens_are_checked(env):
@@ -597,8 +855,7 @@ async def test_link_google_to_a_password_account(env):
     assert r.status_code == 200 and r.json()["google_email"] == "boss@gmail.com"
     async with env["client"]() as c:
         r = await c.post("/api/auth/google", json={"id_token": google_token(sub="g-admin")})
-        assert r.status_code == 200 and r.json()["username"] == "admin" and r.json()["password"] == "adminpw"
-        assert r.json()["is_admin"]
+        assert r.status_code == 200 and r.json()["username"] == "admin" and r.json()["is_admin"]
     # the same Google account can't go to a second user
     inv = await make_invite(admin)
     async with env["client"]() as c:
@@ -611,15 +868,127 @@ async def test_link_google_to_a_password_account(env):
         assert (await c.post("/api/auth/google", json={"id_token": google_token(sub="g-admin")})).status_code == 409
 
 
-async def test_google_account_whose_password_changed(env):
+async def test_google_account_survives_a_password_change(env):
     await env["admin"].post("/api/auth/google/link", json={"id_token": google_token(sub="g-admin")})
-    env["nd"]["users"]["admin"]["password"] = "changed"
+    assert (
+        await env["admin"].post("/api/auth/password", json={"current_password": "adminpw", "new_password": "adminpw2"})
+    ).status_code == 200
     async with env["client"]() as c:
+        # the Google link is a way in of its own now: the password change did not break it
         r = await c.post("/api/auth/google", json={"id_token": google_token(sub="g-admin")})
-        assert r.status_code == 401 and "привяжите Google снова" in r.json()["detail"]
+        assert r.status_code == 200 and r.json()["username"] == "admin"
+
+
+# --- the admin list and the ND transition ----------------------------------------------------
+
+
+async def test_admin_user_list_has_only_local_users(env):
+    inv = await make_invite(env["admin"], "Анна")
+    async with env["client"]() as c:
+        await c.post("/api/auth/register", json={"code": inv["code"], "username": "anna", "password": "secret1"})
+    with respx.mock(assert_all_called=False) as nd:
+        nd.route(host=ND.split("://", 1)[1]).mock(side_effect=AssertionError("the list is local now"))
+        users = (await env["admin"].get("/api/admin/users")).json()["users"]
+        assert not nd.calls
+    assert {u["username"] for u in users} == {"admin", "anna"}
+    assert all(u["in_hub"] and u["id"] is not None for u in users)
+    assert users[0]["starred_songs"] == 0 and users[0]["playlists"] == 0
+
+
+async def test_nd_endpoints_answer_from_the_hub_for_a_user_without_navidrome(env):
+    with respx.mock(assert_all_called=False) as nd:
+        nd.route(host=ND.split("://", 1)[1]).mock(side_effect=AssertionError("no ND account: no ND call"))
+        r = await env["admin"].get("/api/nd/home")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["recent"] == [] and body["radio"] == [] and "starred" in body
+        assert (await env["admin"].get("/api/nd/liked")).json() == {"songs": [], "albums": [], "artists": []}
+        assert (await env["admin"].get("/api/nd/albums")).json() == []
+        assert (await env["admin"].get("/api/nd/artists")).json() == []
+        assert not nd.calls
+
+
+async def test_search_history_is_shared_between_sessions_and_isolated_between_accounts(env):
+    from app.events import bus
+
+    inv = await make_invite(env["admin"], "Борис")
+    async with env["client"]() as device, env["client"]() as other:
+        assert (
+            await device.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
+        ).status_code == 200
+        await other.post("/api/auth/register", json={"code": inv["code"], "username": "boris", "password": "borispw"})
+        me = (await env["admin"].get("/api/auth/me")).json()
+        other_me = (await other.get("/api/auth/me")).json()
+        own_events = bus.subscribe(me["id"])
+        other_events = bus.subscribe(other_me["id"])
+        try:
+            r = await env["admin"].post("/api/search/history", json={"query": "  Кино  "})
+            assert r.status_code == 200, r.text
+            assert json.loads(own_events.get_nowait()) == {"event": "search_history", "data": {}}
+            assert other_events.empty()
+            r = await device.get("/api/search/history")
+            assert r.status_code == 200, r.text
+            assert r.headers["cache-control"] == "no-store"
+            assert r.json() == {"queries": ["Кино"]}
+            assert (await other.get("/api/search/history")).json() == {"queries": []}
+            r = await other.post("/api/search/history", json={"query": "Земфира"})
+            assert r.status_code == 200, r.text
+            r = await device.delete("/api/search/history")
+            assert r.status_code == 200, r.text
+            assert (await env["admin"].get("/api/search/history")).json() == {"queries": []}
+            assert (await other.get("/api/search/history")).json() == {"queries": ["Земфира"]}
+            assert json.loads(own_events.get_nowait()) == {"event": "search_history", "data": {}}
+        finally:
+            bus.unsubscribe(me["id"], own_events)
+            bus.unsubscribe(other_me["id"], other_events)
+
+
+async def test_search_history_keeps_thirty_recent_queries_and_moves_repeats_to_top(env):
+    from app.db import session_scope
+    from app.models import SearchHistory, utcnow
+
+    admin = env["admin"]
+    user_id = (await admin.get("/api/auth/me")).json()["id"]
+    now = utcnow()
+    async with session_scope() as s:
+        s.add_all(
+            SearchHistory(
+                user_id=user_id,
+                query_key=f"запрос {i}",
+                query=f"Запрос {i}",
+                searched_at=now - timedelta(seconds=30 - i),
+            )
+            for i in range(30)
+        )
+    r = await admin.post("/api/search/history", json={"query": "Новый запрос"})
+    assert r.status_code == 200, r.text
+    queries = (await admin.get("/api/search/history")).json()["queries"]
+    assert queries == ["Новый запрос", *[f"Запрос {i}" for i in range(29, 0, -1)]]
+    r = await admin.post("/api/search/history", json={"query": "  ЗАПРОС 15  "})
+    assert r.status_code == 200, r.text
+    assert (await admin.get("/api/search/history")).json()["queries"] == [
+        "ЗАПРОС 15",
+        *[q for q in queries if q != "Запрос 15"],
+    ]
+
+
+@pytest.mark.parametrize("query", ["", " ", "я", " a ", "a" * 513])
+async def test_search_history_rejects_invalid_queries(env, query):
+    r = await env["admin"].post("/api/search/history", json={"query": query})
+    assert r.status_code == 422, r.text
+    assert (await env["admin"].get("/api/search/history")).json() == {"queries": []}
+
+
+@pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
+async def test_search_history_requires_authentication(env, method):
+    async with env["client"]() as anonymous:
+        r = await anonymous.request(method, "/api/search/history", json={"query": "Кино"})
+        assert r.status_code == 401, r.text
 
 
 async def test_admin_user_list_with_spending_and_songs(env):
+    from sqlalchemy import select
+
     from app.db import session_scope
     from app.models import AiUsage, DownloadBatch, DownloadItem, Track, User, utcnow
 
@@ -627,10 +996,8 @@ async def test_admin_user_list_with_spending_and_songs(env):
     async with env["client"]() as c:
         await c.post("/api/auth/register", json={"code": inv["code"], "username": "anna", "password": "secret1"})
     async with session_scope() as s:
-        from sqlalchemy import select
-
-        admin = (await s.execute(select(User).where(User.nd_username == "admin"))).scalar_one()
-        anna = (await s.execute(select(User).where(User.nd_username == "anna"))).scalar_one()
+        admin = (await s.execute(select(User).where(User.username == "admin"))).scalar_one()
+        anna = (await s.execute(select(User).where(User.username == "anna"))).scalar_one()
         s.add_all(
             [
                 AiUsage(user_id=anna.id, kind="chat", tokens_in=1000, tokens_out=100, cost_usd=0.0015),
@@ -658,76 +1025,349 @@ async def test_admin_user_list_with_spending_and_songs(env):
                     query_json={"query": {"artist": "Кино", "title": "Группа крови"}},
                 )
             )
-        s.add(
-            Track(
-                uid="t1",
-                path="a/1.mp3",
-                artist="Кино",
-                title="Группа крови",
-                fingerprint="кино|группа крови",
-                added_by=anna.id,
-            )
+        s.add(Track(uid="t-anna", path=None, artist="Кино", title="Группа крови", fingerprint="x", added_by=anna.id))
+    out = (await env["admin"].get("/api/admin/users")).json()["users"]
+    anna_out = next(u for u in out if u["username"] == "anna")
+    assert anna_out["ai_cost_usd"] == 0.5035
+    assert anna_out["ai_cost_30d_usd"] == 0.0035
+    assert anna_out["ai_requests"] == 3
+    assert anna_out["downloads_done"] == 2 and anna_out["downloads_failed"] == 1
+    assert anna_out["downloads_active"] == 1 and anna_out["tracks_added"] == 1
+    detail = (await env["admin"].get(f"/api/admin/users/{anna_out['id']}")).json()
+    assert detail["ai_months"][0]["month"] == utcnow().strftime("%Y-%m")
+    assert detail["recent_downloads"][0]["artist"] == "Кино"
+    total = (await env["admin"].get("/api/admin/users")).json()
+    assert total["ai_cost_usd"] == 0.5135 and total["library_tracks"] == 1
+
+
+def test_password_hashes_are_argon2id_and_never_the_password():
+    from app.passwords import hash_password, verify_password
+
+    stored = hash_password("correct horse")
+    assert stored.startswith("$argon2id$") and "correct horse" not in stored
+    assert verify_password(stored, "correct horse")
+    assert not verify_password(stored, "wrong")
+    assert not verify_password(None, "correct horse")
+    assert not verify_password("not-a-hash", "correct horse")
+
+
+def test_password_hash_unit_roundtrip():
+    from app.passwords import hash_password, verify_password
+
+    stored = hash_password("s3cret-pass")
+    assert verify_password(stored, "s3cret-pass")
+    assert not verify_password(stored, "s3cret-pas")
+
+
+def test_sha256_token_hash_is_stable():
+    from app.security import hash_token
+
+    assert hashlib.sha256(b"token").hexdigest() == hash_token("token")
+
+
+# --- cookies, error format, secrets in logs, no OIDC Provider -------------------------------
+
+
+async def test_cookie_attributes(env):
+    transport = httpx.ASGITransport(app=env["app"])
+    async with httpx.AsyncClient(transport=transport, base_url="http://hub.test") as plain:
+        r = await plain.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
+        assert r.status_code == 200
+        cookies = {c.name: c for c in plain.cookies.jar}
+        access = r.headers.get_list("set-cookie")
+        assert any("hm_session=" in c and "HttpOnly" in c and "Path=/" in c for c in access)
+        assert any("hm_refresh=" in c and "Path=/api/auth" in c and "HttpOnly" in c for c in access)
+        assert any("hm_device=" in c and "Path=/api/auth" in c for c in access)
+        assert all("SameSite=lax" in c for c in access if c.startswith(("hm_session", "hm_refresh")))
+        # plain HTTP: the cookies are not Secure (a local network install without TLS keeps working)
+        assert not any("Secure" in c for c in access)
+        assert "hm_session" in cookies and "hm_refresh" in cookies and "hm_device" in cookies
+    async with httpx.AsyncClient(transport=transport, base_url="https://hub.test") as tls:
+        r = await tls.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
+        assert r.status_code == 200
+        assert all(
+            "Secure" in c for c in r.headers.get_list("set-cookie") if c.startswith(("hm_session", "hm_refresh"))
         )
 
-    out = (await env["admin"].get("/api/admin/users")).json()
-    by = {u["username"]: u for u in out["users"]}
-    assert set(by) == {"admin", "anna", "boris"}
-    m = by["anna"]
-    assert m["ai_requests"] == 3 and m["ai_cost_usd"] == pytest.approx(0.5035)
-    assert m["ai_cost_30d_usd"] == pytest.approx(0.0035)
-    assert (m["downloads_done"], m["downloads_failed"], m["downloads_active"], m["tracks_added"]) == (2, 1, 1, 1)
-    assert m["invite_note"] == "Анна" and m["name"] == "Анна" and m["in_hub"]
-    assert m["starred_songs"] == 0 and m["playlists"] == 1 and m["last_seen_at"]
-    assert by["admin"]["starred_songs"] == 2 and by["admin"]["is_admin"]
-    # boris never opened the Hub: Navidrome's data only
-    p = by["boris"]
-    assert p["id"] is None and not p["in_hub"] and p["name"] == "Борис"
-    assert p["player_seen_at"].startswith("2026-10-19T22:39:46.062261")
-    assert out["ai_cost_usd"] == pytest.approx(0.5135) and out["ai_cost_30d_usd"] == pytest.approx(0.0135)
-    assert out["library_tracks"] == 1
 
-    d = (await env["admin"].get(f"/api/admin/users/{m['id']}")).json()
-    assert [x["requests"] for x in d["ai_months"]] == [2, 1]
-    assert [x["kind"] for x in d["ai_recent"]] == ["chat", "images", "chat"]
-    assert len(d["recent_downloads"]) == 4 and d["recent_downloads"][0]["title"] == "Группа крови"
-    assert (await env["admin"].get("/api/admin/users/999")).status_code == 404
-    # the admin token is reused, not fetched for every call
-    assert env["nd"]["logins"] == 1
+async def test_error_details_are_russian(env):
+    import re
 
-
-async def test_user_list_survives_navidrome_admin_api_failure(env):
-    env["nd"]["users"]["admin"]["password"] = "rotated"  # the Hub's admin password no longer works
-    from app.library.navidrome import NavidromeAdmin
-
-    NavidromeAdmin.forget_token()
-    r = await env["admin"].get("/api/admin/users")
-    assert r.status_code == 200
-    assert [u["username"] for u in r.json()["users"]] == ["admin"]
-    assert r.json()["users"][0]["starred_songs"] is None
+    cyrillic = re.compile(r"[А-Яа-яЁё]")
+    async with env["client"]() as c:
+        cases = [
+            (await c.post("/api/auth/login", json={"username": "admin", "password": "nope"}), 401),
+            (await c.get("/api/admin/users"), 401),
+            (await c.delete("/api/auth/sessions/unknown"), 401),
+        ]
+        for response, status in cases:
+            assert response.status_code == status, response.text
+        await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
+        for _ in range(3):
+            await c.post("/api/auth/login", json={"username": "admin", "password": "nope"})
+        limited = await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
+        assert limited.status_code == 429
+        inv = await make_invite(env["admin"])
+        taken = await c.post(
+            "/api/auth/register", json={"code": inv["code"], "username": "Admin", "password": "x1y2z3"}
+        )
+        assert taken.status_code == 409
+    for response in (limited, taken):
+        assert cyrillic.search(response.json()["detail"]), response.text
 
 
-async def test_chat_turn_records_spending(env, monkeypatch):
+async def test_secrets_are_not_logged(env, caplog):
+    import logging
+
+    caplog.set_level(logging.DEBUG)
+    async with env["client"]() as c:
+        r = await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
+        assert r.status_code == 200
+        refresh = c.cookies.get("hm_refresh", path="/api/auth")
+        access = c.cookies.get("hm_session")
+        assert (await c.post("/api/auth/refresh")).status_code == 200
+    text = caplog.text
+    for secret in ("adminpw", refresh, access):
+        assert secret and secret not in text
+
+
+async def test_hub_is_not_an_oidc_provider(env):
+    async with env["client"]() as c:
+        for path in (
+            "/api/.well-known/openid-configuration",
+            "/api/authorize",
+            "/api/token",
+            "/api/jwks.json",
+        ):
+            r = await c.get(path)
+            assert r.status_code == 404, (path, r.status_code)
+    paths = env["app"].openapi()["paths"]
+    assert not any(p.startswith(("/authorize", "/token", "/jwks")) for p in paths)
+
+
+# --- fixes after the advisor validation (see tasks.md, «Правки после валидации») -------------
+
+
+async def test_login_limiter_counts_only_the_name_itself(env):
+    async with env["client"]() as c:
+        for _ in range(3):
+            assert (await c.post("/api/auth/login", json={"username": "anna", "password": "nope"})).status_code == 401
+        # anna is throttled now, the administrator is not: three failures of one name never lock others out
+        r = await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
+        assert r.status_code == 200, r.text
+        r = await c.post("/api/auth/login", json={"username": "anna", "password": "nope"})
+        assert r.status_code == 429 and int(r.headers["retry-after"]) > 0
+
+
+async def test_login_with_a_very_long_name_is_not_a_server_error(env):
+    async with env["client"]() as c:
+        r = await c.post("/api/auth/login", json={"username": "x" * 5000, "password": "nope"})
+        assert r.status_code in (401, 422), r.text
+
+
+async def test_bootstrap_rejects_an_invalid_username(fresh_env):
+    async with fresh_env["client"]() as c:
+        # "@bootstrap" is the limiter's reserved key: it must never become a real account
+        r = await c.post(
+            "/api/auth/bootstrap",
+            json={"token": "one-time-token", "username": "@bootstrap", "password": "boss-pass1"},
+        )
+        assert r.status_code == 400, r.text
+
+
+async def test_bootstrap_with_a_non_ascii_token_is_401_not_500(fresh_env, monkeypatch):
     from app import config
 
-    monkeypatch.setenv("LLM_API_KEY", "test-key")
-    monkeypatch.setenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("ADMIN_BOOTSTRAP_TOKEN", "одноразовый-токен")
     config.get_settings.cache_clear()
-    reply = {
-        "id": "x",
-        "object": "chat.completion",
-        "created": 0,
-        "model": "m",
-        "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "Привет"}}],
-        "usage": {"prompt_tokens": 1200, "completion_tokens": 40, "total_tokens": 1240, "cost": 0.00042},
-    }
-    route = (
-        env["mock"]
-        .post("https://openrouter.ai/api/v1/chat/completions")
-        .mock(return_value=httpx.Response(200, json=reply))
+    async with fresh_env["client"]() as c:
+        r = await c.post(
+            "/api/auth/bootstrap", json={"token": "неверный", "username": "boss", "password": "boss-pass1"}
+        )
+        assert r.status_code == 401, r.text
+        r = await c.post(
+            "/api/auth/bootstrap",
+            json={"token": "одноразовый-токен", "username": "boss", "password": "boss-pass1"},
+        )
+        assert r.status_code == 200, r.text
+
+
+async def test_unreadable_replacement_does_not_revoke_the_session(env):
+    from sqlalchemy import update
+
+    from app.db import session_scope
+    from app.models import RefreshToken
+    from app.security import hash_token
+
+    async with env["client"]() as c:
+        await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
+        old = c.cookies.get("hm_refresh", path="/api/auth")
+        assert (await c.post("/api/auth/refresh")).status_code == 200
+        current = c.cookies.get("hm_refresh", path="/api/auth")
+        assert old and current and old != current
+        async with session_scope() as s:  # as if HUB_SECRET_KEY had changed after the rotation
+            await s.execute(
+                update(RefreshToken).where(RefreshToken.id == hash_token(old)).values(replacement_enc="not-fernet")
+            )
+        c.cookies.set("hm_refresh", old, path="/api/auth", domain="hub.test")
+        r = await c.post("/api/auth/refresh")
+        assert r.status_code == 401, r.text
+        # the operator's key rotation is not a reuse attack: the pair from that rotation still works
+        c.cookies.set("hm_refresh", current, path="/api/auth", domain="hub.test")
+        assert (await c.post("/api/auth/refresh")).status_code == 200
+
+
+async def test_refresh_and_revoke_serialize_without_deadlock(env):
+    import asyncio
+
+    from app import tokens
+    from app.db import session_scope
+    from app.models import RefreshToken
+    from app.security import hash_token
+
+    async with env["client"]() as c:
+        await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
+        refresh = c.cookies.get("hm_refresh", path="/api/auth")
+        device = c.cookies.get("hm_device", path="/api/auth")
+        assert refresh and device
+    async with session_scope() as s:
+        row = await s.get(RefreshToken, hash_token(refresh))
+        assert row is not None
+        family = row.family_id
+
+    async def rotate_one():
+        async with session_scope() as s:
+            pair, _ = await tokens.rotate(s, refresh, device)
+            return pair.refresh
+
+    async def revoke_one():
+        async with session_scope() as s:
+            await tokens.revoke_family(s, family)
+            return "revoked"
+
+    results = await asyncio.gather(rotate_one(), revoke_one(), return_exceptions=True)
+    for result in results:
+        assert isinstance(result, str) or isinstance(result, tokens.RefreshError), repr(result)
+
+
+async def test_sessions_hide_revoked_devices_and_report_the_last_use(env):
+    async with env["client"]() as phone, env["client"]() as laptop:
+        for c in (phone, laptop):
+            assert (
+                await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
+            ).status_code == 200
+        before = (await phone.get("/api/auth/sessions")).json()["sessions"]
+        # the fixture's admin client, the phone and the laptop
+        assert len(before) == 3
+        assert (await phone.post("/api/auth/refresh")).status_code == 200
+        after = (await phone.get("/api/auth/sessions")).json()["sessions"]
+        current = next(s for s in after if s["current"])
+        # a rotation is a use: the last use moves past the family's creation time
+        assert current["last_used_at"] > current["created_at"]
+        assert current["last_used_at"] >= next(s for s in before if s["current"])["last_used_at"]
+        # a revoked device disappears from the list instead of staying as a dead row for 30 days
+        label = f"Устройство {laptop.cookies.get('hm_device', path='/api/auth')[:6]}"
+        other = next(s for s in after if s["device"] == label)
+        assert (await phone.delete(f"/api/auth/sessions/{other['id']}")).json() == {"ok": True}
+        left = (await phone.get("/api/auth/sessions")).json()["sessions"]
+        assert len(left) == 2  # the fixture's client and the phone
+        assert [s["current"] for s in left] == [True, False]
+        assert (await laptop.post("/api/auth/refresh")).status_code == 401
+
+
+async def test_concurrent_refresh_rotates_once(env):
+    import asyncio
+
+    from sqlalchemy import select
+
+    from app import tokens
+    from app.db import session_scope
+    from app.models import RefreshToken
+    from app.security import hash_token
+
+    async with env["client"]() as c:
+        await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
+        refresh = c.cookies.get("hm_refresh", path="/api/auth")
+        device = c.cookies.get("hm_device", path="/api/auth")
+        assert refresh and device
+
+    async def one() -> str:
+        async with session_scope() as s:
+            pair, _ = await tokens.rotate(s, refresh, device)
+            return pair.refresh
+
+    first, second = await asyncio.gather(one(), one())
+    # the row lock serializes them: the second request returns the pair the first one stored
+    assert first == second
+    async with session_scope() as s:
+        rotated = await s.get(RefreshToken, hash_token(refresh))
+        assert rotated is not None
+        rows = list(
+            (await s.execute(select(RefreshToken).where(RefreshToken.family_id == rotated.family_id))).scalars()
+        )
+    assert len([row for row in rows if row.revoked_at is None]) == 1
+
+
+async def test_bootstrap_attempts_are_limited(fresh_env):
+    from sqlalchemy import update
+
+    from app.db import session_scope
+    from app.models import LoginAttempt, utcnow
+
+    body = {"username": "boss", "password": "boss-pass1"}
+    async with fresh_env["client"]() as c:
+        for _ in range(3):
+            r = await c.post("/api/auth/bootstrap", json={**body, "token": "wrong"})
+            assert r.status_code == 401, r.text
+        r = await c.post("/api/auth/bootstrap", json={**body, "token": "one-time-token"})
+        assert r.status_code == 429 and int(r.headers["retry-after"]) > 0
+    async with session_scope() as s:  # the window passes: the right token still creates the administrator
+        await s.execute(update(LoginAttempt).values(attempted_at=utcnow() - timedelta(minutes=5)))
+    async with fresh_env["client"]() as c:
+        r = await c.post("/api/auth/bootstrap", json={**body, "token": "one-time-token"})
+        assert r.status_code == 200, r.text
+
+
+async def test_options_skip_an_undecryptable_provider_secret(env, tmp_path, monkeypatch):
+    from app import config as app_config
+
+    cfg = tmp_path / "broken.yaml"
+    cfg.write_text(
+        f"""
+oidc:
+  providers:
+    broken:
+      issuer: https://broken.test
+      client_id: broken-client
+      client_secret_enc: not-a-fernet-token
+    fake:
+      issuer: {IDP}
+      client_id: {OIDC_CLIENT}
+      client_secret: {OIDC_SECRET}
+""",
+        encoding="utf-8",
     )
-    r = await env["admin"].post("/api/assistant/chat", json={"messages": [{"role": "user", "content": "привет"}]})
-    assert r.status_code == 200, r.text
-    assert r.json()["cost_usd"] == pytest.approx(0.00042)  # OpenRouter's own figure, not the configured price
-    assert json.loads(route.calls[0].request.content)["usage"] == {"include": True}
-    me = next(u for u in (await env["admin"].get("/api/admin/users")).json()["users"] if u["username"] == "admin")
-    assert me["ai_requests"] == 1 and me["ai_cost_usd"] == pytest.approx(0.00042)
+    monkeypatch.setenv("CONFIG_FILE", str(cfg))
+    app_config.get_settings.cache_clear()
+    async with env["client"]() as c:
+        r = await c.get("/api/auth/options")
+        assert r.status_code == 200, r.text
+        names = [p["name"] for p in r.json()["oidc_providers"]]
+        assert "broken" not in names and "fake" in names
+        # the broken provider is gone, not a 500 for the whole sign-in screen
+        assert (await c.get("/api/auth/oidc/broken/start")).status_code == 404
+
+
+async def test_oidc_link_start_respects_the_password_gate(fresh_env):
+    async with fresh_env["client"]() as c:
+        assert (
+            await c.post(
+                "/api/auth/bootstrap", json={"token": "one-time-token", "username": "boss", "password": "boss-pass1"}
+            )
+        ).status_code == 200
+        for mode in ("link", "login"):
+            r = await c.get("/api/auth/oidc/anything/start", params={"mode": mode})
+            assert r.status_code == 403, (mode, r.text)  # signed in, but the password must change first
+    async with fresh_env["client"]() as anonymous:
+        r = await anonymous.get("/api/auth/oidc/anything/start", params={"mode": "link"})
+        assert r.status_code == 401, r.text

@@ -14,7 +14,7 @@ import pytest
 import respx
 from sqlalchemy import select
 
-from tests.support import FakeDeezer, FakeProvider, app_client, cand
+from tests.support import FakeDeezer, FakeProvider, app_client, cand, grant_navidrome
 
 
 def track(artist: str, title: str, duration_s: int | None = 200, **extra) -> dict:
@@ -124,6 +124,7 @@ async def env(hub_env, monkeypatch):
         with respx.mock(assert_all_called=False) as mock:
             mock.route(host="navidrome.test").mock(side_effect=nd_handler)
             async with app_client(app) as client:
+                await grant_navidrome("admin")  # stage-4 transition: the ND proxy tests need ND credentials
                 await add_library_track(GOROD, "ndA")
                 await add_library_track(OSEN, "ndB")
                 yield {"client": client, "state": state, "mock": mock}

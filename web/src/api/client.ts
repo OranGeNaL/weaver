@@ -48,6 +48,8 @@ import type {
   NdLikedOut,
   ProviderSearchOut,
   RegisterIn,
+  PasswordIn,
+  AuthSessionsOut,
   AuthOptionsOut,
   EmailCodeOut,
   EmailRegisterIn,
@@ -134,6 +136,24 @@ interface RequestOpts {
   json?: unknown;
   form?: FormData;
   signal?: AbortSignal;
+  /** internal: this request already tried the refresh-on-401 once */
+  retried?: boolean;
+}
+
+/** 401 answers of these calls mean "bad credentials", not "the access token expired". */
+const NO_REFRESH = ['/api/auth/login', '/api/auth/register', '/api/auth/refresh', '/api/auth/bootstrap', '/api/auth/email/', '/api/auth/oidc/', '/api/auth/google'];
+
+// Single-flight refresh: parallel 401s share one POST /api/auth/refresh (a second rotation would revoke the device).
+let refreshing: Promise<boolean> | null = null;
+
+function refreshSession(): Promise<boolean> {
+  refreshing ??= fetch('/api/auth/refresh', { method: 'POST', headers: { Accept: 'application/json' }, credentials: 'include' })
+    .then((r) => r.ok)
+    .catch(() => false)
+    .finally(() => {
+      refreshing = null;
+    });
+  return refreshing;
 }
 
 export async function request<T>(method: string, path: string, opts: RequestOpts = {}): Promise<T> {
@@ -151,6 +171,10 @@ export async function request<T>(method: string, path: string, opts: RequestOpts
   } catch (e) {
     if ((e as Error).name === 'AbortError') throw e;
     throw new ApiError(0, 'Нет связи с сервером');
+  }
+  if (res.status === 401 && !opts.retried && !NO_REFRESH.some((p) => path.startsWith(p))) {
+    // the access JWT lives 15 minutes: rotate the refresh token once and repeat the request
+    if (await refreshSession()) return request<T>(method, path, { ...opts, retried: true });
   }
   if (res.status === 401) onUnauthorized(path);
   if (!res.ok) throw await errorFromResponse(res);
@@ -234,6 +258,14 @@ const enc = encodeURIComponent;
 export const api = {
   // auth
   login: (body: LoginIn) => request<MeOut>('POST', '/api/auth/login', { json: body }),
+  refresh: () => request<MeOut>('POST', '/api/auth/refresh'),
+  changePassword: (body: PasswordIn) => request<MeOut>('POST', '/api/auth/password', { json: body }),
+  sessions: () => request<AuthSessionsOut>('GET', '/api/auth/sessions'),
+  revokeSession: (id: string) => request<OkOut>('DELETE', `/api/auth/sessions/${enc(id)}`),
+  // the browser goes to this URL; after the provider's callback the server sets the cookies and returns to the PWA
+  oidcStartUrl: (provider: string, opts?: { mode?: 'login' | 'link'; invite?: string }) =>
+    withQuery(`/api/auth/oidc/${enc(provider)}/start`, opts),
+  unlinkOidc: (provider: string) => request<MeOut>('DELETE', `/api/auth/oidc/link/${enc(provider)}`),
   logout: () => request<OkOut>('POST', '/api/auth/logout'),
   me: (signal?: AbortSignal) => request<MeOut>('GET', '/api/auth/me', { signal }),
   register: (body: RegisterIn) => request<MeOut>('POST', '/api/auth/register', { json: body }),

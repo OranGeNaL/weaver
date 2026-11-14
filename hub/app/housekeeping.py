@@ -137,6 +137,7 @@ async def run_daily() -> None:
     from app.library.reconcile import catalog_reconcile
     from app.storage import cache as storage_cache
     from app.storage.gc import gc_tracks_and_blobs
+    from app.tokens import purge_expired as purge_expired_refresh_tokens
 
     cfg = get_settings().cfg
     try:
@@ -154,15 +155,17 @@ async def run_daily() -> None:
         evicted = await storage_cache().evict()
         async with session_scope() as s:
             reconcile = await catalog_reconcile(s)
+            refresh_pruned = await purge_expired_refresh_tokens(s)
         log.info(
             "housekeeping: trash+gc %s, stale uploads %s, cache rows %s, email codes %s, hot-cache evicted %s, "
-            "catalog reconcile %s",
+            "catalog reconcile %s, refresh tokens %s",
             gc_stats,
             m,
             c,
             e,
             evicted,
             reconcile,
+            refresh_pruned,
         )
     except Exception:
         log.exception("housekeeping failed")

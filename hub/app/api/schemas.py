@@ -22,8 +22,8 @@ class SearchHistoryOut(BaseModel):
 
 
 class LoginIn(BaseModel):
-    username: str
-    password: str
+    username: str = Field(max_length=320)  # the name or the account's email
+    password: str = Field(max_length=1024)
 
 
 class MeOut(BaseModel):
@@ -34,17 +34,66 @@ class MeOut(BaseModel):
     public_hub_url: str = ""  # for links that leave the Hub (an invite: where to get the app)
     google_email: str | None = None  # the linked Google account (sign-in with Google in the app)
     email: str | None = None  # the email the account registered with (sign-in by it, too)
+    # the first password from bootstrap/the CLI must be changed before anything but the password endpoint
+    must_change_password: bool = False
+    # external identities linked to the account (`oauth_links` providers): «google», a generic provider's name
+    oidc_links: list[str] = []
+
+
+class OidcProviderOut(BaseModel):
+    """A provider the sign-in screen may offer (the Hub is only its Relying Party)."""
+
+    name: str
+    title: str
 
 
 class AuthOptionsOut(BaseModel):
     """What the sign-in screen offers: registration by invite code, by email (a code in a letter, no invite),
-    Google (with the Web client id for the app)."""
+    and external OIDC providers (Google with the Web client id for the app)."""
 
     invites: bool = True
     email_signup: bool = False
     google_client_id: str | None = None
     # the public address of the Navidrome these accounts are for: the app offers registration only for it
     music_url: str = ""
+    oidc_providers: list[OidcProviderOut] = []
+
+
+class PasswordIn(BaseModel):
+    """A password change: the current one is not needed by an OIDC-only account (it has no password)."""
+
+    current_password: str | None = None
+    new_password: str = Field(min_length=1, max_length=256)
+
+
+class BootstrapIn(BaseModel):
+    """`POST /api/auth/bootstrap`: the one-time admin token from `ADMIN_BOOTSTRAP_TOKEN`."""
+
+    token: str
+    username: str
+    password: str
+
+
+class OidcLinkIn(BaseModel):
+    """A client-side OIDC redirect: the code and state the provider returned."""
+
+    code: str
+    state: str
+
+
+class AuthSessionOut(BaseModel):
+    """A device with a live session (`family_id`); never the tokens themselves."""
+
+    id: str  # family id
+    device: str
+    created_at: datetime
+    last_used_at: datetime
+    expires_at: datetime
+    current: bool = False
+
+
+class AuthSessionsOut(BaseModel):
+    sessions: list[AuthSessionOut]
 
 
 class RegisterIn(BaseModel):
@@ -73,12 +122,6 @@ class GoogleIn(BaseModel):
     # for a Google account that is not linked yet: register it with an invite code
     code: str | None = None
     username: str | None = None
-
-
-class GoogleLoginOut(MeOut):
-    """The player signs in to Navidrome itself (Subsonic), so it gets the account's password."""
-
-    password: str
 
 
 class GoogleLinkIn(BaseModel):
@@ -363,7 +406,7 @@ class TrackOut(CatalogTrack):
 class AlbumOut(CatalogAlbum):
     owned_status: OwnedStatus = "none"
     owned_count: int = 0
-    tracks: list[TrackOut] | None = None  # type: ignore[assignment]
+    tracks: list[TrackOut] | None = None  # pyright: ignore[reportIncompatibleVariableOverride]
 
 
 class ArtistPageOut(BaseModel):

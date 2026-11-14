@@ -104,12 +104,27 @@ Implement tasks from an OpenSpec change.
    - Error or blocker encountered → report and wait for guidance
    - User interrupts
 
-7. **On completion or pause, show status**
+7. **Validate with the advisor council (mandatory, before completion)**
+
+   The project configuration requires it (`openspec/config.yaml`, `operations.apply.guidance`). Run the
+   `council-validate` skill on this change: two independent read-only advisors, one cross-exam, one memo.
+
+   - Fix every blocker the memo names, with the regression test it asks for, then re-run the checks of step 6.
+   - Put product/policy disputes into «Решения владельца» and ask the user; do not choose silently.
+   - If validation revokes an earlier "all tasks complete" claim, say so plainly.
+   - Do not report the change done, and do not suggest archive, without a memo whose verdict is PASS or whose
+     blockers are all fixed and re-checked.
+
+   Completion criterion: the memo exists in the conversation, its verdict is PASS or FIX-FIRST with every
+   blocker closed, and `openspec validate "<change-name>" --strict` still passes.
+
+8. **On completion or pause, show status**
 
    Display:
    - Tasks completed this session
    - Overall progress: "N/M tasks complete"
-   - If all done: suggest archive
+   - Validation verdict and pass count (`council-validate`)
+   - If all done and validated: suggest archive
    - If paused: explain why and wait for guidance
 
 **Output During Implementation**
@@ -134,6 +149,7 @@ Working on task 4/7: <task description>
 **Change:** <change-name>
 **Schema:** <schema-name>
 **Progress:** 7/7 tasks complete ✓
+**Validation:** PASS — `council-validate`, 2 passes (advisors: <names>)
 
 ### Completed This Session
 - [x] Task 1
@@ -179,6 +195,7 @@ What would you like to do?
 - Consider every guidance entry; explain any inapplicable or conflicting advice
 - Do not copy runtime context or operation guidance into implementation files or planning artifacts
 - Preserve CLI-controlled blocked/ready/all-done behavior and completion criteria
+- Do not report completion or archive without the `council-validate` memo: the project config makes it mandatory
 
 **Fluid Workflow Integration**
 

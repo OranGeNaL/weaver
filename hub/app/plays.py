@@ -640,6 +640,8 @@ async def import_scrobbles(user: User) -> int:
     async with session_scope() as session:
         sync = await session.get(NavidromeSync, user.id)
         last = sync.last_scrobble_id if sync else 0
+    if not user.nd_username or not user.nd_password_enc:
+        return 0  # no Navidrome account (stage 4): there is no ND scrobble history to read
     async with NavidromeHistory(user.nd_username, decrypt(user.nd_password_enc)) as nd:
         rows = await nd.scrobbles_after(last)
     added = 0

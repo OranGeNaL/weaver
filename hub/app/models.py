@@ -38,11 +38,19 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    nd_username: Mapped[str] = mapped_column(String(128), unique=True)
-    nd_password_enc: Mapped[str] = mapped_column(Text)
+    # the local account name (`username`): the Hub owns accounts since stage 4, Navidrome is no longer the source
+    username: Mapped[str] = mapped_column(String(128), unique=True)
+    # argon2id; empty for a sign-in-only-by-OIDC account
+    password_hash: Mapped[str | None] = mapped_column(Text)
+    # set by bootstrap-by-token and by the CLI reset: everything but login/refresh/logout/me/password answers 403
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # the Navidrome account of pre-stage-4 users: kept nullable for the transition, dropped in stage 7
+    nd_username: Mapped[str | None] = mapped_column(String(128), unique=True)
+    nd_password_enc: Mapped[str | None] = mapped_column(Text)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    # Google account linked to this user ("sub" of its ID token): sign-in with Google in the app
+    # Google account linked to this user ("sub" of its ID token); moved into `oauth_links` by the stage-4
+    # migration and kept only for the transition
     google_sub: Mapped[str | None] = mapped_column(String(255), unique=True)
     google_email: Mapped[str | None] = mapped_column(String(320))
     # the confirmed email the account registered with (lower case): sign-in by it, too
@@ -114,13 +122,63 @@ class AiUsage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 
-class Session(Base):
-    __tablename__ = "sessions"
+class RefreshToken(Base):
+    """One rotating refresh token of a device (`family_id` is the session, `device_id` the HttpOnly cookie).
+
+    `id` is the SHA-256 of the opaque token. A rotated row keeps the pair it was exchanged for in
+    `replacement_enc` (Fernet JSON) for the idempotency window: a parallel refresh with the same device gets the
+    same pair instead of a second token.
+    """
+
+    __tablename__ = "refresh_tokens"
+    __table_args__ = (Index("ix_refresh_tokens_family", "family_id"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)  # sha256 of the cookie token
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    family_id: Mapped[str] = mapped_column(String(64))
+    device_id: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    replacement_enc: Mapped[str | None] = mapped_column(Text)
+
+
+class OAuthLink(Base):
+    """An external OIDC identity (`iss` + `sub`) linked to a local account; never auto-linked by email."""
+
+    __tablename__ = "oauth_links"
+    __table_args__ = (
+        UniqueConstraint("issuer", "subject", name="uq_oauth_links_issuer_subject"),
+        Index("ix_oauth_links_user", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    provider: Mapped[str] = mapped_column(String(32))  # google, generic provider name
+    issuer: Mapped[str] = mapped_column(String(255))
+    subject: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class LoginAttempt(Base):
+    """A failed sign-in: the limiter counts them in Postgres, so it survives a restart and is shared by workers."""
+
+    __tablename__ = "login_attempts"
+    __table_args__ = (Index("ix_login_attempts_name_time", "username", "attempted_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(128))
+    attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class BootstrapState(Base):
+    """The singleton row of the one-time admin bootstrap: `consumed_at` set, the token is spent for good."""
+
+    __tablename__ = "bootstrap_state"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Blob(Base):

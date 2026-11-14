@@ -4,6 +4,8 @@ import type { MeOut } from '../api/types';
 export interface Session {
   me: MeOut;
   logout: () => Promise<void>;
+  /** Re-reads `/api/auth/me` after a password change or an unlink. */
+  refreshMe: () => Promise<void>;
 }
 
 export const SessionContext = createContext<Session | null>(null);

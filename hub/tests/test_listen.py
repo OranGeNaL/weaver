@@ -9,7 +9,7 @@ import httpx
 import pytest
 import respx
 
-from tests.support import FakeDeezer, FakeProvider, app_client, cand
+from tests.support import FakeDeezer, FakeProvider, app_client, cand, grant_navidrome
 
 AUDIO = bytes(range(256)) * 1024  # 256 KiB standing in for an MP3
 
@@ -105,6 +105,7 @@ async def env(hub_env):
             svc.deezer = FakeDeezer()
             config.get_settings().cfg.sources.ru = ["hitmoz", "hitmos_fm"]
             async with app_client(app) as client:
+                await grant_navidrome("admin")  # stage-4 transition: the ND proxy tests need ND credentials
                 yield {"client": client, "hm": hm, "fm": fm, "mock": mock, "music": music, "app": app}
 
 

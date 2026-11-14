@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -23,9 +22,8 @@ from app.api.schemas import (
     InviteIn,
     InviteOut,
 )
-from app.auth import admin_user, user_navidrome
+from app.auth import admin_user
 from app.db import get_session
-from app.library.navidrome import NavidromeAdmin
 from app.models import AiUsage, DownloadItem, Invite, Track, Upload, User, utcnow
 
 log = logging.getLogger(__name__)
@@ -35,47 +33,6 @@ InviteStatus = Literal["active", "used", "expired"]
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 ACTIVE = ("queued", "searching", "downloading", "tagging", "importing")
-ND_TIMEOUT_S = 8
-
-
-def _nd_time(value: Any) -> datetime | None:
-    """Navidrome's RFC 3339 time ("2026-10-19T22:39:45.908050132Z") as timezone-aware UTC (naive — read as UTC)."""
-    if not value:
-        return None
-    try:
-        text = str(value).replace("Z", "+00:00")
-        head, _, tail = text.partition(".")
-        if tail:  # Python takes at most 6 fraction digits
-            digits = "".join(ch for ch in tail if ch.isdigit())
-            text = f"{head}.{digits[:6]}{tail[len(digits) :]}"
-        dt = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    return dt.astimezone(UTC) if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
-
-
-async def _nd_users() -> list[dict]:
-    try:
-        async with NavidromeAdmin() as nd:
-            return await asyncio.wait_for(nd.list_users(), timeout=ND_TIMEOUT_S)
-    except Exception as e:
-        log.warning("navidrome user list failed: %s", e)
-        return []
-
-
-async def _nd_counts(user: User) -> tuple[int | None, int | None]:
-    """(♥ songs, playlists) of the user, from Navidrome as that user."""
-    nd = user_navidrome(user)
-    try:
-        starred, playlists = await asyncio.wait_for(
-            asyncio.gather(nd.get_starred2(), nd.get_playlists()), timeout=ND_TIMEOUT_S
-        )
-        return len(starred.get("song") or []), len(playlists)
-    except Exception as e:
-        log.warning("navidrome counts for %s failed: %s", user.nd_username, e)
-        return None, None
-    finally:
-        await nd.aclose()
 
 
 async def _stats(s: AsyncSession, user_ids: list[int]) -> dict[int, dict[str, Any]]:
@@ -139,20 +96,22 @@ async def _stats(s: AsyncSession, user_ids: list[int]) -> dict[int, dict[str, An
     return out
 
 
-def _user_out(user: User, stats: dict[str, Any], nd: dict | None, counts: tuple[int | None, int | None]) -> dict:
+def _user_out(user: User, stats: dict[str, Any]) -> dict:
+    """A local Hub account: no Navidrome users are listed any more, `last_seen_at` comes from access/refresh."""
     return dict(
         id=user.id,
-        username=user.nd_username,
-        name=(nd or {}).get("name") or "",
+        username=user.username,
+        name="",
         is_admin=user.is_admin,
         in_hub=True,
         created_at=user.created_at,
         last_seen_at=user.last_seen_at,
-        player_seen_at=_nd_time((nd or {}).get("lastAccessAt")),
+        player_seen_at=None,
         google_email=user.google_email,
         email=user.email,
-        starred_songs=counts[0],
-        playlists=counts[1],
+        # ♥ and playlists move to Hub-owned data in stage 5: until then they are empty, not borrowed from ND
+        starred_songs=0,
+        playlists=0,
         **stats,
     )
 
@@ -160,28 +119,8 @@ def _user_out(user: User, stats: dict[str, Any], nd: dict | None, counts: tuple[
 @router.get("/users", response_model=AdminUsersOut)
 async def users(_: User = Depends(admin_user), s: AsyncSession = Depends(get_session, scope="function")):
     hub_users = list((await s.execute(select(User).order_by(User.id))).scalars())
-    nd_users, counts = await asyncio.gather(_nd_users(), asyncio.gather(*(_nd_counts(u) for u in hub_users)))
-    nd_by_name = {str(u.get("userName", "")).lower(): u for u in nd_users}
     stats = await _stats(s, [u.id for u in hub_users])
-    out = [
-        AdminUserOut(**_user_out(u, stats.get(u.id, {}), nd_by_name.pop(u.nd_username.lower(), None), c))
-        for u, c in zip(hub_users, counts, strict=True)
-    ]
-    # Navidrome users who never opened the Hub: the admin sees them too (the player works without the Hub)
-    out += [
-        AdminUserOut(
-            id=None,
-            username=u.get("userName", ""),
-            name=u.get("name") or "",
-            is_admin=bool(u.get("isAdmin")),
-            in_hub=False,
-            created_at=_nd_time(u.get("createdAt")),
-            player_seen_at=_nd_time(u.get("lastAccessAt")),
-            starred_songs=None,
-            playlists=None,
-        )
-        for u in nd_by_name.values()
-    ]
+    out = [AdminUserOut(**_user_out(u, stats.get(u.id, {}))) for u in hub_users]
     month_ago = utcnow() - timedelta(days=30)
     total, last30 = (
         await s.execute(
@@ -203,8 +142,6 @@ async def user_detail(
     user = await s.get(User, user_id)
     if user is None:
         raise HTTPException(404, "Нет такого пользователя")
-    nd_users, counts = await asyncio.gather(_nd_users(), _nd_counts(user))
-    nd = next((u for u in nd_users if str(u.get("userName", "")).lower() == user.nd_username.lower()), None)
     stats = (await _stats(s, [user.id])).get(user.id, {})
     # YYYY-MM in the server's UTC day: `to_char` replaces SQLite's strftime
     month = func.to_char(AiUsage.created_at, "YYYY-MM")
@@ -242,14 +179,12 @@ async def user_detail(
                 artist=q.get("artist") or "", title=q.get("title") or "", status=d.status, created_at=d.created_at
             )
         )
-    return AdminUserDetailOut(
-        **_user_out(user, stats, nd, counts), ai_months=months, ai_recent=recent, recent_downloads=downloads
-    )
+    return AdminUserDetailOut(**_user_out(user, stats), ai_months=months, ai_recent=recent, recent_downloads=downloads)
 
 
 async def _invite_out(s: AsyncSession, inv: Invite) -> InviteOut:
     user = await s.get(User, inv.used_by) if inv.used_by else None
-    used_by = user.nd_username if user else None
+    used_by = user.username if user else None
     return InviteOut(
         id=inv.id,
         code=accounts.format_code(inv.code),

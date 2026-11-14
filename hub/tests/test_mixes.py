@@ -18,7 +18,7 @@ import respx
 from sqlalchemy import func, select
 
 from app.catalog.models import CatalogTrack
-from tests.support import FakeDeezer, app_client
+from tests.support import FakeDeezer, app_client, grant_navidrome
 
 NOW = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
 
@@ -102,6 +102,7 @@ async def env(hub_env, tmp_path: Path):
         with respx.mock(assert_all_called=False) as mock:
             mock.route(host="navidrome.test").mock(side_effect=nd.handler)
             async with app_client(app) as client:
+                await grant_navidrome("admin")  # stage-4 transition: the ND proxy tests need ND credentials
                 yield {"app": app, "client": client, "nd": nd, "music": hub_env, "admin": await user_id("admin")}
 
 
@@ -110,16 +111,17 @@ async def user_id(name: str) -> int:
     from app.models import User
 
     async with session_scope() as s:
-        return (await s.execute(select(User.id).where(User.nd_username == name))).scalar_one()
+        return (await s.execute(select(User.id).where(User.username == name))).scalar_one()
 
 
 async def add_user(name: str) -> int:
     from app.db import session_scope
     from app.models import User
+    from app.passwords import hash_password
     from app.security import encrypt
 
     async with session_scope() as s:
-        u = User(nd_username=name, nd_password_enc=encrypt("pw"))
+        u = User(username=name, password_hash=hash_password("pw"), nd_username=name, nd_password_enc=encrypt("pw"))
         s.add(u)
         await s.flush()
         return u.id

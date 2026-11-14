@@ -135,8 +135,8 @@ async def ledger(db_url: str):
 
     init_engine(db_url)
     async with session_scope() as s:
-        user = User(nd_username="qa", nd_password_enc="unused")
-        other = User(nd_username="other", nd_password_enc="unused")
+        user = User(username="qa", nd_username="qa", nd_password_enc="unused")
+        other = User(username="other", nd_username="other", nd_password_enc="unused")
         s.add_all([user, other])
         await s.flush()
     yield user, other

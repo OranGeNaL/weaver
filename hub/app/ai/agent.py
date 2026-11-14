@@ -294,7 +294,7 @@ class ChatTools:
         liked = await self._import_liked()
         songs = starred.get("song", [])
         out: dict[str, Any] = {
-            "user": self.user.nd_username,
+            "user": self.user.username,
             "library": {
                 "tracks": (
                     await s.execute(select(func.count(Track.id)).where(Track.deleted_at.is_(None)))

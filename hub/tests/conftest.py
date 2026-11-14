@@ -135,6 +135,12 @@ def hub_env(db_url: str, tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator:
     monkeypatch.setenv("NAVIDROME_ADMIN_USER", "admin")
     monkeypatch.setenv("NAVIDROME_ADMIN_PASSWORD", "adminpw")
     monkeypatch.setenv("HUB_SECRET_KEY", Fernet.generate_key().decode())
+    monkeypatch.setenv("JWT_SIGNING_KEY", "test-jwt-signing-key")
+    # the first administrator comes from the environment (no `admin/admin` default anywhere)
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "adminpw")
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", "")
+    monkeypatch.setenv("ADMIN_BOOTSTRAP_TOKEN", "")
     monkeypatch.setenv("DISABLE_BACKGROUND", "true")
     monkeypatch.setenv("LLM_API_KEY", "")
     monkeypatch.setenv("ND_SCAN_POLL_S", "0")
@@ -149,7 +155,7 @@ def hub_env(db_url: str, tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator:
 
 
 def _clear_caches() -> None:
-    from app import accounts, auth, config, google_auth, security, storage
+    from app import accounts, config, google_auth, oidc, security, storage
     from app.library.navidrome import NavidromeAdmin, NavidromeHistory
     from app.mixes import sources, wave
     from app.providers import ytdlp
@@ -158,8 +164,9 @@ def _clear_caches() -> None:
     storage.reset()
     security._fernet.cache_clear()
     accounts._failures.clear()
-    auth._password_attempts.clear()
     google_auth._keys.clear()
+    oidc._docs.clear()
+    oidc._keys.clear()
     NavidromeAdmin.forget_token()
     NavidromeHistory.forget_tokens()
     ytdlp._media_hosts.clear()

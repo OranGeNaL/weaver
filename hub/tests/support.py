@@ -226,3 +226,21 @@ class FakeDeezer:
 
     async def aclose(self):
         pass
+
+
+async def grant_navidrome(login: str = "admin", nd_username: str | None = None, nd_password: str = "adminpw") -> None:
+    """Stage 4 transition: give a local account the ND credentials the `/api/nd/*` proxy tests need.
+
+    New accounts have no Navidrome user; the proxy falls back to the Hub catalog without these credentials.
+    """
+    from sqlalchemy import func, select
+
+    from app.db import session_scope
+    from app.models import User
+    from app.security import encrypt
+
+    async with session_scope() as s:
+        user = (await s.execute(select(User).where(func.lower(User.username) == login.lower()))).scalar_one()
+        user.nd_username = nd_username or login
+        user.nd_password_enc = encrypt(nd_password)
+        await s.flush()

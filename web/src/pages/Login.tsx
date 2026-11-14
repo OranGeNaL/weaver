@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { api, errorMessage } from '../api/client';
-import type { MeOut } from '../api/types';
+import type { MeOut, OidcProviderOut } from '../api/types';
 import { Button, Field, Notice } from '../components/ui';
 
 // register — by an invite code; email — by a code from a letter, no invite needed
@@ -15,6 +15,7 @@ const SUBTITLE: Record<Mode, string> = {
 export function LoginPage({ onLogin }: { onLogin: (me: MeOut) => void }) {
   const [mode, setMode] = useState<Mode>('login');
   const [emailSignup, setEmailSignup] = useState(false);
+  const [providers, setProviders] = useState<OidcProviderOut[]>([]);
   const [code, setCode] = useState('');
   const [email, setEmail] = useState('');
   // the address the letter went to: the rest of the form shows once it is sent
@@ -25,11 +26,17 @@ export function LoginPage({ onLogin }: { onLogin: (me: MeOut) => void }) {
   const [password, setPassword] = useState('');
   const [password2, setPassword2] = useState('');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<string | undefined>(() => new URLSearchParams(window.location.search).get('oidc_error') ?? undefined);
 
   useEffect(() => {
     const ctl = new AbortController();
-    api.authOptions(ctl.signal).then((o) => setEmailSignup(!!o.email_signup), () => {});
+    api.authOptions(ctl.signal).then(
+      (o) => {
+        setEmailSignup(!!o.email_signup);
+        setProviders(o.oidc_providers ?? []);
+      },
+      () => {},
+    );
     return () => ctl.abort();
   }, []);
 
@@ -90,6 +97,11 @@ export function LoginPage({ onLogin }: { onLogin: (me: MeOut) => void }) {
     } finally {
       setBusy(false);
     }
+  };
+
+  // the server sets the cookies in the provider's callback and returns to the PWA
+  const signInWith = (name: string) => {
+    window.location.assign(api.oidcStartUrl(name, mode === 'register' && code.trim() ? { invite: code.trim() } : undefined));
   };
 
   const plain = { autoCapitalize: 'none', autoCorrect: 'off', spellCheck: false } as const;
@@ -202,6 +214,16 @@ export function LoginPage({ onLogin }: { onLogin: (me: MeOut) => void }) {
             {mode === 'login' ? 'Войти' : awaitingLetter ? 'Получить код' : 'Создать аккаунт'}
           </Button>
         </form>
+        {providers.length > 0 && mode !== 'email' && (
+          <div className="mt-6 space-y-2">
+            <div className="text-center text-xs uppercase tracking-wide text-dim">или</div>
+            {providers.map((p) => (
+              <Button key={p.name} type="button" block variant="secondary" onClick={() => signInWith(p.name)}>
+                Войти через {p.title}
+              </Button>
+            ))}
+          </div>
+        )}
         <div className="mt-6 flex flex-col items-center">
           {mode === 'login' ? (
             <>

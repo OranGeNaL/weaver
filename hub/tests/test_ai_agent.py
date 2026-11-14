@@ -12,7 +12,7 @@ import httpx
 import pytest
 import respx
 
-from tests.support import app_client
+from tests.support import app_client, grant_navidrome
 
 LLM = "https://llm.test/v1"
 
@@ -119,6 +119,7 @@ async def env(hub_env, monkeypatch):
             mock.route(host="navidrome.test").mock(side_effect=nd_handler)
             mock.post(f"{LLM}/chat/completions").mock(side_effect=llm_handler)
             async with app_client(app) as client:
+                await grant_navidrome("admin")  # stage-4 transition: the ND proxy tests need ND credentials
                 yield {"client": client, "state": state, "yandex": await yandex_import()}
 
 

@@ -120,6 +120,27 @@ class LibraryCfg(BaseModel):
     backup_hour: int = 4
 
 
+class OidcProviderCfg(BaseModel):
+    """An external OIDC Relying Party provider (generic). The Hub is never an OIDC Provider itself."""
+
+    issuer: str
+    client_id: str
+    # either the plain secret or its Fernet form (`HUB_SECRET_KEY`), never both
+    client_secret: str = ""
+    client_secret_enc: str = ""
+    scopes: list[str] = ["openid", "email", "profile"]
+    enabled: bool = True
+    # empty — the issuer's `/.well-known/openid-configuration`
+    discovery_url: str = ""
+    title: str = ""
+
+
+class OidcCfg(BaseModel):
+    """OIDC providers of the sign-in screen. Google is built in from `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`."""
+
+    providers: dict[str, OidcProviderCfg] = {}
+
+
 class MixesCfg(BaseModel):
     """«Микс дня» (MIXES.md 6)."""
 
@@ -169,6 +190,7 @@ class AppConfig(BaseModel):
     library: LibraryCfg = LibraryCfg()
     mixes: MixesCfg = MixesCfg()
     analytics: AnalyticsCfg = AnalyticsCfg()
+    oidc: OidcCfg = OidcCfg()
 
 
 class Settings(BaseSettings):
@@ -193,10 +215,19 @@ class Settings(BaseSettings):
     public_hub_url: str = ""
 
     hub_secret_key: str = ""
-    session_days: int = 60
+    # signs the access JWTs: required, the Hub refuses to start without it (no unsafe default)
+    jwt_signing_key: str = ""
+    # the first administrator (stage 4). Without any of these and without a bootstrap token the Hub creates no
+    # `admin/admin`, it only logs how to make one. `ADMIN_PASSWORD_HASH` must already be an argon2id hash.
+    admin_username: str = ""
+    admin_password: str = ""
+    admin_password_hash: str = ""
+    # the one-time token of `POST /api/auth/bootstrap`: a spent token never works again
+    admin_bootstrap_token: str = ""
     # OAuth client id ("Web application" type) of the Google Cloud project for "Sign in with Google" in the app;
     # empty — no Google sign-in (README, «Вход через Google»)
     google_client_id: str = ""
+    google_client_secret: str = ""
     invite_days: int = 7
     # Registration by email, without an invite: a code in a letter, sent over SMTP of any mailbox (Gmail with an
     # app password is free; README, «Регистрация по email»). Empty host — no email registration

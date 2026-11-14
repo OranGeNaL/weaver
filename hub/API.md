@@ -5,26 +5,48 @@ Auth: cookie `hm_session` (HttpOnly, set by login). Any endpoint except login/he
 Errors: `{"detail": "<Russian message>"}` with 4xx/5xx.
 
 ## Auth
+Accounts are local to the Hub (stage 4): `users.username` + an argon2id `password_hash`. The Hub issues its own
+tokens: a 15-minute access JWT in the HttpOnly cookie `hm_session` and a rotating refresh token in `hm_refresh`
+(path `/api/auth`); `hm_device` names the device (a session is a `family_id`). Sign-in never asks Navidrome.
+`401` wrong credentials/expired token, `403` not an admin or `must_change_password` is set, `409` a taken
+name/link conflict, `429` the attempt limiter of that name (with `Retry-After`). Every error is `{"detail": "<Russian>"}`.
+
 | Method | Path | Body → Response |
 |---|---|---|
-| POST | `/api/auth/login` | `LoginIn` → `MeOut` (+ cookie). `username` may be the email the account registered with: `MeOut.username` is then its Navidrome name (the player signs in by it). `429` with `Retry-After` when password attempts are throttled |
-| POST | `/api/auth/logout` | → `{ok}` |
+| POST | `/api/auth/login` | `LoginIn {username, password}` → `MeOut` (+ cookies). `username` may be the confirmed email of the account. `429` with `Retry-After` while the Postgres attempt limiter holds: 3 failures **of this name** per 30 s; other accounts' failures never throttle a name |
+| POST | `/api/auth/refresh` | → `MeOut` (+ rotated cookies). Rotates the refresh token of this device; a replay of an already rotated token inside the 10 s idempotency window returns the same pair, outside it the whole session is revoked (`401`) |
+| POST | `/api/auth/logout` | → `{ok}` — revokes this device's session and clears the cookies |
+| GET | `/api/auth/sessions` | → `AuthSessionsOut {sessions: [AuthSessionOut {id, device, created_at, last_used_at, expires_at, current}]}` — live sessions only (a logged-out or revoked device is gone), `last_used_at` is the newest rotation of the session; never the tokens |
+| DELETE | `/api/auth/sessions/{id}` | → `{ok}` — `id` is the session (`family_id`); every refresh token of it stops working. `404` unknown session |
+| POST | `/api/auth/password` | `PasswordIn {current_password?, new_password}` → `MeOut`. The current password is required unless the account is OIDC-only. Revokes every other session; clears `must_change_password`. `401` wrong current password, `400` weak password |
 | GET | `/api/auth/me` | → `MeOut` |
-| GET | `/api/auth/options` | → `AuthOptionsOut` (no auth): `invites`, `email_signup` (registration by email: SMTP is configured), `google_client_id` (null — no Google), `music_url` |
-| POST | `/api/auth/register` | `RegisterIn {code, username, password}` → `MeOut` (+ cookie). Creates the Navidrome user for an unused, unexpired invite. `400` bad/used code or name/password, `409` name taken, `429` too many wrong codes |
-| POST | `/api/auth/email/code` | `EmailCodeIn {email}` → `EmailCodeOut {resend_in}` (seconds before another letter). Sends a 6-digit code to the address (valid `EMAIL_CODE_MINUTES`, 15); only the latest letter of an address counts. `400` not an address, `409` the address has an account, `429` a letter less than a minute ago or 5 in an hour, `503` `EMAIL_DAILY_LIMIT` letters in 24 h, `502` the letter did not go out, `404` SMTP not configured |
-| POST | `/api/auth/email/register` | `EmailRegisterIn {email, code, username, password}` → `MeOut` (+ cookie; `email` set). Creates the Navidrome user like `/register`, no invite. `400` wrong code (5 wrong codes spend the letter), expired/used code, name/password; `409` name or address taken; `429` too many wrong codes; `404` SMTP not configured |
-| POST | `/api/auth/google` | `GoogleIn {id_token, code?, username?}` → `GoogleLoginOut` (`MeOut` + `password` of the Navidrome account, for the player) + cookie. Linked Google account → its user; not linked and no `code` → `409`; with `code` → registers as `/register` (random password). `404` Google not configured, `401` token rejected |
-| POST | `/api/auth/google/link` | `GoogleLinkIn {id_token}` → `MeOut` — links Google to the signed-in user (`409` linked to someone else) |
-| DELETE | `/api/auth/google/link` | → `MeOut` — unlinks |
+| POST | `/api/auth/bootstrap` | `BootstrapIn {token, username, password}` → `MeOut` (+ cookies) — the first administrator from the one-time `ADMIN_BOOTSTRAP_TOKEN`; sets `must_change_password`. `404` no token configured, `409` an admin exists/the token is spent, `401` wrong token, `400` weak password, `429` (`Retry-After`) after 3 wrong tokens in 30 s (the same Postgres limiter as sign-in) |
+| GET | `/api/auth/options` | → `AuthOptionsOut` (no auth): `invites`, `email_signup` (SMTP configured), `google_client_id` (null — no Google), `music_url`, `oidc_providers: [OidcProviderOut {name, title}]` |
+| POST | `/api/auth/register` | `RegisterIn {code, username, password}` → `MeOut` (+ cookies). A local account for an unused invite (no Navidrome user). `400` bad/used code or name/password, `409` name taken, `429` too many wrong codes |
+| POST | `/api/auth/email/code` | `EmailCodeIn {email}` → `EmailCodeOut {resend_in}`. 6-digit code (valid `EMAIL_CODE_MINUTES`, 15); only the latest letter of an address counts. `400` not an address, `409` the address has an account, `429` less than a minute ago or 5 in an hour, `503` `EMAIL_DAILY_LIMIT` in 24 h, `502` the letter did not go out, `404` SMTP not configured |
+| POST | `/api/auth/email/register` | `EmailRegisterIn {email, code, username, password}` → `MeOut` (+ cookies; `email` set). A local account, no invite. `400`/`409`/`429` as above |
+| GET | `/api/auth/oidc/{provider}/start` | `?mode=login\|link&invite=<code>` → `302` to the provider (Authorization Code + PKCE, `state`/`nonce` in the encrypted HttpOnly `hm_oidc` cookie). `404` unknown/disabled provider, `502` discovery is unavailable, `401` `mode=link` without a session |
+| GET | `/api/auth/oidc/{provider}/callback` | `?code&state` → `303` back to the PWA (+ cookies). Linked identity → session; a new identity needs a valid invite, otherwise `409`; `400` `state`/`nonce`/token error. Never links by email |
+| POST | `/api/auth/oidc/link/{provider}` | `OidcLinkIn {code, state}` → `MeOut` — links `iss`+`sub` to the signed-in user (`409` linked to someone else) |
+| DELETE | `/api/auth/oidc/link/{provider}` | → `MeOut` — unlinks; `409` when it is the only way into the account, `404` not linked |
+| POST | `/api/auth/google` | `GoogleIn {id_token, code?, username?}` → `MeOut` (+ cookies) — the app's Credential Manager flow; the Navidrome password is no longer returned. `404` Google not configured, `401` token rejected, `409` not linked and no `code` |
+| POST | `/api/auth/google/link` | `GoogleLinkIn {id_token}` → `MeOut` — links the Google identity (`409` linked to someone else) |
+| DELETE | `/api/auth/google/link` | → `MeOut` — unlinks Google |
 
-`MeOut` also has `public_hub_url` and `google_email`. ID tokens are verified against Google's keys
-(`app/google_auth.py`): RS256, `aud` = `GOOGLE_CLIENT_ID`, issuer, expiry, verified email.
+`MeOut`: `id`, `username`, `is_admin`, `public_music_url`, `public_hub_url`, `google_email`, `email`,
+`must_change_password`, `oidc_links`. A set `must_change_password` makes every endpoint except login, refresh,
+logout, `/api/auth/me` and `POST /api/auth/password` answer `403` (the OIDC start is not in that allowlist: a
+signed-in account must change the password before it starts a new external sign-in or link).
+
+The Hub is not an OIDC Provider: it serves no `/authorize`, `/token` or JWKS for third-party applications.
+Google ID tokens are verified against Google's published keys (`app/google_auth.py`); generic providers are
+described in `config.yaml` (`oidc.providers`: `issuer`, `client_id`, `client_secret`/`client_secret_enc`, `scopes`,
+`title`, `enabled`).
 
 ## Admin (only `is_admin`, otherwise `403`)
 | Method | Path | Body → Response |
 |---|---|---|
-| GET | `/api/admin/users` | → `AdminUsersOut {users: [AdminUserOut], ai_cost_usd, ai_cost_30d_usd, library_tracks}` — every Navidrome user (`id` null, `in_hub` false for those who never opened the Hub): AI spending (all time, 30 days, requests), downloads, tracks added, uploads, ♥ and playlists from Navidrome (null if it did not answer), last seen in the Hub and in the player, invite note |
+| GET | `/api/admin/users` | → `AdminUsersOut {users: [AdminUserOut], ai_cost_usd, ai_cost_30d_usd, library_tracks}` — the local Hub accounts only (no Navidrome users): AI spending (all time, 30 days, requests), downloads, tracks added, uploads, `last_seen_at` from access/refresh, invite note. ♥ and playlists come from the Hub in stage 5; until then they are `0` |
 | GET | `/api/admin/users/{id}` | → `AdminUserDetailOut` (+ `ai_months`, `ai_recent`, `recent_downloads`) |
 | GET | `/api/admin/invites` | → `[InviteOut]` (`code` as «ABCD-EFGH», `status` active/used/expired, `used_by`) |
 | POST | `/api/admin/invites` | `InviteIn {note, days?}` → `InviteOut` (`days` 1–90, default `INVITE_DAYS`) |
@@ -470,9 +492,14 @@ Deprecated transitional proxy: kept unchanged until the PWA switches to `/api/li
 stage 7. New clients must use `/api/library/*` (capability `hub_library_v1`) and must not depend on these routes.
 
 The library as the user's player sees it — the app has these as native (Tempus) screens, the PWA in a plain browser
-(`STANDALONE`) shows them from here (`app/api/medialib.py`). Everything is asked of Navidrome as the current user, so
-the stars and play counts are theirs. Navidrome «not found» (Subsonic code 70) → `404`, «not authorized» (50) → `403`, any other Navidrome error or no answer
-from it → `502`.
+(`STANDALONE`) shows them from here (`app/api/medialib.py`). For an account with Navidrome credentials everything is
+asked of Navidrome as that user, so the stars and play counts are theirs; Navidrome «not found» (Subsonic code 70) →
+`404`, «not authorized» (50) → `403`, any other Navidrome error or no answer from it → `502`.
+
+**Stage-4 transition:** an account created after stage 4 has no Navidrome credentials. For it these routes answer
+the same shapes from the Hub catalog (`albums.uid`/`artists.uid` as ids, `cover_url: null`, an empty ♥ row and an
+empty `/liked` until stage 5) and never call Navidrome — not `409`. A Navidrome-only playlist operation on such an
+account answers `409` with a Russian message instead of proxying.
 
 | Method | Path | Response |
 |---|---|---|

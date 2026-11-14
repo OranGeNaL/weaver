@@ -96,8 +96,8 @@ async def hub(hub_env, db_url: str, tmp_path, monkeypatch):
     from app.db import dispose, init_engine, session_scope
     from app.main import create_app
     from app.matching.normalize import fingerprint
-    from app.models import Session, Track, User
-    from app.security import new_token
+    from app.models import Track, User
+    from app.tokens import issue_access
 
     write_config(tmp_path, "mixes:\n  taste_model: v2\nanalytics:\n  exclude_users: [qa]\n")
     monkeypatch.setattr(insights, "utcnow", lambda: NOW)
@@ -107,6 +107,7 @@ async def hub(hub_env, db_url: str, tmp_path, monkeypatch):
         for name in ("admin", "anna", "boris", "qa"):
             # seen «in the future»: the auth check has nothing to refresh, so a request writes nothing
             u = User(
+                username=name,
                 nd_username=name,
                 nd_password_enc="x",
                 is_admin=name == "admin",
@@ -115,8 +116,7 @@ async def hub(hub_env, db_url: str, tmp_path, monkeypatch):
             s.add(u)
             await s.flush()
             ids[name] = u.id
-            tokens[name], digest = new_token()
-            s.add(Session(id=digest, user_id=u.id, expires_at=datetime(2100, 1, 1, tzinfo=UTC)))
+            tokens[name] = issue_access(u)
         for artist, title, nd, dz, dur in (
             ("Кино", "Группа крови", "ndK", "100", 245),
             ("Би-2", "Полковнику", "ndM", "200", 200),

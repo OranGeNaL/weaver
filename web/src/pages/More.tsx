@@ -1,13 +1,13 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { api } from '../api/client';
-import type { SoulseekStatusOut } from '../api/types';
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { api, errorMessage } from '../api/client';
+import type { AuthSessionOut, SoulseekStatusOut } from '../api/types';
 import { STANDALONE } from '../lib/embedded';
 import { useSession } from '../lib/session';
 import { Icon, type IconName } from '../components/Icon';
-import { PageHeader, Spinner, cx } from '../components/ui';
+import { Button, Field, Notice, PageHeader, Spinner, cx } from '../components/ui';
 import { useAsync } from '../lib/hooks';
 import { notifyPermission, requestNotifyPermission, type NotifyPermission } from '../lib/notify';
-import { Link } from '../lib/router';
+import { Link, navigate } from '../lib/router';
 import { setSmartEnabled, useSmartEnabled } from '../lib/smartShuffle';
 import { attempt, confirmDialog, toast } from '../lib/ui';
 
@@ -92,6 +92,7 @@ export function MorePage() {
             right={<Switch on={smart} />}
           />
         )}
+        <Item icon="user" to="/password" title="Пароль и устройства" sub="Сменить пароль, внешние входы, активные сеансы" />
         <Item icon="upload" to="/upload" title="Загрузить файлы" sub="Свои аудиофайлы с телефона" />
         <Item icon="playlist" to="/playlists" title="Плейлисты" sub="Ваши плейлисты в Navidrome" />
         <Item icon="transfer" to="/import" title="Перенести музыку" sub="Из Яндекс Музыки и Spotify: ♥, плейлисты, альбомы" />
@@ -204,5 +205,134 @@ function Item({
         <div className={cls}>{inner}</div>
       )}
     </li>
+  );
+}
+
+/** Смена пароля (+ устройства и внешние входы): the same screen is forced after bootstrap/CLI reset. */
+export function PasswordPage({ forced = false }: { forced?: boolean }) {
+  const { me, refreshMe } = useSession();
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [repeat, setRepeat] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const [sessions, setSessions] = useState<AuthSessionOut[]>([]);
+
+  const loadSessions = () => {
+    api.sessions().then((s) => setSessions(s.sessions), () => {});
+  };
+  useEffect(loadSessions, []);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setError(undefined);
+    if (next !== repeat) {
+      setError('Пароли не совпадают');
+      return;
+    }
+    setBusy(true);
+    try {
+      // an OIDC-only account has no password yet: the server does not ask for the current one
+      await api.changePassword({ current_password: current || null, new_password: next });
+      await refreshMe();
+      toast('Пароль изменён', 'success');
+      if (!forced) navigate('/more');
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async (id: string) => {
+    if (!(await confirmDialog({ title: 'Завершить сеанс этого устройства?', okLabel: 'Завершить' }))) return;
+    try {
+      await api.revokeSession(id);
+      loadSessions();
+    } catch (err) {
+      toast(errorMessage(err), 'error');
+    }
+  };
+
+  const unlink = async (provider: string) => {
+    try {
+      await api.unlinkOidc(provider);
+      await refreshMe();
+    } catch (err) {
+      toast(errorMessage(err), 'error');
+    }
+  };
+
+  return (
+    <div>
+      <PageHeader title={forced ? 'Смените пароль' : 'Пароль и входы'} />
+      <form onSubmit={submit} className="mx-4 mb-4 space-y-4 rounded-xl bg-surface p-4">
+        {forced && <p className="text-sm text-muted">Это первый пароль аккаунта: до смены остальные разделы закрыты.</p>}
+        <Field label="Текущий пароль">
+          <input
+            className="input"
+            type="password"
+            autoComplete="current-password"
+            value={current}
+            onChange={(e) => setCurrent(e.target.value)}
+          />
+        </Field>
+        <Field label="Новый пароль">
+          <input
+            className="input"
+            type="password"
+            autoComplete="new-password"
+            value={next}
+            onChange={(e) => setNext(e.target.value)}
+            required
+          />
+        </Field>
+        <Field label="Новый пароль ещё раз">
+          <input
+            className="input"
+            type="password"
+            autoComplete="new-password"
+            value={repeat}
+            onChange={(e) => setRepeat(e.target.value)}
+            required
+          />
+        </Field>
+        {error && <Notice kind="error">{error}</Notice>}
+        <Button type="submit" variant="primary" block busy={busy} disabled={!next || !repeat}>
+          Сохранить пароль
+        </Button>
+      </form>
+
+      {(me.oidc_links ?? []).length > 0 && (
+        <ul className="mx-4 mb-4 overflow-hidden rounded-xl bg-surface">
+          {(me.oidc_links ?? []).map((provider) => (
+            <li key={provider} className="flex items-center justify-between gap-3 border-b border-line px-4 py-3 last:border-0">
+              <span className="text-sm">Вход через {provider}</span>
+              <button type="button" className="min-h-11 text-sm font-semibold text-red-400" onClick={() => unlink(provider)}>
+                Отвязать
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {sessions.length > 0 && (
+        <ul className="mx-4 mb-4 overflow-hidden rounded-xl bg-surface">
+          {sessions.map((s) => (
+            <li key={s.id} className="flex items-center justify-between gap-3 border-b border-line px-4 py-3 last:border-0">
+              <div className="min-w-0">
+                <div className="truncate text-sm">{s.device}{s.current ? ' · это устройство' : ''}</div>
+                <div className="truncate text-xs text-muted">до {new Date(s.expires_at).toLocaleDateString('ru-RU')}</div>
+              </div>
+              {!s.current && (
+                <button type="button" className="min-h-11 text-sm font-semibold text-red-400" onClick={() => revoke(s.id)}>
+                  Завершить
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }

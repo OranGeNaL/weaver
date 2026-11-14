@@ -59,7 +59,21 @@ Archive a completed change in the experimental workflow.
    or archive summaries unless the user separately asks for it. These are
    prompt-level behavior contracts, not enforceable checks.
 
-2. **Check artifact completion status**
+2. **Require the advisor validation memo**
+
+   The project configuration makes `council-validate` mandatory after implementation
+   (`openspec/config.yaml`, `operations.apply.guidance`) and requires its memo for the archive
+   (`operations.archive.guidance`).
+
+   - Look for this change's validation memo in the conversation (or the «Правки после валидации» section of
+     `tasks.md`).
+   - If there is none, run the `council-validate` skill on the change first; do not archive.
+   - Archive only with verdict PASS, or after every named blocker was fixed and re-checked; unresolved
+     product decisions go back to the user.
+
+   Completion criterion: a memo is present and its verdict is PASS or FIX-FIRST with all blockers closed.
+
+3. **Check artifact completion status**
 
    Run `openspec status --change "<name>" --json` to check artifact completion.
 
@@ -73,7 +87,7 @@ Archive a completed change in the experimental workflow.
    - Ask the user to confirm they want to proceed
    - Proceed if user confirms
 
-3. **Check task completion status**
+4. **Check task completion status**
 
    Read the tasks file (typically `tasks.md`) to check for incomplete tasks.
 
@@ -86,7 +100,7 @@ Archive a completed change in the experimental workflow.
 
    **If no tasks file exists:** Proceed without task-related warning.
 
-4. **Assess delta spec sync state**
+5. **Assess delta spec sync state**
 
    Use `artifactPaths.specs.existingOutputPaths` from status JSON as the only
    delta-spec source. If the `specs` entry is missing or
@@ -127,7 +141,7 @@ Archive a completed change in the experimental workflow.
 
    If the sync failed, or any capability does not match, report what differs and stop — do not archive. Nothing has moved and `changeRoot` is intact, so the user can fix the mismatch or re-run the sync and start the archive again.
 
-5. **Perform the archive**
+6. **Perform the archive**
 
    Create an `archive` directory under `planningHome.changesDir` if it doesn't exist:
    ```bash
@@ -144,7 +158,7 @@ Archive a completed change in the experimental workflow.
    mv "<changeRoot>" "<planningHome.changesDir>/archive/<target-name>"
    ```
 
-6. **Display summary**
+7. **Display summary**
 
    Show archive completion summary including:
    - Change name

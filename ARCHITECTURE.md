@@ -125,7 +125,8 @@ HomeMusic — это персональный музыкальный серви�
 │ Infrastructure / adapters                                     │
 │  providers/*, catalog/*, library/navidrome.py, net.py,       │
 │  jobs/queue.py, db.py, models.py, config.py, security.py,    │
-│  events.py, mailer.py, google_auth.py, housekeeping.py       │
+│  events.py, mailer.py, google_auth.py, oidc.py, tokens.py,    │
+│  passwords.py, bootstrap.py, housekeeping.py                  │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -150,7 +151,7 @@ HomeMusic — это персональный музыкальный серви�
 
 | Роутер | Префикс | Ответственность |
 |---|---|---|
-| `api/auth.py` | `/api/auth` | вход, выход, `me`, регистрация по инвайту/email, Google |
+| `api/auth.py` | `/api/auth` | вход по локальному паролю, refresh/выход, `me`, смена пароля, устройства, регистрация по инвайту/email, OIDC-вход и привязка, bootstrap администратора |
 | `api/admin.py` | `/api/admin` | пользователи, расходы ИИ, инвайты |
 | `api/insights.py` | `/api/admin` | read-only аналитика: прослушивания, вкус, карта, миксы, волны |
 | `api/search.py` | `/api/search` | история поиска, унифицированный поиск, провайдеры |
@@ -185,7 +186,7 @@ HomeMusic — это персональный музыкальный серви�
 
 | Компонент | Модули | Что делает |
 |---|---|---|
-| **Аккаунты** | `accounts.py`, `auth.py`, `security.py`, `mailer.py`, `google_auth.py`, `api/auth.py` | инвайты, email-коды, Google ID-token, сессии, Fernet-шифрование паролей |
+| **Аккаунты** | `accounts.py`, `auth.py`, `tokens.py`, `passwords.py`, `bootstrap.py`, `oidc.py`, `security.py`, `mailer.py`, `google_auth.py`, `api/auth.py` | локальные учётки (argon2id), access JWT + rotating refresh, bootstrap администратора, инвайты, email-коды, OIDC RP (`iss`+`sub`), Fernet-шифрование секретов |
 | **Каталог** | `catalog/models.py`, `deezer.py`, `hitmoz_catalog.py`, `musicbrainz.py`, `yandex.py`, `cache.py` | единый `ref` вида `dz:…`, `hm:…`; TTL-кэш в `catalog_cache` |
 | **Загрузки** | `jobs/downloads.py`, `providers/*`, `matching/*`, `library/*` | полный конвейер: каталог → дедупликация → поиск → выбор → скачивание → проверка → импорт (блобы; теги — только при экспорте) |
 | **Библиотека** | `library/importer.py`, `editor.py`, `export.py`, `covers.py`, `owned.py`, `artists.py`, `catalog.py`, `reconcile.py`, `api/library.py`, `storage/*` | каталог Hub: блобы в S3, двуфазная запись, логические пути, теги только при экспорте, ленивые артисты, публичные `uid`, правки, сверка; `/api/nd/*` — deprecated до этапа 6 |
@@ -221,7 +222,7 @@ HomeMusic — это персональный музыкальный серви�
 
 | Группа | Таблицы | Назначение |
 |---|---|---|
-| Пользователи и доступ | `users`, `sessions`, `invites`, `email_codes` | аккаунты, сессии, приглашения |
+| Пользователи и доступ | `users`, `refresh_tokens`, `oauth_links`, `login_attempts`, `bootstrap_state`, `invites`, `email_codes` | локальные аккаунты, сессии (семьи refresh-токенов), внешние входы, лимитер попыток, одноразовый bootstrap |
 | ИИ-учёт | `assistant_daily_usage`, `ai_usage` | лимиты и стоимость |
 | Музыкальная библиотека | `albums`, `tracks`, `uploads` | собственные файлы и метаданные |
 | Каталог | `catalog_cache` | TTL-кэш ответов Deezer/hitmoz/Last.fm и т. п. |
@@ -298,17 +299,26 @@ HomeMusic — это персональный музыкальный серви�
 ```text
 Login form
   → POST /api/auth/login
-  → NavidromeClient.ping() + get_user()
-  → User upsert (пароль шифруется Fernet)
-  → Session (sha256 токена)
-  → HttpOnly cookie hm_session
+  → users.password_hash (argon2id, локальная учётка Hub)
+  → access JWT (HS256, 15 мин) в HttpOnly hm_session
+  → refresh-токен (30 дней, sha256 в refresh_tokens с family_id/device_id) в hm_refresh (path /api/auth)
+  → hm_device (HttpOnly) — устройство сессии
 ```
 
 Дополнительно:
 
-- инвайты — `invites`;
-- email-регистрация — `email_codes` + SMTP;
-- Google — проверка RS256 ID-token по публичным ключам Google;
+- доступ проверяется по подписи и `exp` JWT; роль для админских endpoint'ов читается из БД, а не из токена;
+- `POST /api/auth/refresh` ротирует refresh; строка читается `SELECT … FOR UPDATE`, поэтому одновременные запросы
+  устройства сериализуются. Пара, выданная при ротации, лежит в `replacement_enc` (Fernet) окно идемпотентности
+  (10 с), чтобы параллельный refresh того же устройства не разлогинивал; повтор старого токена вне окна отзывает
+  всю семью;
+- `GET /api/auth/sessions` и `DELETE /api/auth/sessions/{family_id}` — только живые сессии (`last_used_at` —
+  последняя ротация), отзыв семьи;
+- `must_change_password` (bootstrap-токен, CLI-сброс) закрывает всё, кроме входа, refresh, выхода, `me` и смены пароля;
+- инвайты — `invites`; email-регистрация — `email_codes` + SMTP; лимит попыток входа — `login_attempts` в Postgres:
+  3 неудачи **одного имени** за 30 с, тем же счётчиком ограничен перебор bootstrap-токена;
+- OIDC — Relying Party (`oidc.py`): discovery, Authorization Code + PKCE, `state`/`nonce`; связь `iss`+`sub` в
+  `oauth_links`, автопривязки по email нет; Hub не является OIDC Provider;
 - любой запрос, кроме `/healthz` и логина, требует cookie;
 - `current_user()` освобождает транзакцию аутентификации до входа в долгий endpoint.
 

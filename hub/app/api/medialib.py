@@ -13,15 +13,15 @@ from urllib.parse import quote
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import NdAlbumOut, NdArtistOut, NdArtistPageOut, NdHomeOut, NdLikedOut, NdSongOut
-from app.auth import current_user, user_navidrome
+from app.auth import current_user, has_navidrome, user_navidrome
 from app.db import get_session
 from app.library.navidrome import NavidromeClient, SubsonicError
 from app.mixes.resolve import library_track
-from app.models import CatalogCache, ImportItem, Track, User
+from app.models import Album, Artist, CatalogCache, ImportItem, Track, User
 
 router = APIRouter(prefix="/api/nd", tags=["medialib"])
 
@@ -130,8 +130,167 @@ def _radio(artists: list[dict]) -> list[NdArtistOut]:
     return [artist_out(a) for a in ranked]
 
 
+# --- the stage-4 transition: no Navidrome account, the Hub catalog answers in ND's shape ---------------
+
+
+def hub_album_out(album: Album, artist: Artist | None, song_count: int = 0, duration_s: int = 0) -> NdAlbumOut:
+    """A Hub album as the ND library screen expects it (the ids are the catalog `uid`s)."""
+    return NdAlbumOut(
+        id=album.uid,
+        title=album.title,
+        artist=artist.name if artist is not None else album.album_artist,
+        artist_id=artist.uid if artist is not None else None,
+        year=album.year,
+        song_count=song_count,
+        duration_s=duration_s,
+        cover_url=None,
+        starred=False,
+    )
+
+
+def hub_artist_out(artist: Artist, album_count: int = 0) -> NdArtistOut:
+    return NdArtistOut(id=artist.uid, name=artist.name, album_count=album_count, cover_url=None, starred=False)
+
+
+def hub_song_out(track: Track) -> NdSongOut:
+    """A Hub catalog track in the ND song shape: the library screens of the browser PWA keep working."""
+    ref = library_track(track).ref
+    source, _, ident = ref.partition(":")
+    return NdSongOut(
+        ref=ref,
+        source=source if source in ("dz", "hm", "mb", "nd", "file") else "hm",  # type: ignore[arg-type]
+        id=ident or str(track.id),
+        title=track.title,
+        artist=track.artist,
+        artists=[track.artist],
+        album_title=track.album,
+        album_artist=track.album_artist,
+        duration_s=track.duration_s,
+        track_no=track.track_no,
+        disc_no=track.disc_no,
+        explicit=track.explicit,
+        owned=True,
+        library_track_id=track.id,
+    )
+
+
+async def hub_album_rows(s: AsyncSession, type: str, offset: int = 0, size: int = 50) -> list[NdAlbumOut]:
+    """Albums of the Hub catalog for the ND list `type`s (`starred` is empty: ♥ move to the Hub in stage 5)."""
+    if type == "starred":
+        return []
+    stats = (
+        select(
+            Track.album_id,
+            func.count(Track.id).label("songs"),
+            func.coalesce(func.sum(Track.duration_s), 0).label("duration"),
+        )
+        .where(Track.deleted_at.is_(None), Track.album_id.is_not(None))
+        .group_by(Track.album_id)
+        .subquery()
+    )
+    order = {
+        "alphabeticalByArtist": (Album.album_artist, Album.title),
+        "newest": (Album.created_at.desc(),),
+        "recent": (Album.updated_at.desc(),),
+        "frequent": (Album.updated_at.desc(), Album.title),
+        "random": (func.random(),),
+    }.get(type, (Album.title,))
+    rows = await s.execute(
+        select(Album, Artist, stats.c.songs, stats.c.duration)
+        .outerjoin(Artist, Artist.id == Album.artist_id)
+        .outerjoin(stats, stats.c.album_id == Album.id)
+        .order_by(*order)
+        .offset(offset)
+        .limit(size)
+    )
+    return [hub_album_out(a, ar, songs or 0, duration or 0) for a, ar, songs, duration in rows.unique().all()]
+
+
+async def hub_home(s: AsyncSession) -> NdHomeOut:
+    """The Home screen of a user without a Navidrome account: Hub albums and artists, an empty ♥ row."""
+    recent = await hub_album_rows(s, "recent", size=HOME_ROW)
+    newest = await hub_album_rows(s, "newest", size=HOME_ROW)
+    rows = await s.execute(
+        select(Artist, func.count(Album.id))
+        .outerjoin(Album, Album.artist_id == Artist.id)
+        .group_by(Artist.id)
+        .order_by(func.count(Album.id).desc(), Artist.name)
+        .limit(HOME_RADIO)
+    )
+    return NdHomeOut(
+        recent=recent,
+        frequent=newest,
+        newest=newest,
+        starred=[],
+        radio=[hub_artist_out(a, n) for a, n in rows.all()],
+    )
+
+
+async def hub_album_detail(s: AsyncSession, album_id: str) -> NdAlbumOut:
+    album = await hub_album(s, album_id)
+    if album is None:
+        raise HTTPException(404, "Альбом не найден")
+    artist = await s.get(Artist, album.artist_id) if album.artist_id else None
+    tracks = list(
+        (
+            await s.execute(
+                select(Track).where(Track.album_id == album.id, Track.deleted_at.is_(None)).order_by(Track.track_no)
+            )
+        ).scalars()
+    )
+    out = hub_album_out(album, artist, len(tracks), sum(t.duration_s or 0 for t in tracks))
+    out.tracks = [hub_song_out(t) for t in tracks]
+    return out
+
+
+async def hub_album(s: AsyncSession, album_id: str) -> Album | None:
+    """A Hub album by its catalog `uid` (or the legacy int id the old PWA kept)."""
+    if album_id.isdigit():
+        legacy = await s.get(Album, int(album_id))
+        if legacy is not None:
+            return legacy
+    return (await s.execute(select(Album).where(Album.uid == album_id))).scalar_one_or_none()
+
+
+async def hub_artist(s: AsyncSession, artist_id: str) -> Artist | None:
+    if artist_id.isdigit():
+        legacy = await s.get(Artist, int(artist_id))
+        if legacy is not None:
+            return legacy
+    return (await s.execute(select(Artist).where(Artist.uid == artist_id))).scalar_one_or_none()
+
+
+async def hub_artist_page(s: AsyncSession, artist_id: str) -> NdArtistPageOut:
+    artist = await hub_artist(s, artist_id)
+    if artist is None:
+        raise HTTPException(404, "Исполнитель не найден")
+    albums = list(
+        (
+            await s.execute(
+                select(Album).where(Album.artist_id == artist.id).order_by(Album.year.desc().nulls_last(), Album.title)
+            )
+        ).scalars()
+    )
+    counts = dict(
+        (
+            await s.execute(
+                select(Track.album_id, func.count(Track.id))
+                .where(Track.album_id.in_([a.id for a in albums]), Track.deleted_at.is_(None))
+                .group_by(Track.album_id)
+            )
+        ).all()
+    )
+    return NdArtistPageOut(
+        artist=hub_artist_out(artist, len(albums)),
+        albums=[hub_album_out(a, artist, counts.get(a.id, 0)) for a in albums],
+    )
+
+
 @router.get("/home", response_model=NdHomeOut)
-async def home(user: User = Depends(current_user)):
+async def home(user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+    if not has_navidrome(user):
+        return await hub_home(s)
+
     async def load(nd: NavidromeClient):
         return await asyncio.gather(
             *(nd.get_album_list2(t, size=HOME_ROW) for t in ("recent", "frequent", "newest", "starred")),
@@ -154,9 +313,12 @@ async def albums(
     offset: int = Query(0, ge=0),
     size: int = Query(50, ge=1, le=500),
     user: User = Depends(current_user),
+    s: AsyncSession = Depends(get_session, scope="function"),
 ):
     if type not in ALBUM_LISTS:
         raise HTTPException(422, f"type: one of {', '.join(ALBUM_LISTS)}")
+    if not has_navidrome(user):
+        return await hub_album_rows(s, type, offset, size)
     return [album_out(a) for a in await nd_call(user, lambda nd: nd.get_album_list2(type, size=size, offset=offset))]
 
 
@@ -164,6 +326,8 @@ async def albums(
 async def album(
     album_id: str, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
 ):
+    if not has_navidrome(user):
+        return await hub_album_detail(s, album_id)
     a = await nd_call(user, lambda nd: nd.get_album(album_id))
     if not a.get("id"):
         raise HTTPException(404, "Альбом не найден")
@@ -173,12 +337,21 @@ async def album(
 
 
 @router.get("/artists", response_model=list[NdArtistOut])
-async def artists(user: User = Depends(current_user)):
+async def artists(user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+    if not has_navidrome(user):
+        rows = await s.execute(
+            select(Artist, func.count(Album.id)).outerjoin(Album, Album.artist_id == Artist.id).group_by(Artist.id)
+        )
+        return [hub_artist_out(a, n) for a, n in rows.all()]
     return [artist_out(a) for a in await nd_call(user, lambda nd: nd.get_artists())]
 
 
 @router.get("/artists/{artist_id}", response_model=NdArtistPageOut)
-async def artist(artist_id: str, user: User = Depends(current_user)):
+async def artist(
+    artist_id: str, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
+    if not has_navidrome(user):
+        return await hub_artist_page(s, artist_id)
     a = await nd_call(user, lambda nd: nd.get_artist(artist_id))
     if not a.get("id"):
         raise HTTPException(404, "Исполнитель не найден")
@@ -199,6 +372,10 @@ async def artist(artist_id: str, user: User = Depends(current_user)):
 async def liked(user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
     from app.favorites import parse_time, snapshot
     from app.imports.apply import _user_likes
+
+    if not has_navidrome(user):
+        # ♥ of the Hub (`favorite_subjects`) arrive with stage 5: until then the row is empty, not an error
+        return NdLikedOut()
 
     body = await nd_call(user, lambda nd: nd.get_starred2())
     states = await snapshot(s, user.id)
@@ -294,6 +471,8 @@ async def liked(user: User = Depends(current_user), s: AsyncSession = Depends(ge
 @router.get("/cover/{cover_id}")
 async def cover(cover_id: str, size: int | None = Query(None, ge=32, le=1500), user: User = Depends(current_user)):
     """A Navidrome cover (getCoverArt), so the page needs no Navidrome credentials."""
+    if not has_navidrome(user):
+        raise HTTPException(404, "Нет обложки")
     nd = user_navidrome(user)
     try:
         url, params = nd.cover_art_url_params(cover_id, size)

@@ -529,7 +529,7 @@ async def matrix(
         "model": model_of(model),
         "by": by,
         "now": now,
-        "users": [{"id": u.id, "username": u.nd_username} for u in users],
+        "users": [{"id": u.id, "username": u.username} for u in users],
         "rows": out[offset : offset + limit],
         "total": len(out),
         "offset": offset,

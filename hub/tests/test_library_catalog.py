@@ -11,7 +11,7 @@ import math
 import struct
 import wave
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -25,9 +25,10 @@ from app.library.artists import artist_name_norm
 from app.library.catalog import catalog_commit
 from app.library.importer import ImportSpec, import_file
 from app.library.reconcile import MISSING_BLOB, MISSING_COVER, catalog_reconcile
-from app.models import Album, Artist, Blob, DownloadBatch, DownloadItem, PlayEvent, Session, Track, User, utcnow
-from app.security import encrypt, hash_token
+from app.models import Album, Artist, Blob, DownloadBatch, DownloadItem, PlayEvent, Track, User, utcnow
+from app.security import encrypt
 from app.storage import backend, blobs
+from app.tokens import issue_access
 from tests.support import app_client
 
 
@@ -49,12 +50,11 @@ async def api(hub_env, db_url) -> AsyncIterator:
     from app.main import create_app
 
     db.init_engine(db_url)
-    token = "catalog-test-token"
     async with db.session_scope() as s:
-        user = User(nd_username="admin", nd_password_enc=encrypt("adminpw"), is_admin=True)
+        user = User(username="admin", nd_username="admin", nd_password_enc=encrypt("adminpw"), is_admin=True)
         s.add(user)
         await s.flush()
-        s.add(Session(id=hash_token(token), user_id=user.id, expires_at=utcnow() + timedelta(days=1)))
+        token = issue_access(user)
     await db.dispose()  # the lifespan migrates/opens DATABASE_URL (this worker's clone)
     app = create_app()
     async with app.router.lifespan_context(app):
@@ -254,7 +254,7 @@ async def test_catalog_commit_is_idempotent(hub_env, tmp_path, db_url):
     db.init_engine(db_url)
     track_id, track_uid, _album_uid = await _import(tmp_path, "Кино", "Группа крови")
     async with db.session_scope() as s:
-        user = User(nd_username="admin", nd_password_enc=encrypt("x"), is_admin=True)
+        user = User(username="admin", nd_username="admin", nd_password_enc=encrypt("x"), is_admin=True)
         s.add(user)
         await s.flush()
         user_id = user.id
@@ -284,7 +284,7 @@ async def test_catalog_commit_is_idempotent(hub_env, tmp_path, db_url):
 async def test_catalog_commit_refuses_a_track_without_blob(hub_env, tmp_path, db_url):
     db.init_engine(db_url)
     async with db.session_scope() as s:
-        user = User(nd_username="u", nd_password_enc=encrypt("x"), is_admin=False)
+        user = User(username="u", nd_username="u", nd_password_enc=encrypt("x"), is_admin=False)
         s.add(user)
         await s.flush()
         batch = DownloadBatch(user_id=user.id, origin="search")
@@ -316,7 +316,7 @@ async def test_nd_sync_never_fails_on_an_unavailable_navidrome(hub_env, tmp_path
 
     monkeypatch.setattr(jobs, "admin_client", no_navidrome)
     async with db.session_scope() as s:
-        user = User(nd_username="u2", nd_password_enc=encrypt("x"), is_admin=False)
+        user = User(username="u2", nd_username="u2", nd_password_enc=encrypt("x"), is_admin=False)
         s.add(user)
         await s.flush()
         batch = DownloadBatch(user_id=user.id, origin="search")
