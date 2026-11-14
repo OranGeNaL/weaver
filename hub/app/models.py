@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Float,
@@ -141,17 +142,37 @@ class Blob(Base):
     manifest_key: Mapped[str | None] = mapped_column(String(128))
 
 
+class Artist(Base):
+    """A lazily created artist: `name_norm` is the unique key, `tracks.artist`/`albums.album_artist` stay as credits."""
+
+    __tablename__ = "artists"
+    __table_args__ = (CheckConstraint("name_norm <> ''", name="ck_artists_name_norm_not_empty"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    uid: Mapped[str] = mapped_column(String(36), unique=True)
+    name: Mapped[str] = mapped_column(String(512))
+    # normalized name (app.matching.normalize.normalize_artist: latin form, else text): the deduplication key
+    name_norm: Mapped[str] = mapped_column(String(512), unique=True)
+    sort_name: Mapped[str] = mapped_column(String(512), default="", server_default="")
+    cover_blob_id: Mapped[int | None] = mapped_column(ForeignKey("blobs.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Album(Base):
     """Album as the Hub manages it. `uid` is written into files as HOMEMUSIC_ALBUM_ID (Navidrome album PID)."""
 
     __tablename__ = "albums"
+    __table_args__ = (Index("ix_albums_artist_id", "artist_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     uid: Mapped[str] = mapped_column(String(36), unique=True)
     title: Mapped[str] = mapped_column(String(512))
     album_artist: Mapped[str] = mapped_column(String(512))
+    artist_id: Mapped[int | None] = mapped_column(ForeignKey("artists.id", ondelete="SET NULL"))
     year: Mapped[int | None] = mapped_column(Integer)
     release_type: Mapped[str | None] = mapped_column(String(32))  # album/single/ep/compilation
+    # catalog integrity of the cover: `missing_cover`, cleared by catalog_reconcile
+    integrity_issue: Mapped[str | None] = mapped_column(String(32))
     # normalized "{album_artist} {title}" for the multi-token case-insensitive search (app.library.search_text)
     search_text: Mapped[str] = mapped_column(String(2048), default="", server_default="")
     deezer_album_id: Mapped[str | None] = mapped_column(String(32), index=True)
@@ -175,6 +196,8 @@ class Track(Base):
     blob_id: Mapped[int | None] = mapped_column(ForeignKey("blobs.id", ondelete="SET NULL"), index=True)
     # trash: a deleted track keeps its row (and blob) until `library.trash_days` elapses
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    # catalog integrity: `missing_blob`, cleared by catalog_reconcile
+    integrity_issue: Mapped[str | None] = mapped_column(String(32))
     nd_song_id: Mapped[str | None] = mapped_column(String(64), index=True)
     artist: Mapped[str] = mapped_column(String(512))
     title: Mapped[str] = mapped_column(String(512))
@@ -242,6 +265,8 @@ class DownloadItem(Base):
         Index("ix_download_items_import_album", text("((query_json->'import'->>'album')::int)")),
         Index("ix_download_items_mix_id", text("((query_json->'mix'->>'id')::int)")),
         Index("ix_download_items_track_ref", text("(query_json->'meta'->>'track_ref')")),
+        # idempotency key of `catalog_commit`: one item commits a blob once
+        UniqueConstraint("id", "blob_sha256", name="uq_download_items_id_blob_sha256"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -256,6 +281,8 @@ class DownloadItem(Base):
     error: Mapped[str | None] = mapped_column(Text)
     warnings: Mapped[list[Any]] = mapped_column(JSONB, default=list)
     track_id: Mapped[int | None] = mapped_column(ForeignKey("tracks.id", ondelete="SET NULL"))
+    # the bytes this item put into the catalog: its `(download_item_id, blob_sha256)` is the idempotency key
+    blob_sha256: Mapped[str | None] = mapped_column(String(64))
     force: Mapped[bool] = mapped_column(Boolean, default=False)  # explicit re-download (new file next to locked one)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

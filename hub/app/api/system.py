@@ -84,10 +84,13 @@ async def _library_bytes() -> int:
 @router.get("/healthz", response_model=HealthOut)
 async def healthz():
     # storage degradation is reported, never fatal: clients keep working with the rest of the Hub
+    from app.library.reconcile import last_result
+
     return HealthOut(
         ok=True,
         navidrome=await _navidrome_ok(),
         storage=await _storage_status(),
+        catalog=dict(last_result),
         web_build=web_build(get_settings().static_dir),
     )
 
@@ -107,11 +110,14 @@ async def health(user: User = Depends(admin_user)):
     providers["search"] = await smoke_test_providers()
     status = await _storage_status()
     status["library_bytes"] = await _library_bytes()
+    from app.library.reconcile import last_result
+
     return HealthOut(
         ok=True,
         navidrome=await _navidrome_ok(),
         providers=providers,
         storage=status,
+        catalog=dict(last_result),
         web_build=web_build(get_settings().static_dir),
     )
 

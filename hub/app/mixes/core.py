@@ -496,7 +496,6 @@ async def remove_unheard(mix_ids: list[int]) -> int:
     """Songs of closed mixes downloaded only for them that nobody listened to, starred, put in a playlist, asked to
     download, and that no active mix or import holds: to the trash (as the assistant deletes). Each song is decided
     once (`features_json.cleanup`: "trashed" or why it stays); one still downloading waits. Returns how many went."""
-    from app.jobs.downloads import enqueue_scan
     from app.library import editor
 
     if not mix_ids:
@@ -538,8 +537,6 @@ async def remove_unheard(mix_ids: list[int]) -> int:
                 verdict = "trashed"
                 removed += 1
             it.features_json = {**(it.features_json or {}), "cleanup": verdict}
-        if removed:
-            await enqueue_scan(s)
     if removed:
         notify()
     return removed

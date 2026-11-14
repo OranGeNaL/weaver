@@ -169,9 +169,14 @@ class AdminUserDetailOut(AdminUserOut):
 
 
 class LibTrackOut(BaseModel):
-    id: int
+    uid: str
+    album_uid: str | None = None
+    artist_uid: str | None = None
+    # deprecated legacy ints (until stage 7): the current PWA links by them, new clients use `uid`
+    id: int | None = None
     nd_song_id: str | None
     album_id: int | None
+    integrity_issue: str | None = None
     artist: str
     title: str
     album: str | None
@@ -198,8 +203,10 @@ class TrackSourceOut(BaseModel):
 
 
 class LibAlbumOut(BaseModel):
-    id: int
     uid: str
+    artist_uid: str | None = None
+    # deprecated legacy int (until stage 7)
+    id: int | None = None
     title: str
     album_artist: str
     year: int | None
@@ -208,8 +215,36 @@ class LibAlbumOut(BaseModel):
     deezer_album_id: str | None
     track_count: int = 0
     has_cover: bool = False
+    integrity_issue: str | None = None
     nd_album_id: str | None = None
     tracks: list[LibTrackOut] | None = None
+
+
+class LibArtistOut(BaseModel):
+    uid: str
+    name: str
+    sort_name: str = ""
+    album_count: int = 0
+    has_cover: bool = False
+
+
+class LibArtistPageOut(BaseModel):
+    artist: LibArtistOut
+    albums: list[LibAlbumOut] = []
+
+
+class LibHomeOut(BaseModel):
+    recent: list[LibAlbumOut] = []
+    frequent: list[LibAlbumOut] = []
+    newest: list[LibAlbumOut] = []
+    starred: list[LibAlbumOut] = []
+    artists: list[LibArtistOut] = []
+
+
+class ArtistMergeIn(BaseModel):
+    """Move every album and matching track credit of the path artist into `target_uid`."""
+
+    target_uid: str
 
 
 class AlbumPatchIn(BaseModel):
@@ -229,13 +264,29 @@ class AlbumCreateIn(BaseModel):
 
 
 class AlbumMergeIn(BaseModel):
-    source_ids: list[int]
-    target_id: int
+    source_ids: list[int] = []
+    target_id: int | None = None
+    source_uids: list[str] = []
+    target_uid: str | None = None
 
 
 class TracksMoveIn(BaseModel):
-    track_ids: list[int]
-    album_id: int
+    track_ids: list[int] = []
+    album_id: int | None = None
+    track_uids: list[str] = []
+    album_uid: str | None = None
+
+
+class LibraryImportIn(BaseModel):
+    """Bootstrap import from a mounted catalog: paths relative to `MUSIC_ROOT` (admin only)."""
+
+    paths: list[str] = Field(min_length=1, max_length=500)
+
+
+class LibraryImportOut(BaseModel):
+    imported: int = 0
+    failed: list[str] = []
+    tracks: list[LibTrackOut] = []
 
 
 class TrackPatchIn(BaseModel):
@@ -430,6 +481,9 @@ class DownloadItemOut(BaseModel):
     error: str | None = None
     warnings: list[Any] = []
     track_id: int | None = None
+    # the catalog row the commit created: `uid` is public, `library_track_id` the deprecated int alias
+    library_track_id: int | None = None
+    uid: str | None = None
     nd_song_id: str | None = None  # Navidrome song once imported and scanned
     playlist_id: str | None = None  # target Navidrome playlist of the batch (Android: sync only that one offline)
     track_ref: str | None = None  # catalog track the item was made from (dz:…)
@@ -758,6 +812,7 @@ class HealthOut(BaseModel):
     providers: dict[str, Any] = Field(default_factory=dict)
     # storage health: backend, bucket availability, library/cache occupancy (degradation never makes ok false)
     storage: dict[str, Any] = Field(default_factory=dict)
+    catalog: dict[str, Any] = Field(default_factory=dict)
     version: str = "0.1.0"
     today: date | None = None
     # id of the PWA build the Hub serves (index.html <meta name="hm-build">); pages compare it with their own
@@ -770,6 +825,7 @@ class HealthOut(BaseModel):
         "launch_events_v1",
         "wave_origin_v1",
         "smart_shuffle_v1",
+        "hub_library_v1",
     ]
 
 

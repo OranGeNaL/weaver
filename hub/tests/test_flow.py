@@ -974,18 +974,18 @@ async def test_a_track_navidrome_never_finds_stops_the_scans_after_a_few_passes(
     from sqlalchemy import func, select
 
     from app.db import session_scope
-    from app.jobs.downloads import SCAN_PASSES, enqueue_scan
+    from app.jobs.downloads import SCAN_PASSES, enqueue_nd_sync
     from app.models import Job
 
     await add_unlinked("Нет/Такого/файла.mp3", "Призрак")
     async with session_scope() as s:
-        await enqueue_scan(s)
+        await enqueue_nd_sync(s)
 
     await drain_jobs(max_rounds=3 * SCAN_PASSES)
 
     async with session_scope() as s:
         scans = (
-            await s.execute(select(Job.status, func.count()).where(Job.kind == "nd_scan").group_by(Job.status))
+            await s.execute(select(Job.status, func.count()).where(Job.kind == "nd_sync").group_by(Job.status))
         ).all()
     assert dict(scans) == {"done": 1 + SCAN_PASSES}
     assert env["state"]["scans"] == 1 + SCAN_PASSES

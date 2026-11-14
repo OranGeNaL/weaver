@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.library import tagger
+from app.library.artists import link_album_artist
 from app.library.importer import album_reldir, library_lock, unique_logical_path
 from app.library.layout import track_filename
 from app.matching.normalize import fingerprint
@@ -48,7 +49,8 @@ async def _relocate(s: AsyncSession, track: Track, album: Album, *, touching_alb
         if desired.as_posix() != track.path:
             # uniquify only against *other* rows: a track never collides with its own current path
             track.path = (await unique_logical_path(s, desired)).as_posix()
-            track.nd_song_id = None  # re-linked after the next scan
+            # the blob and the Navidrome link stay: only the logical path changes (stage 3: edits MUST NOT
+            # require a rescan or a re-link)
 
 
 async def relocate_track(s: AsyncSession, track: Track, album: Album, *, retag: bool = True) -> None:
@@ -64,6 +66,9 @@ async def update_album(s: AsyncSession, album: Album, **fields) -> Album:
         for k, v in fields.items():
             if v is not None:
                 setattr(album, k, v)
+        if "album_artist" in fields and fields["album_artist"] is not None:
+            # a renamed credit is a new lazy artist (or the existing one under the new normalization)
+            await link_album_artist(s, album, force=True)
         tracks = (await s.execute(select(Track).where(Track.album_id == album.id))).scalars().all()
         for t in tracks:
             await _relocate(s, t, album, touching_album=True)

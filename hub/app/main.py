@@ -48,7 +48,6 @@ async def lifespan(app: FastAPI):
 
     from app import listen
     from app.housekeeping import scheduler_loop
-    from app.jobs.downloads import playlist_adds_loop
     from app.jobs.queue import WorkerPool, recover_stale
     from app.mixes import smart, wave
     from app.mixes.core import schedule_loop
@@ -67,7 +66,7 @@ async def lifespan(app: FastAPI):
         tasks.append(asyncio.create_task(scheduler_loop(), name="scheduler"))
         tasks.append(asyncio.create_task(scrobbles_loop(), name="scrobbles"))
         tasks.append(asyncio.create_task(schedule_loop(), name="mixes"))
-        tasks.append(asyncio.create_task(playlist_adds_loop(), name="playlist-adds"))
+        # `playlist_adds_loop` returns at stage 5: ND playlist effects are deferred until local playlists exist
     log.info("hub started")
     try:
         yield

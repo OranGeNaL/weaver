@@ -881,7 +881,6 @@ async def run_chat(
 
 async def confirm_chat(s: AsyncSession, user: User, task: AssistantTask, token: str) -> dict[str, Any]:
     from app.auth import user_navidrome
-    from app.jobs.downloads import enqueue_scan
     from app.library import editor
 
     if task.input_kind != "chat" or task.status != "awaiting_confirmation":
@@ -912,7 +911,6 @@ async def confirm_chat(s: AsyncSession, user: User, task: AssistantTask, token: 
             await editor.trash_track(s, t)
             tracks += 1
     if albums:
-        await enqueue_scan(s)
         for album_id in albums:
             bus.publish(user.id, "library", {"kind": "changed", "album_id": album_id})
     task.status = "confirmed"

@@ -385,22 +385,52 @@ like the track, a play to its end, a ♥ or «+» raises what sounds like it (a 
 unlike the wave). The rows are kept for the analytics: `smart_sessions`, `smart_items` (`state` `handed`/`added`/`hidden`),
 `smart_hidden`.
 
-## Library (own files, albums)
+## Library (own files, albums, artists)
+The Hub owns the catalog: `/api/library/*` is its public surface. The public identifier of an album, track and artist
+is `uid` (UUID); the legacy `int` `id`/`album_id`/`track_id` fields and path values are deprecated legacy aliases
+accepted and returned until stage 7 (`GET`, `PATCH`, `DELETE`, cover, merge and move accept either form). The
+`hub_library_v1` capability in `/healthz` tells a client to use this section instead of `/api/nd/*`.
+
 | Method | Path | Body → Response |
 |---|---|---|
-| GET | `/api/library/albums?q=&offset=0&limit=50` | `LibAlbumOut[]` |
-| POST | `/api/library/albums` | `AlbumCreateIn` → `LibAlbumOut` (empty custom album / compilation) |
+| GET | `/api/library/home` | `LibHomeOut {recent, frequent, newest, starred: LibAlbumOut[], artists: LibArtistOut[]}` — `recent`/`frequent` from the playback journal (empty without data), `starred` from the like/unlike journal |
+| GET | `/api/library/albums?q=&sort=&offset=0&limit=50` | `LibAlbumOut[]`; `sort` one of `updated_at` (default before stage 6), `recent`, `frequent`, `newest`, `starred`, `alphabeticalByName`, `alphabeticalByArtist`, `random` (else `422`); `limit` 1–200; deprecated `type` is an alias of `sort` |
+| GET | `/api/library/artists?q=&offset=0&limit=200` | `LibArtistOut[]` |
+| GET | `/api/library/artists/{uid}` | `LibArtistPageOut {artist, albums}` — albums by year, newest first, those without a year last; `404` unknown |
+| POST | `/api/library/artists/{uid}/merge` | `ArtistMergeIn {target_uid}` → `LibArtistPageOut`; albums and matching track credits move to the target, the source row is deleted |
+| POST | `/api/library/albums` | `AlbumCreateIn` → `LibAlbumOut` (empty custom album / compilation; lazily creates the artist) |
 | GET | `/api/library/track-source?nd_song_id=` | `TrackSourceOut` `{source, source_url, acquired_at}` — where the file came from (`source`: `hitmoz`, `hitmos_fm`, `ytdlp`, `upload`, `manual`); `404` — not a Hub library track (the app's track info) |
-| GET | `/api/library/albums/{id}` | `LibAlbumOut` with `tracks` |
-| PATCH | `/api/library/albums/{id}` | `AlbumPatchIn` → `LibAlbumOut` (rename, album artist, year, genre, type) |
-| PUT | `/api/library/albums/{id}/cover` | multipart `file` (image) → `LibAlbumOut` |
-| GET | `/api/library/albums/{id}/cover?size=300` | image/jpeg |
-| POST | `/api/library/albums/merge` | `AlbumMergeIn` → `LibAlbumOut` (target) |
-| POST | `/api/library/tracks/move` | `TracksMoveIn` → `LibAlbumOut` (target) |
-| PATCH | `/api/library/tracks/{id}` | `TrackPatchIn` → `LibTrackOut` |
-| DELETE | `/api/library/tracks/{id}` | → `{ok}` (sets `deleted_at`; kept `library.trash_days`, then GC frees the blob) |
-| POST | `/api/library/tracks/{id}/restore` | → `{ok}` (clears `deleted_at` within the trash period) |
-| GET | `/api/library/tracks/{id}/download` | tagged temp copy of the immutable blob (export/materialization) |
+| GET | `/api/library/albums/{uid}` | `LibAlbumOut` with `tracks` (order: disc, track number); `404` unknown |
+| PATCH | `/api/library/albums/{uid}` | `AlbumPatchIn` → `LibAlbumOut` (rename, album artist, year, genre, type) |
+| PUT | `/api/library/albums/{uid}/cover` | multipart `file` (image, ≤20 MB) → `LibAlbumOut` (`413` too big) |
+| GET | `/api/library/albums/{uid}/cover?size=300` | image/jpeg: the cover blob or the first track's embedded cover, resized and cached per `(sha256, size)`; `404` no cover |
+| POST | `/api/library/albums/merge` | `AlbumMergeIn {source_ids?, source_uids?, target_id?, target_uid?}` → `LibAlbumOut` (target) |
+| POST | `/api/library/tracks/move` | `TracksMoveIn {track_ids?, track_uids?, album_id?, album_uid?}` → `LibAlbumOut` (target) |
+| GET | `/api/library/tracks/{uid}` | `LibTrackOut`; `404` unknown |
+| PATCH | `/api/library/tracks/{uid}` | `TrackPatchIn` → `LibTrackOut` |
+| DELETE | `/api/library/tracks/{uid}` | → `{ok}` (sets `deleted_at`; kept `library.trash_days`, then GC frees the blob) |
+| POST | `/api/library/tracks/{uid}/restore` | → `{ok}` (clears `deleted_at` within the trash period) |
+| GET | `/api/library/tracks/{uid}/download` | tagged temp copy of the immutable blob (export/materialization) |
+| POST | `/api/library/import` | admin only: `LibraryImportIn {paths: string[]}` — bootstrap import of files under `MUSIC_ROOT` through the shared importer and upload limits → `LibraryImportOut {imported, failed, tracks}`; `400` path outside `MUSIC_ROOT` |
+
+`LibTrackOut` has `uid`, `album_uid`, `artist_uid` plus the deprecated `id`, `album_id` and `nd_song_id`;
+`LibAlbumOut` has `uid`, `artist_uid`, `track_count`, `has_cover`, `integrity_issue` plus the deprecated `id`.
+`LibArtistOut {uid, name, sort_name, album_count, has_cover}`.
+
+Artists are created lazily: `name_norm = normalize_artist(name).latin or .text` is unique
+(`CHECK (name_norm <> '')`), created by an upsert, so parallel imports share one row. UNIQUE merges namesakes —
+separating them is a manual operation; `tracks.artist` and `albums.album_artist` stay as credits.
+
+`catalog_commit` (downloads, uploads, bootstrap) writes the blob, the track and the item's `done` with
+`library_track_id`/`uid` in one transaction; `download_items.blob_sha256` with `(download_item_id, blob_sha256)` is
+its idempotency key. Navidrome linking and the Hub-side `imports_done`/`mixes_done` effects are a coalesced,
+best-effort `nd_sync`; ND-only records are inert until stage 5 and never fail a job. `catalog_reconcile`
+(housekeeping) sets/clears `tracks.integrity_issue = missing_blob` and `albums.integrity_issue = missing_cover`,
+reports `orphan_blob` to the log and `/healthz.catalog`, does not index bucket objects and does not delete blobs —
+the storage GC does.
+
+`library` SSE events keep their names and payload keys: `kind`, `album_id`, `track_id`, `uid`. `album_id`/`track_id`
+stay deprecated ints until stage 7; new consumers read `uid`.
 | GET | `/api/media/blob/{sha256}` | service-only blob read: `Authorization: Bearer $MEDIA_BLOB_TOKEN`, supports `Range`; `401` without the token |
 | POST | `/api/star` | Existing `StarIn` fields remain: song_ids, album_ids, artist_ids, catalog_album_ref, refs, unstar. Adds `targets: [{target_type, ref?, nd_song_id?, nd_album_id?, nd_artist_id?, target_data?}]` (≤500), `event_id?`, `ts?`, `client?` (default pwa), `context?`. Successful objects are journaled; response `{ok:true,event_ids:[…]}`. Single target uses the supplied event_id verbatim; bulk uses stable short hashes. `refs + unstar` also clears own pending ♥; explicit/import/mix/wave downloads survive; refs without unstar →400. Typed album/artist refs work without ND ids and do not download/star their songs |
 | GET | `/api/starred` | `StarredOut` `{song_ids, album_ids, artist_ids, refs, subjects}`. ND lists remain visible, refs also include own pending track likes. Own subjects include `{target_type,key,ref,nd_id,liked,liked_since,event_id,aliases,target_data,provenance:"own"}`; known imported objects carry provenance import. Use type plus aliases for button state; an own false state takes precedence over a stale ND list |
@@ -435,7 +465,10 @@ quarantined from bootstrap until verified or explicitly acted upon. A stale ND s
 | POST | `/api/playlists/{id}/remove` | `PlaylistRemoveIn {indexes: int[]}` (1–500 positions from 0; a song may be in a playlist twice) → `{ok}`; `403` not the owner, `404` unknown, `502` Navidrome error or no answer |
 | DELETE | `/api/playlists/{id}` | → `{ok}`; `403` not the owner, `404` unknown, `502` Navidrome error or no answer |
 
-## Navidrome library (the PWA in a browser)
+## Navidrome library (the PWA in a browser) — DEPRECATED
+Deprecated transitional proxy: kept unchanged until the PWA switches to `/api/library/*` at stage 6 and removed at
+stage 7. New clients must use `/api/library/*` (capability `hub_library_v1`) and must not depend on these routes.
+
 The library as the user's player sees it — the app has these as native (Tempus) screens, the PWA in a plain browser
 (`STANDALONE`) shows them from here (`app/api/medialib.py`). Everything is asked of Navidrome as the current user, so
 the stars and play counts are theirs. Navidrome «not found» (Subsonic code 70) → `404`, «not authorized» (50) → `403`, any other Navidrome error or no answer

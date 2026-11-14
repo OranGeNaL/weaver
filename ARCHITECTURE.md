@@ -188,7 +188,7 @@ HomeMusic — это персональный музыкальный серви�
 | **Аккаунты** | `accounts.py`, `auth.py`, `security.py`, `mailer.py`, `google_auth.py`, `api/auth.py` | инвайты, email-коды, Google ID-token, сессии, Fernet-шифрование паролей |
 | **Каталог** | `catalog/models.py`, `deezer.py`, `hitmoz_catalog.py`, `musicbrainz.py`, `yandex.py`, `cache.py` | единый `ref` вида `dz:…`, `hm:…`; TTL-кэш в `catalog_cache` |
 | **Загрузки** | `jobs/downloads.py`, `providers/*`, `matching/*`, `library/*` | полный конвейер: каталог → дедупликация → поиск → выбор → скачивание → проверка → импорт (блобы; теги — только при экспорте) |
-| **Библиотека** | `library/importer.py`, `editor.py`, `export.py`, `covers.py`, `owned.py`, `navidrome.py`, `storage/*` | блобы в S3, двуфазная запись, логические пути, теги только при экспорте, ffprobe/ffmpeg, правки, Navidrome |
+| **Библиотека** | `library/importer.py`, `editor.py`, `export.py`, `covers.py`, `owned.py`, `artists.py`, `catalog.py`, `reconcile.py`, `api/library.py`, `storage/*` | каталог Hub: блобы в S3, двуфазная запись, логические пути, теги только при экспорте, ленивые артисты, публичные `uid`, правки, сверка; `/api/nd/*` — deprecated до этапа 6 |
 | **Хранилище** | `storage/base.py`, `local.py`, `s3.py`, `cache.py`, `blobs.py`, `gc.py` | контракт `StorageBackend`, hot-cache с LRU, дедупликация по `sha256`, GC осиротевших объектов |
 | **Прослушивание** | `listen.py`, `light.py`, `api/listen.py` | выбор файла, серверные копии, Range-стриминг, лёгкий Opus-вариант |
 | **История** | `plays.py`, `listening_summary.py`, `favorites.py`, `api/plays.py` | события, скробблы Navidrome, дедупликация, звёзды, дизлайки |
@@ -236,7 +236,7 @@ HomeMusic — это персональный музыкальный серви�
 
 - **`ref`** — каталожный идентификатор: `dz:<id>`, `hm:<id>`.
 - **`nd_song_id`** — ID песни в Navidrome.
-- **`uid`** — UUID трека/альбома; в legacy-файлы и при экспорте/материализации пишется как `HOMEMUSIC_TRACK_ID` / `HOMEMUSIC_ALBUM_ID`. Для новых импортов это только идентификатор БД: Navidrome-ID появятся после этапа 6.
+- **`uid`** — UUID трека, альбома и артиста, публичный идентификатор каталога; `int`-иды и `nd_*` — deprecated до этапа 7; в legacy-файлы и при экспорте/материализации пишется как `HOMEMUSIC_TRACK_ID` / `HOMEMUSIC_ALBUM_ID`. Для новых импортов это только идентификатор БД: Navidrome-ID появятся после этапа 6.
 - **`fingerprint`** — нормализованный `artist|title` для дедупликации.
 - **`event_id`** — клиентский ID события; повторная отправка не создаёт дубль.
 - **`mix_id` / `session_id`** — контекст рекомендаций.
@@ -345,14 +345,13 @@ POST /api/downloads
       5. файл, который пользователь только что слушал
       6. provider_order: поиск → rank → fetch
       7. postcheck: ffprobe, длительность, тишина
-      8. tagger + importer → staging → library
-      9. Track row
-     10. job nd_scan
-          → Navidrome startScan
-          → link nd_song_id
-          → завершение download item
-          → добавление в плейлист
-          → mix/import hooks
+      8. tagger + importer → staging → блоб
+      9. catalog_commit в одной транзакции: блоб → track → download item `done` (+ `library_track_id`/`uid`)
+     10. job nd_sync (коалесцируется, best-effort)
+          → Navidrome startScan и link nd_song_id (переходный период)
+          → imports_done / mixes_done
+          → ND-записи инертны до этапа 5
+     11. catalog_reconcile в housekeeping: missing_blob/missing_cover, orphan_blob — без индексации бакета
 ```
 
 Особые случаи:

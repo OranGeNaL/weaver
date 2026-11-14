@@ -2,8 +2,8 @@
 
 Job kinds:
 - `expand_batch`  — album/artist/track refs → download items
-- `download_item` — one track end to end, ends in `importing` (or `done` if already owned)
-- `nd_scan`       — coalesced Navidrome scan, links nd_song_id, completes items, fills playlists
+- `download_item` — one track end to end, ends in `done` after `catalog_commit` (or at once if already owned)
+- `nd_sync`       — coalesced, best-effort Navidrome link plus the Hub-side effects of a committed item
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ from app.db import session_scope
 from app.events import bus
 from app.jobs.queue import PermanentError, enqueue, handler, notify, on_final_failure
 from app.library import probe
+from app.library.catalog import catalog_commit
 from app.library.importer import ImportSpec, cleanup_dir, import_file, staging_dir_for
 from app.library.navidrome import admin_client
 from app.library.owned import find_existing, quiet, star_only
@@ -116,6 +117,8 @@ def item_out(
         error=item.error,
         warnings=item.warnings or [],
         track_id=item.track_id,
+        library_track_id=(item.query_json or {}).get("library_track_id"),
+        uid=(item.query_json or {}).get("uid"),
         nd_song_id=links[0],
         playlist_id=links[1],
         track_ref=item_ref(item),
@@ -329,7 +332,6 @@ async def handle_download_item(job: Job) -> None:
                 deezer_track_id=meta.get("deezer_track_id"),
             )
             existing_id = existing.id if existing else None
-            linked = bool(existing and existing.nd_song_id)
             other_file = bool(existing and chosen and existing.source_url != chosen.get("page_url"))
         if other_file:
             # the user picked another file of a song the library has (an uncensored re-upload of a censored copy):
@@ -338,18 +340,17 @@ async def handle_download_item(job: Job) -> None:
             qj["replaces"] = existing_id
             await update_item(item_id, query_json=qj)
         elif existing_id:
-            item = await update_item(
-                item_id,
-                status="done" if linked else "importing",
-                progress=1,
-                track_id=existing_id,
-                warnings=["Уже есть в библиотеке"],
-            )
-            if linked and item is not None:
-                async with session_scope() as s:
-                    await star_liked(s, [item])
-                    await imports_done(s, [item])
-            await after_import(user_id, linked)
+            # the catalog already holds the track: commit the item at once, ND linking is a later best-effort pass
+            async with session_scope() as s:
+                item = await s.get(DownloadItem, item_id, with_for_update=True)
+                track = await s.get(Track, existing_id)
+                if item is not None and track is not None:
+                    await catalog_commit(s, item, track)
+                    await s.flush()
+            await update_item(item_id, warnings=["Уже есть в библиотеке"])
+            async with session_scope() as s:
+                await enqueue_nd_sync(s)
+            notify()
             return
 
     # 3. Russian tracks listed in Latin (Deezer translit): Cyrillic originals for the search, Russian source order
@@ -604,95 +605,89 @@ async def import_downloaded(
         force=force,
     )
     await update_item(item_id, status="importing")
+    # one transaction: the committed blob, the track row and the item's `done` with its public uid
     async with session_scope() as s:
         track = await import_file(s, path, spec)
-        track_id = track.id
-    await update_item(item_id, track_id=track_id, warnings=spec.warnings, error=None)
-    bus.publish(user_id, "library", {"kind": "imported", "track_id": track_id})
+        item = await s.get(DownloadItem, item_id, with_for_update=True)
+        if item is None:
+            raise ValueError(f"элемент загрузки {item_id} исчез во время импорта")
+        await catalog_commit(s, item, track)
+        track_id, track_uid, album_id = track.id, track.uid, track.album_id
+    await update_item(item_id, warnings=spec.warnings, error=None)
+    bus.publish(
+        user_id,
+        "library",
+        {"kind": "imported", "track_id": track_id, "uid": track_uid, "album_id": album_id},
+    )
     if meta.get("track_ref"):
         from app.listen import forget
 
         await forget(meta["track_ref"])  # from now on listening plays the library file
-    await after_import(user_id, linked=False)
-
-
-async def after_import(user_id: int, linked: bool) -> None:
     async with session_scope() as s:
-        if linked:
-            await process_playlist_adds(s)
-        else:
-            await enqueue_scan(s)
+        await enqueue_nd_sync(s)
     notify()
 
 
 @on_final_failure("download_item")
 async def _download_failed(job: Job, exc: Exception) -> None:
+    # playlist additions are deferred to stage 5: a failed item only reports itself
     await update_item(int(job.payload_json["item_id"]), status="failed", error=f"{exc}"[:500])
-    async with session_scope() as s:
-        await process_playlist_adds(s)
 
 
 # --- scan + link + playlists ---------------------------------------------------------------------
 
 
-async def enqueue_scan(s: AsyncSession) -> None:
+async def enqueue_nd_sync(s: AsyncSession) -> None:
+    """Coalesced transitional pass: Navidrome linking plus the Hub-side effects of committed items."""
     pending = (
-        await s.execute(select(Job.id).where(Job.kind == "nd_scan", Job.status == "queued").limit(1))
+        await s.execute(select(Job.id).where(Job.kind == "nd_sync", Job.status == "queued").limit(1))
     ).scalar_one_or_none()
     if pending is None:
-        await enqueue(s, "nd_scan", {}, delay_s=1)
+        await enqueue(s, "nd_sync", {}, delay_s=1)
 
 
-_scan_lock = asyncio.Lock()
+_sync_lock = asyncio.Lock()
 
 
-@handler("nd_scan")
-async def handle_scan(job: Job) -> None:
-    async with _scan_lock:
-        nd = admin_client()
+@handler("nd_sync")
+async def handle_nd_sync(job: Job) -> None:
+    """Best-effort Navidrome link, then `imports_done`/`mixes_done`; ND-only records stay inert until stage 5."""
+    linked = 0
+    async with _sync_lock:
         try:
-            await nd.scan_and_wait(poll_s=get_settings().nd_scan_poll_s)
-            linked = await link_unlinked(nd)
-        finally:
-            await nd.aclose()
-    log.info("navidrome scan done, linked %s tracks", linked)
+            nd = admin_client()
+            try:
+                await nd.scan_and_wait(poll_s=get_settings().nd_scan_poll_s)
+                linked = await link_unlinked(nd)
+            finally:
+                await nd.aclose()
+        except Exception as e:
+            # the Hub catalog is already committed: an unavailable Navidrome must not fail the job
+            log.warning("nd_sync: Navidrome link skipped: %r", e)
+    log.info("nd_sync done, linked %s tracks", linked)
     async with session_scope() as s:
-        # items whose track is now visible in Navidrome are done
-        rows = (
-            await s.execute(
-                select(DownloadItem, Track.nd_song_id)
-                .join(Track, Track.id == DownloadItem.track_id)
-                .where(DownloadItem.status == "importing")
-            )
-        ).all()
-        done_items = []
-        for item, nd_id in rows:
-            if nd_id:
-                item.status = "done"
-                done_items.append(item)
-        await s.flush()
-        links = await item_links(s, done_items)
-        for item in done_items:
-            bus.publish(item.user_id, "download", item_out(item, links=links[item.id]).model_dump(mode="json"))
-        await star_liked(s, done_items)
-        await imports_done(s, done_items)
-        await mixes_done(s, done_items)
-        await process_playlist_adds(s)
+        items = list((await s.execute(select(DownloadItem).where(DownloadItem.status == "done"))).scalars())
+        fresh = [i for i in items if not (i.query_json or {}).get("nd_effects_done")]
+        if fresh:
+            await imports_done(s, fresh)
+            await mixes_done(s, fresh)
+            for item in fresh:
+                item.query_json = {**(item.query_json or {}), "nd_effects_done": True}
+            await s.flush()
         still = (
             await s.execute(select(func.count()).select_from(Track).where(Track.nd_song_id.is_(None)))
         ).scalar_one()
     if not still:
         return
     # Navidrome may need another pass (file just landed while the scan was running) — a few, not forever: each pass is
-    # a new job (its `attempts` start at 0), so the passes are counted in the payload. A file landing later enqueues
-    # a scan of its own.
+    # a new job (its `attempts` start at 0), so the passes are counted in the payload.
     passes = int((job.payload_json or {}).get("pass") or 0)
     if passes < SCAN_PASSES:
         async with session_scope() as s:
-            await enqueue(s, "nd_scan", {"pass": passes + 1}, delay_s=10)
+            await enqueue(s, "nd_sync", {"pass": passes + 1}, delay_s=10)
         notify()
     else:
-        log.warning("navidrome scan: %s tracks still not found in Navidrome", still)
+        log.warning("nd_sync: %s tracks still not found in Navidrome", still)
 
 
 def _same_path(nd_path: str | None, rel: str | None) -> bool:

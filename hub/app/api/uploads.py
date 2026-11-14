@@ -20,7 +20,6 @@ from app.auth import current_user
 from app.config import get_settings
 from app.db import get_session
 from app.events import bus
-from app.jobs.downloads import enqueue_scan
 from app.jobs.queue import notify
 from app.library import probe, tagger
 from app.library.importer import ImportSpec, import_file
@@ -227,10 +226,9 @@ async def commit(
             src.unlink(missing_ok=True)
         u.status, u.track_id = "imported", track.id
         imported += 1
-    await enqueue_scan(s)
     await s.commit()
     notify()
-    bus.publish(user.id, "library", {"kind": "imported", "album_id": album.id})
+    bus.publish(user.id, "library", {"kind": "imported", "album_id": album.id, "uid": album.uid})
     return UploadCommitOut(album_id=album.id, imported=imported)
 
 

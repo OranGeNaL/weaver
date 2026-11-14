@@ -2,7 +2,8 @@
 
 The original bytes are hashed and uploaded to the object store unchanged: no tags are written on import, so the
 same file imported twice yields one blob shared by both tracks. The staging file stays where the caller put it.
-Navidrome is not notified here: callers enqueue an `nd_scan` job (coalesced) that scans and links nd ids.
+The catalog row is the source of truth: a download is finalized by `catalog_commit`; Navidrome linking is a
+separate coalesced, best-effort `nd_sync` until stage 5/7.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.library import tagger
+from app.library.artists import link_album_artist
 from app.library.layout import album_dirname, sanitize_component, track_filename, version_suffixed
 from app.library.tagger import ReleaseType
 from app.matching.normalize import fingerprint, normalize_artist, normalize_title
@@ -117,6 +119,8 @@ async def get_or_create_album(s: AsyncSession, spec: ImportSpec) -> Album:
         await s.flush()
     elif spec.deezer_album_id and not a.deezer_album_id:
         a.deezer_album_id = spec.deezer_album_id
+    # lazy artist: the album's credit names the entity, created on first use and reused afterwards
+    await link_album_artist(s, a)
     return a
 
 
