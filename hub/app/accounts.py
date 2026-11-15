@@ -1,6 +1,6 @@
 """Accounts: by invitation, by email, or through an external OIDC provider — always a local Hub account.
 
-Stage 4: the Hub owns accounts. Registration creates `users.username`/`password_hash` and never a Navidrome user;
+Stage 4: the Hub owns accounts. Registration creates `users.username`/`password_hash`;
 an OIDC identity is linked as `(issuer, subject)` in `oauth_links` and is never auto-linked by email.
 """
 

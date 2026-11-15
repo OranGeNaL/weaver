@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 COOKIE = tokens.ACCESS_COOKIE  # `hm_session` kept its name: the PWA's cookie contract does not change
 SEEN_EVERY = timedelta(minutes=5)  # how often a request refreshes User.last_seen_at (admin's user list)
 
-# local attempt budget (no Navidrome/Subsonic budget is involved any more), stored in Postgres; per name only
+# local attempt budget, stored in Postgres; per name only
 PASSWORD_WINDOW_S = 30
 PASSWORD_USER_LIMIT = 3
 

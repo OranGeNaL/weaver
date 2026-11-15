@@ -1,8 +1,8 @@
 """Catalog commit: one transaction from a committed blob to a `done` download item.
 
-The download pipeline used to finish an item only after Navidrome reported the scanned song (`nd_scan`). The Hub's
+The Hub's
 own catalog is now the source of truth: once the blob and the track row are in one transaction, the item is `done`
-and carries the public `uid` (and the deprecated `library_track_id`). Navidrome linking is a separate, best-effort
+and carries the public `uid` (and the deprecated `library_track_id`).
 `nd_sync` until stage 5/7; it never decides whether the catalog record exists.
 """
 

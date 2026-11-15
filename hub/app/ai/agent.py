@@ -46,13 +46,13 @@ CHUNK = 200  # rows per batched write
 CONFIRM_TOOLS = {"delete_playlist", "delete_library_tracks"}
 SONGS_FROM = ("starred", "starred_from_imports", "playlist:<id>", "import_collection:<id>")
 
-SYSTEM = """You are the HomeMusic assistant: a personal music library on the user's home server (Navidrome).
+SYSTEM = """You are the HomeMusic assistant: a personal music library on the user's home server.
 Answer in Russian, briefly. You manage the user's account with full rights: ♥ («Понравившиеся», starred songs),
 playlists, downloads. Do what the user asks right away with the tools, then say in one or two lines what was done;
 don't ask for permission. Deleting a playlist or files of the library needs the user's confirmation: call the tool,
 the app shows a button — never say it is deleted.
 Start with `account_overview` when you need context. Never guess ids: take them from tool results.
-Tables come as {"cols": [...], "rows": [[...]]}. Songs are Navidrome song ids; catalog tracks/albums are refs like dz:1.
+Tables come as {"cols": [...], "rows": [[...]]}. A library song is its Hub `uid` (`lib:<uid>`); catalog tracks/albums are refs like dz:1.
 For many songs pass `songs_from` instead of listing ids: "starred", "starred_from_imports" (♥ an import from
 another service such as Yandex Music set), "playlist:<id>", "import_collection:<id>" (the songs of an imported
 collection the library has, in the service's order; the «Мне нравится» of Yandex is the collection of kind likes).
@@ -224,7 +224,7 @@ def table(cols: list[str], rows: list[list[Any]]) -> dict:
 
 
 def label(x: Any) -> str:
-    """«Artist — Title» of a Navidrome song/album (dict), a library track, a catalog track or album."""
+    """«Artist — Title» of a library track (dict or row), a catalog track or album."""
 
     def get(k: str) -> Any:
         return x.get(k) if isinstance(x, dict) else getattr(x, k, None)

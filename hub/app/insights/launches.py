@@ -2,7 +2,7 @@
 
 An attempt — the events of one try to play a track: one `(device_id, playback_id)`; old events without them — a
 `start` and the next `skip`/`finish` of the same track on the same client. Listening is counted as in
-`listening_summary`: measured `listened_ms` crossing the threshold, or a Navidrome scrobble. A launch — the user began
+`listening_summary`: measured `listened_ms` crossing the threshold, or a client scrobble. A launch — the user began
 playing a list: by `launch_id`, by the wave session, or (old history) by the 30-minute heuristic.
 """
 
@@ -219,7 +219,7 @@ def _attempt(events: list[PlayEvent], aliases: Aliases, grouped: bool) -> Attemp
                 a.late_skip = True
         if not a.measured and a.heard_at is None and _heard(e, e.duration_s or duration):
             a.heard_at = e.ts
-    a.scrobble = a.scrobble or any(e.scrobble for e in events) or a.client == "navidrome"
+    a.scrobble = a.scrobble or any(e.scrobble for e in events)
     if a.scrobble and not a.measured and a.finished:
         a.scrobble, a.counted_at, a.heard_at, a.finished = True, first.ts, first.ts, False
     if a.measured:
@@ -377,7 +377,7 @@ def _launches(h: History) -> list[Launch]:
         out.append(launch)
     rest: list[Attempt] = []
     for a in h.attempts:
-        if a.scrobble or a.client == "navidrome":
+        if a.scrobble:
             continue  # a scrobble is evidence of listening, not a launch
         sid = wave_of(a.launch_id) or wave_of(a.context)
         lid = f"wave:{sid}" if sid else a.launch_id

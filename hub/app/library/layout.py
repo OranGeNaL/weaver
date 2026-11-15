@@ -20,7 +20,7 @@ def sanitize_component(s: str | None, max_len: int = 120) -> str:
     s = _WHITESPACE.sub(" ", s).strip()
     if len(s) > max_len:
         s = s[:max_len]
-    # leading dots would make a hidden file/dir (Navidrome skips those), trailing ones are invalid on Windows
+    # leading dots would make a hidden file/dir, trailing ones are invalid on Windows
     s = s.rstrip(". ").lstrip(". ")
     if s in {"", ".", ".."}:
         return "_"

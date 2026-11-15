@@ -25,7 +25,7 @@ ARTIST_GAP = 8  # an artist at most once in this many recommendations
 
 @dataclass(frozen=True)
 class OwnSong:
-    id: str  # the id the client sent: a Navidrome song id, or a catalog ref (has a colon) for a ♥ not downloaded yet
+    id: str  # the id the client sent: a library track uid, or a catalog ref (has a colon) for a ♥ not downloaded yet
     artist: str = ""  # artist key (`taste.artist_key`); "" — unknown, never treated as a repeat
 
 

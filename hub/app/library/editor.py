@@ -49,7 +49,7 @@ async def _relocate(s: AsyncSession, track: Track, album: Album, *, touching_alb
         if desired.as_posix() != track.path:
             # uniquify only against *other* rows: a track never collides with its own current path
             track.path = (await unique_logical_path(s, desired)).as_posix()
-            # the blob and the Navidrome link stay: only the logical path changes (stage 3: edits MUST NOT
+            # the blob and the track uid stay: only the logical path changes (stage 3: edits MUST NOT
             # require a rescan or a re-link)
 
 

@@ -640,7 +640,7 @@ async def mixes_done(s: AsyncSession, items: list[DownloadItem]) -> None:
 
 
 async def playlist_adds_loop() -> None:
-    """Recover pending additions on startup and retry Navidrome failures without another download or scan."""
+    """Recover pending additions on startup and retry failed additions without another download."""
     while True:
         try:
             async with session_scope() as s:

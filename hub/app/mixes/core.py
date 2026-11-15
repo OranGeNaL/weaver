@@ -1,4 +1,4 @@
-"""«Микс дня» in the Hub (MIXES.md 6): the daily build, quiet downloads, the Navidrome playlist, the replacement.
+"""«Микс дня» in the Hub (MIXES.md 6): the daily build, quiet downloads, the Hub playlist, the replacement.
 
 Job kinds (background: below the user's downloads, `PRIORITY_MIX`):
 - `mix_build` — profile → `build.build` → a new mix: its songs, downloads of those the library lacks, the playlist;

@@ -1,4 +1,4 @@
-"""Hub playlists: the only owner of playlists since stage 5 (`navidrome-migration-5-user-data`).
+"""Hub playlists: the Hub is the only owner of playlists.
 
 A playlist is an ordered list of items; duplicates are allowed. Each item has its own `uid` and a `numeric`
 position, so a background add goes between two neighbours (its `anchor_uid`) without rewriting every row. When the

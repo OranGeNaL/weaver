@@ -4,7 +4,7 @@ All functions here are synchronous (file I/O + CPU); async callers wrap them in 
 
 Tags are kept in a canonical Vorbis-comment-like form (`{"TITLE": ["..."], ...}`) and mapped to/from
 ID3v2.4 (mp3, wav, aiff), MP4 atoms (m4a) and Vorbis comments (flac, ogg vorbis, ogg opus).
-`HOMEMUSIC_TRACK_ID` / `HOMEMUSIC_ALBUM_ID` are what Navidrome uses as persistent IDs (navidrome.toml).
+`HOMEMUSIC_TRACK_ID` / `HOMEMUSIC_ALBUM_ID` are the persistent catalogue ids written into exported files.
 """
 
 from __future__ import annotations

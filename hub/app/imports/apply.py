@@ -263,7 +263,7 @@ async def refresh_items(s: AsyncSession, imp: Import) -> None:
     await s.flush()
 
 
-# --- Navidrome ------------------------------------------------------------------------------------------------
+# --- import playlists -----------------------------------------------------------------------------------------
 
 
 async def _track_uids(s: AsyncSession, items: list[ImportItem]) -> dict[int, str]:

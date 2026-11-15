@@ -4,7 +4,7 @@ Job kinds (all below the user's work in the queue: `PRIORITY_IMPORT`):
 - `import_auth`      — waits for the user to confirm the sign-in code, then fetches
 - `import_fetch`     — reads the collection from the service into collections and items, checks the library
 - `import_resolve`   — matches a batch of rows (`resolve.py`) and acts on them (`apply.py`), queues the next batch
-- `import_playlists` — writes the Navidrome playlists and the ♥ in the service's order (coalesced: one per import)
+- `import_playlists` — writes the Hub playlists and the ♥ in the service's order (coalesced: one per import)
 - `import_finish`    — when the downloads are over: the last rewrite, ★ albums and artists, the token goes
 
 Modes: `economy` — playlists and ♥ at once from what the library has, the rest is listened to from the sources

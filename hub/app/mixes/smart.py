@@ -1,7 +1,7 @@
 """«Умное перемешивание» (MIXES.md 8): a playlist or «Понравившиеся» played shuffled, with recommendations "in the
 mood of the playlist" put between its own songs — Spotify's Smart Shuffle.
 
-- The Hub keeps all the logic, the clients only show. `start` gets the context (`playlist:<Navidrome id>` or
+- The Hub keeps all the logic, the clients only show. `start` gets the context (`playlist:<uid>` or
   `liked`) and the ids of its songs; the answer is the order of the own songs (`smart_order.fewer_repeats`) and the
   first recommendations; `next` brings the events since the last call and the place of the player, and hands out
   more recommendations for the slots ahead (one after every 3 own songs of a playlist of more than 15, after every 2
@@ -69,7 +69,7 @@ def valid_context(context: str) -> bool:
 
 def is_ref(song_id: str) -> bool:
     """An id with a colon is a catalog ref (a ♥ not downloaded yet); without — a Hub track uid or a deprecated
-    Navidrome song id."""
+    library track uid."""
     return ":" in song_id
 
 
@@ -236,7 +236,7 @@ async def own_infos(ids: list[str]) -> dict[str, OwnInfo]:
 
 async def last_heard(user_id: int, ids: list[str], now: datetime) -> dict[str, datetime]:
     """When the user last heard each song (a play to its end, or past `HEARD_PLAY_S`), in any context; the
-    scrobbles of Navidrome are `finish` events too."""
+    client scrobbles are `finish` events too."""
     heard = or_(PlayEvent.kind == "finish", and_(PlayEvent.kind == "skip", PlayEvent.position_s >= HEARD_PLAY_S))
     out: dict[str, datetime] = {}
     async with session_scope() as session:
