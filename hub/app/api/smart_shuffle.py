@@ -16,7 +16,7 @@ from app.api.schemas import (
     SmartTrackIn,
 )
 from app.api.wave import track_outs
-from app.auth import current_user, user_navidrome
+from app.auth import current_user
 from app.db import get_session
 from app.mixes import smart
 from app.models import User
@@ -97,22 +97,24 @@ async def add(
     «Понравившиеся» the client likes the track itself (its own ♥ path); the Hub only notes it."""
     from app.api.downloads import create_batch
     from app.jobs.queue import notify
+    from app.playlists import add_tracks, get_owned
+    from app.plays import track_uid_of
 
     try:
-        item, playlist_id = await smart.accept(user, session_id, body.ref, body.nd_song_id)
+        item, playlist_uid = await smart.accept(user, session_id, body.ref, body.nd_song_id)
     except smart.SmartError as e:
         raise HTTPException(e.status, str(e)) from e
-    if playlist_id is None:
+    if playlist_uid is None:
         return SmartAddOut(status="liked")
-    nd_id = body.nd_song_id or item.nd_song_id
-    if nd_id:
-        nd = user_navidrome(user)
-        try:
-            await nd.update_playlist(playlist_id, add=[nd_id])
-        finally:
-            await nd.aclose()
-        return SmartAddOut(status="added", playlist_id=playlist_id)
-    await create_batch(s, user, DownloadIn(track_refs=[item.ref], playlist_id=playlist_id), origin="smart-shuffle")
+    playlist = await get_owned(s, user.id, playlist_uid)
+    if playlist is None:
+        raise HTTPException(404, "Плейлист не найден")
+    track_uid = body.track_uid or await track_uid_of(s, item.ref, item.nd_song_id)
+    if track_uid:
+        await add_tracks(s, playlist, [track_uid], added_by=user.id)
+        await s.commit()
+        return SmartAddOut(status="added", playlist_id=playlist_uid)
+    await create_batch(s, user, DownloadIn(track_refs=[item.ref], playlist_id=playlist_uid), origin="smart-shuffle")
     await s.commit()
     notify()
-    return SmartAddOut(status="downloading", playlist_id=playlist_id)
+    return SmartAddOut(status="downloading", playlist_id=playlist_uid)

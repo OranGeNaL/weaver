@@ -104,6 +104,50 @@ def ev(
     return e
 
 
+async def hub_playlist(uid: str, nd_ids: list[str]) -> None:
+    """A Hub playlist with the library tracks of those Navidrome ids (no Navidrome involved)."""
+    from app.db import session_scope
+    from app.models import Playlist, PlaylistItem, Track
+
+    async with session_scope() as s:
+        tracks = {
+            t.nd_song_id: t.uid for t in (await s.execute(select(Track).where(Track.nd_song_id.in_(nd_ids)))).scalars()
+        }
+        pl = Playlist(uid=uid, owner_id=await user_id("admin"), name="Мой")
+        s.add(pl)
+        await s.flush()
+        for pos, nd in enumerate(nd_ids):
+            if nd in tracks:
+                s.add(
+                    PlaylistItem(
+                        uid=uuid.uuid4().hex,
+                        playlist_id=pl.id,
+                        track_uid=tracks[nd],
+                        position=(pos + 1) * 1024,
+                    )
+                )
+
+
+async def playlist_nd_ids(uid: str) -> list[str]:
+    from app.db import session_scope
+    from app.models import Track
+    from app.playlists import get_by_uid
+    from app.playlists import items as playlist_items
+
+    async with session_scope() as s:
+        pl = await get_by_uid(s, uid)
+        if pl is None:
+            return []
+        rows = await playlist_items(s, pl.id)
+        uids = [i.track_uid for i in rows]
+        tracks = (
+            {t.uid: t.nd_song_id for t in (await s.execute(select(Track).where(Track.uid.in_(uids)))).scalars()}
+            if uids
+            else {}
+        )
+        return [tracks[u] for u in uids if u in tracks]
+
+
 async def start(c, songs: list[str], context: str = "playlist:pl1", current: str | None = None) -> dict[str, Any]:
     r = await c.post(
         "/api/smart-shuffle/start",
@@ -340,7 +384,7 @@ async def test_a_hidden_track_is_gone_from_the_rest_of_the_session_too(env, monk
 async def test_add_puts_a_library_recommendation_in_the_playlist(env, monkeypatch) -> None:
     ids = await library(20)
     await add_track(101)  # the library has dz:101 as well
-    env["nd"].playlists["pl1"] = {"name": "Мой", "owner": "admin", "songs": list(ids), "comment": ""}
+    await hub_playlist("pl1", list(ids))
     fake_gens(
         monkeypatch,
         [
@@ -363,7 +407,7 @@ async def test_add_puts_a_library_recommendation_in_the_playlist(env, monkeypatc
     r = await c.post(f"/api/smart-shuffle/{plan['session_id']}/add", json={"ref": rec["ref"]})
 
     assert r.status_code == 200 and r.json() == {"ok": True, "status": "added", "playlist_id": "pl1"}
-    assert env["nd"].playlists["pl1"]["songs"][-1] == "nd101"
+    assert (await playlist_nd_ids("pl1"))[-1] == "nd101"
 
 
 async def test_add_downloads_a_catalog_track_into_the_playlist(env, monkeypatch) -> None:
@@ -371,6 +415,7 @@ async def test_add_downloads_a_catalog_track_into_the_playlist(env, monkeypatch)
     from app.models import DownloadBatch, Job
 
     ids = await library(20)
+    await hub_playlist("pl1", list(ids))
     fake_gens(monkeypatch, [new(i) for i in range(30)])
     c = env["client"]
     plan = await start(c, ids)
@@ -483,6 +528,7 @@ async def test_the_v2_taste_model_learns_from_the_session_and_survives_a_restart
 
     monkeypatch.setattr(get_settings().cfg.mixes, "taste_model", "v2")
     ids = await library(30, artists=30)
+    await hub_playlist("pl1", list(ids))
     fake_gens(monkeypatch, [new(i) for i in range(40)])
     c = env["client"]
     plan = await start(c, ids)

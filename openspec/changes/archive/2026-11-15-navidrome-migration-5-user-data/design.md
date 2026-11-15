@@ -44,9 +44,15 @@ playlist_items(id, uid, playlist_id, track_uid, position, anchor_uid, added_by, 
 
 `PendingPlaylistAdd.playlist_id` → `playlist_uid` + `anchor_uid`. `star=true` после импорта создаёт локальное ♥-событие, а не вызов ND. Импорт коллекций пишет ♥ и плейлисты в Hub, сохраняя порядок сервиса.
 
+`import_collections` получает честные колонки `playlist_uid` и `track_uids` (JSONB): они — источник для Hub-плейлиста импорта. Deprecated `nd_playlist_id`/`nd_song_ids` заполняются теми же значениями до этапа 7, когда будут удалены.
+
 ### 6. API и совместимость
 
 `PlaylistOut.id` — `uid`; `PlaylistPageOut.tracks` — треки по `uid`. PWA воспринимает id как непрозрачную строку, поэтому смена формата безопасна, но входные поля сохраняются: `song_ids` (deprecated, резолвится через `nd_song_id` до этапа 7), `library_track_ids`, новые `uids`. `/api/starred` MUST сохранять прежние `song_ids`/`album_ids`/`artist_ids`, `refs` (включая pending/catalog-only) и `subjects` с provenance, добавлять `track_uids`; вводится capability `hub_liked_v1` и публикуется в `/healthz`. `nd_song_id`/`nd_playlist_id` остаются deprecated-полями до этапа 7.
+
+`GET /api/nd/liked` (`app/api/medialib.py`) тоже обслуживается Hub: он строится из журнала ♥ (`favorites.snapshot`), а не из `getStarred2`, поэтому форма `NdLikedOut` сохраняется, но Navidrome в пути ♥ не участвует.
+
+`MixSettings.nd_playlist_id` и `Mix.nd_playlist_id` — deprecated-алиасы: они MUST заполняться тем же значением, что и `playlist_uid`, чтобы старый клиент видел непустое поле до этапа 7.
 
 ### 7. Транзакции и идемпотентность
 
@@ -55,6 +61,8 @@ playlist_items(id, uid, playlist_id, track_uid, position, anchor_uid, added_by, 
 ### 8. Модули, которые тоже пишут в ND
 
 Кроме `api/playlists.py`, на локальные сервисы переводятся: `api/downloads.py::resolve_playlist`, `ai/agent.py` (создание/добавление/удаление/переименование плейлистов и `starred`), `api/smart_shuffle.py` (`update_playlist`), `insights/mixes_view.py`, `insights/launches.py`, `imports/core.py`, `mixes/wave.py`, `mixes/taste.py`, `mixes/taste_math.py` (вызовы `favorites.reconcile` и `favorite:bootstrap`). (волна по артисту читает локальные `artists`/`tracks` по `artist_uid`, без `get_artist`/`_artist_songs`). После этапа 5 `rg "create_playlist|update_playlist|user_navidrome|nd\.get_artist|_artist_songs"` в этих путях пуст (Deezer `get_artist` не считается).
+
+Сюда же входит `api/medialib.py::liked` (`GET /api/nd/liked`): он собирается из журнала ♥ Hub, а `get_starred2` в пути ♥ не вызывается.
 
 ## Risks / Trade-offs
 

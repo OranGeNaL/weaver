@@ -1,17 +1,14 @@
-"""What a matched import row does in HomeMusic: ♥ in Navidrome, Navidrome playlists in the service's order, downloads.
+"""What a matched import row does in HomeMusic: ♥ in the Hub, Hub playlists in the service's order, downloads.
 
-- ♥: the Hub stars the import's liked songs itself, in the service's order (`sync_likes`): one by one from the oldest
-  like, and a song downloaded later gets its place by starring the likes newer than it again. Likes are downloaded
-  oldest first, so a new song mostly lands on top and costs one star.
-- Playlists: the whole playlist is rewritten in the service's order (`set_playlist_songs`) from what the library
-  has, at most every `core.PLAYLISTS_DELAY_S` while downloads come in — never on every track.
-- Downloads are the Hub's own business (`DownloadItem.query_json["import"]`): low priority, not shown as downloads;
-  they carry no ♥ of their own (`star`): the import stars its likes in order.
+- ♥: the Hub journals the import's liked songs itself (`sync_likes`), nearest to the service's order from the oldest
+  like; a song that arrives later (a download) gets its ♥ then.
+- Playlists: the whole playlist is rewritten in the service's order (`playlists.replace_tracks`) from what the
+  library has.
+- Downloads are the Hub's own business (`DownloadItem.query_json["import"]`): low priority, not shown as downloads.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -36,15 +33,6 @@ from app.models import (
 from app.providers.base import TrackQuery
 
 log = logging.getLogger(__name__)
-
-STAR_CHUNK = 200
-
-
-def _nd(user: User):
-    from app.auth import user_navidrome
-
-    return user_navidrome(user)
-
 
 # --- decisions ---------------------------------------------------------------------------------------------
 
@@ -278,46 +266,42 @@ async def refresh_items(s: AsyncSession, imp: Import) -> None:
 # --- Navidrome ------------------------------------------------------------------------------------------------
 
 
-async def _song_ids(s: AsyncSession, items: list[ImportItem]) -> dict[int, str]:
-    """import item id -> Navidrome song id of its library track."""
+async def _track_uids(s: AsyncSession, items: list[ImportItem]) -> dict[int, str]:
+    """import item id -> Hub track uid of its library track."""
     track_ids = {i.track_id for i in items if i.track_id}
     if not track_ids:
         return {}
-    songs = dict(
-        (
-            await s.execute(
-                select(Track.id, Track.nd_song_id).where(Track.id.in_(track_ids), Track.nd_song_id.is_not(None))
-            )
-        ).all()
+    uids = dict(
+        (await s.execute(select(Track.id, Track.uid).where(Track.id.in_(track_ids), Track.deleted_at.is_(None)))).all()
     )
     out: dict[int, str] = {}
     for i in items:
-        song = songs.get(i.track_id) if i.track_id is not None else None
-        if song:
-            out[i.id] = song
+        uid = uids.get(i.track_id) if i.track_id is not None else None
+        if uid:
+            out[i.id] = uid
     return out
 
 
-def playlist_order(items: list[ImportItem], songs: dict[int, str]) -> list[str]:
-    """Songs of a playlist in the service's order: what the library has, without the rest."""
+def playlist_order(items: list[ImportItem], uids: dict[int, str]) -> list[str]:
+    """Tracks of a playlist in the service's order: what the library has, without the rest."""
     return [
-        songs[i.id] for i in sorted(items, key=lambda i: i.position) if i.id in songs and i.status not in ("skipped",)
+        uids[i.id] for i in sorted(items, key=lambda i: i.position) if i.id in uids and i.status not in ("skipped",)
     ]
 
 
-def like_order(items: list[ImportItem], songs: dict[int, str]) -> list[str]:
+def like_order(items: list[ImportItem], uids: dict[int, str]) -> list[str]:
     """Liked songs from the oldest like to the newest (the service lists the newest first), each once."""
     out: dict[str, None] = {}
     for i in sorted(items, key=lambda i: -i.position):
-        if i.id in songs and i.status == "done":
-            out.setdefault(songs[i.id], None)
+        if i.id in uids and i.status == "done":
+            out.setdefault(uids[i.id], None)
     return list(out)
 
 
 async def sync_playlists(s: AsyncSession, imp: Import) -> None:
-    user = await s.get(User, imp.user_id)
-    if user is None:
-        return
+    """The import's playlists as Hub playlists in the service's order (the same playlist every run)."""
+    from app import playlists as playlists_lib
+
     colls = (
         (
             await s.execute(
@@ -333,24 +317,17 @@ async def sync_playlists(s: AsyncSession, imp: Import) -> None:
     )
     if not colls:
         return
-    nd = _nd(user)
-    try:
-        for c in colls:
-            items = list((await s.execute(select(ImportItem).where(ImportItem.collection_id == c.id))).scalars())
-            want = playlist_order(items, await _song_ids(s, items))
-            if c.nd_playlist_id is None:
-                pl = await nd.create_playlist(c.title, want[:300])
-                new_id = pl.get("id")
-                c.nd_playlist_id = new_id
-                if new_id and len(want) > 300:
-                    await nd.set_playlist_songs(new_id, want)
-            elif c.nd_playlist_id is not None and want != list(c.nd_song_ids or []):
-                await nd.set_playlist_songs(c.nd_playlist_id, want)
-            c.nd_song_ids = want
-    except Exception as e:
-        log.warning("import %s: playlists: %r", imp.id, e)
-    finally:
-        await nd.aclose()
+    for c in colls:
+        items = list((await s.execute(select(ImportItem).where(ImportItem.collection_id == c.id))).scalars())
+        want = playlist_order(items, await _track_uids(s, items))
+        existing = c.playlist_uid or c.nd_playlist_id  # the deprecated alias may hold the uid of an earlier run
+        playlist = await playlists_lib.get_owned(s, imp.user_id, existing) if existing else None
+        if playlist is None:
+            playlist = await playlists_lib.create(s, imp.user_id, c.title)
+        if want != list(c.track_uids or []):
+            await playlists_lib.replace_tracks(s, playlist, want)
+        c.playlist_uid, c.track_uids = playlist.uid, want
+        c.nd_playlist_id, c.nd_song_ids = playlist.uid, want  # deprecated aliases until stage 7
     await s.flush()
 
 
@@ -370,58 +347,39 @@ async def _likes(s: AsyncSession, imp: Import) -> list[ImportItem]:
     )
 
 
-def restar_plan(starred: list[str], want: list[str]) -> list[str]:
-    """Songs to ♥ again, in this order, so that the import's ♥ follow `want` (oldest like first): what the import starred
-    before (`starred`) stays as long as it matches `want` from the start; the rest is unstarred and starred anew. A
-    newer like that arrives costs one star; an older one, the likes after it."""
-    k = 0
-    while k < min(len(starred), len(want)) and starred[k] == want[k]:
-        k += 1
-    return want[k:]
-
-
-_likes_lock = asyncio.Lock()
-
-
 async def sync_likes(s: AsyncSession, imp: Import) -> None:
-    """♥ of the import's likes in the service's order. Navidrome lists «Понравившиеся» by the time of the star, newest
-    first, so the songs are starred one by one from the oldest like; a song that arrives later (a download) is starred
-    with the likes newer than it again (`restar_plan`). A song the user has unstarred since is left alone."""
-    user = await s.get(User, imp.user_id)
-    if user is None:
-        return
-    async with _likes_lock:  # one rewrite at a time: two would interleave their stars
-        items = await _likes(s, imp)
-        songs = await _song_ids(s, items)
-        opts = dict(imp.options_json or {})
-        prev = list(opts.get("liked") or [])
-        nd = _nd(user)
-        try:
-            if prev:
-                have = {x.get("id") for x in (await nd.get_starred2()).get("song", [])}
-                gone = set(prev) - have
-                if gone:
-                    for i in items:
-                        if i.status == "done" and songs.get(i.id) in gone:
-                            i.status, i.raw_json = "skipped", {**(i.raw_json or {}), "unliked": True}
-                    prev = [x for x in prev if x not in gone]
-            want = like_order(items, songs)
-            again = restar_plan(prev, want)
-            for k in range(0, len(again), STAR_CHUNK):
-                await nd.unstar(song_ids=again[k : k + STAR_CHUNK])
-            for song_id in again:
-                await nd.star(song_ids=[song_id])
-        except Exception as e:
-            log.warning("import %s: likes: %r", imp.id, e)
-            return
-        finally:
-            await nd.aclose()
-        imp.options_json = {**opts, "liked": want}
-        await s.flush()
-    if again:
+    """♥ of the import's likes, the oldest like first: a local decision per track the library has. A song the user
+    has unstarred since is left alone; a song that downloads later gets its ♥ when it is in the library."""
+    from app.api.schemas import FavoriteTarget
+    from app.favorites import record, snapshot
+
+    items = await _likes(s, imp)
+    uids = await _track_uids(s, items)
+    opts = dict(imp.options_json or {})
+    want = like_order(items, uids)
+    states = await snapshot(s, imp.user_id)
+    liked = {st.uid for st in states.values() if st.target_type == "track" and st.liked and st.uid}
+    unliked = {st.uid for st in states.values() if st.target_type == "track" and not st.liked and st.uid}
+    added: list[str] = []
+    for uid in want:
+        if uid in liked or uid in unliked:
+            continue
+        await record(
+            s,
+            imp.user_id,
+            FavoriteTarget(uid=uid),
+            True,
+            operation=f"import:{imp.id}:{uid}",
+            client="import",
+            context="import:likes",
+        )
+        added.append(uid)
+    imp.options_json = {**opts, "liked_uids": want}
+    await s.flush()
+    if added:
         from app.events import bus
 
-        bus.publish(imp.user_id, "library", {"kind": "starred", "song_ids": again})
+        bus.publish(imp.user_id, "library", {"kind": "starred", "track_uids": added})
 
 
 async def album_owned(s: AsyncSession, ref: str | None) -> bool:
@@ -438,7 +396,11 @@ async def album_owned(s: AsyncSession, ref: str | None) -> bool:
 
 
 async def star_albums_artists(s: AsyncSession, imp: Import) -> None:
-    """★ liked albums and artists the library has (Navidrome stars only what it knows)."""
+    """★ liked albums and artists the Hub library has: a local album/artist ♥ decision."""
+    from app.api.schemas import FavoriteTarget
+    from app.favorites import snapshot
+    from app.models import Artist, Track
+
     rows = (
         await s.execute(
             select(ImportItem, ImportCollection.kind)
@@ -451,60 +413,70 @@ async def star_albums_artists(s: AsyncSession, imp: Import) -> None:
             )
         )
     ).all()
-    user = await s.get(User, imp.user_id)
-    if not rows or user is None:
+    if not rows:
         return
-    nd = _nd(user)
-    album_ids: list[str] = []
-    artist_ids: list[str] = []
-    try:
-        for it, kind in rows:
-            if kind == "albums" and it.ref and split_ref(it.ref)[0] == "dz":
-                song = (
-                    await s.execute(
-                        select(Track.nd_song_id)
-                        .join(Album, Album.id == Track.album_id)
-                        .where(Album.deezer_album_id == split_ref(it.ref)[1], Track.nd_song_id.is_not(None))
-                        .limit(1)
+    user = await s.get(User, imp.user_id)
+    if user is None:
+        return
+    states = await snapshot(s, imp.user_id)
+    liked = {(st.target_type, st.uid) for st in states.values() if st.liked and st.uid}
+    album_uids: list[str] = []
+    artist_uids: list[str] = []
+    for it, kind in rows:
+        if kind == "albums" and it.ref and split_ref(it.ref)[0] == "dz":
+            album = (
+                await s.execute(
+                    select(Album)
+                    .where(
+                        Album.deezer_album_id == split_ref(it.ref)[1],
+                        Album.id.in_(select(Track.album_id).where(Track.deleted_at.is_(None))),
                     )
-                ).scalar_one_or_none()
-                if song and (nd_album := (await nd.get_song(song)).get("albumId")):
-                    album_ids.append(nd_album)
-                    from app.api.schemas import FavoriteTarget
-                    from app.favorites import remember
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if album is None or ("album", album.uid) in liked:
+                continue
+            from app.favorites import command
 
-                    await remember(
-                        s,
-                        FavoriteTarget(target_type="album", ref=it.ref, nd_album_id=nd_album, target_data=it.raw_json),
-                    )
-            elif kind == "artists":
-                name = (it.raw_json or {}).get("name") or ""
-                want = normalize_artist(name).text
-                found = (await nd.search3(name, song_count=0, artist_count=5)).get("artist", [])
-                hit = next((a for a in found if normalize_artist(a.get("name")).text == want), None)
-                if hit:
-                    artist_ids.append(hit["id"])
-                    from app.api.schemas import FavoriteTarget
-                    from app.favorites import remember
+            await command(
+                s,
+                user,
+                [FavoriteTarget(target_type="album", ref=it.ref, uid=album.uid, target_data=it.raw_json)],
+                liked=True,
+                operation=f"import:{imp.id}:album:{album.uid}",
+                client="import",
+                context="import:albums",
+            )
+            album_uids.append(album.uid)
+        elif kind == "artists":
+            name = (it.raw_json or {}).get("name") or ""
+            want = normalize_artist(name).text
+            if not name:
+                continue
+            found = list((await s.execute(select(Artist).where(Artist.name_norm == want))).scalars())
+            artist = found[0] if len(found) == 1 else None
+            if artist is None or ("artist", artist.uid) in liked:
+                continue
+            from app.favorites import command
 
-                    await remember(
-                        s,
-                        FavoriteTarget(
-                            target_type="artist", ref=it.ref, nd_artist_id=hit["id"], target_data={"name": name}
-                        ),
-                    )
-        if album_ids or artist_ids:
-            await nd.star(album_ids=album_ids, artist_ids=artist_ids)
-            opts = imp.options_json or {}
-            imp.options_json = {
-                **opts,
-                "liked_album_ids": list(dict.fromkeys([*(opts.get("liked_album_ids") or []), *album_ids])),
-                "liked_artist_ids": list(dict.fromkeys([*(opts.get("liked_artist_ids") or []), *artist_ids])),
-            }
-    except Exception as e:
-        log.warning("import %s: star albums/artists: %r", imp.id, e)
-    finally:
-        await nd.aclose()
+            await command(
+                s,
+                user,
+                [FavoriteTarget(target_type="artist", ref=it.ref, uid=artist.uid, target_data={"name": name})],
+                liked=True,
+                operation=f"import:{imp.id}:artist:{artist.uid}",
+                client="import",
+                context="import:artists",
+            )
+            artist_uids.append(artist.uid)
+    if album_uids or artist_uids:
+        opts = imp.options_json or {}
+        imp.options_json = {
+            **opts,
+            "liked_album_ids": list(dict.fromkeys([*(opts.get("liked_album_ids") or []), *album_uids])),
+            "liked_artist_ids": list(dict.fromkeys([*(opts.get("liked_artist_ids") or []), *artist_uids])),
+        }
+    await s.flush()
 
 
 async def cancel_downloads(s: AsyncSession, imp: Import) -> int:

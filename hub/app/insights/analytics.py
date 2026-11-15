@@ -133,7 +133,7 @@ async def listening(
     def inside(ts: datetime | None) -> bool:
         return ts is not None and begin <= ts < stop
 
-    players = [a for a in h.attempts if a.client != "navidrome"]
+    players = [a for a in h.attempts if not a.scrobble and a.client != "navidrome"]
     in_period = [a for a in players if inside(a.started_at)]
     heard = [a for a in h.attempts if inside(a.heard_at)]
     first_heard: dict[str, datetime] = {}
@@ -391,7 +391,7 @@ def _wave_block(h: History, inside) -> dict:
 
 
 def _quality(h: History, plays, period_launches: list[Launch], inside) -> dict:
-    player_rows = [r for r in plays if r.client != "navidrome"]
+    player_rows = [r for r in plays if not r.scrobble and r.client != "navidrome"]
     return {
         "events_without_context": sum(r.context is None for r in player_rows),
         "events_without_playback": sum(r.playback_id is None for r in player_rows),

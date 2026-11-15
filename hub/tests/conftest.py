@@ -156,7 +156,7 @@ def hub_env(db_url: str, tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator:
 
 def _clear_caches() -> None:
     from app import accounts, config, google_auth, oidc, security, storage
-    from app.library.navidrome import NavidromeAdmin, NavidromeHistory
+    from app.library.navidrome import NavidromeAdmin
     from app.mixes import sources, wave
     from app.providers import ytdlp
 
@@ -168,7 +168,6 @@ def _clear_caches() -> None:
     oidc._docs.clear()
     oidc._keys.clear()
     NavidromeAdmin.forget_token()
-    NavidromeHistory.forget_tokens()
     ytdlp._media_hosts.clear()
     sources._lastfm_limiter = None
     wave._rt.clear()

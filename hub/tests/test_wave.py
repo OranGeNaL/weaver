@@ -469,32 +469,44 @@ async def test_a_wave_rejects_an_unknown_search_file(env) -> None:
     assert "повторите поиск" in response.json()["detail"]
 
 
-async def test_a_wave_by_a_navidrome_artist_takes_its_songs_and_its_deezer_artist(env, monkeypatch) -> None:
-    from tests.test_mixes import add_track
+async def test_a_wave_by_a_hub_artist_takes_its_songs_and_its_deezer_artist(env, monkeypatch) -> None:
+    from app.db import session_scope
+    from app.matching.normalize import normalize_artist
+    from app.models import Album, Artist, Track
 
-    c, nd = env["client"], env["nd"]
-    await add_track(100)  # nd100 is Deezer's dz:100
-    nd.artists["ar1"] = {"id": "ar1", "name": "Кино", "album": [{"id": "al1"}, {"id": "al2"}]}
-    nd.albums["al1"] = {
-        "id": "al1",
-        "song": [
-            {"id": "nd100", "title": "Песня 100", "artist": "Кино", "artistId": "ar1"},
-            {"id": "s2", "title": "Кукушка", "artist": "Кино", "artistId": "ar1", "duration": 400},
-            {"id": "s3", "title": "Чужая", "artist": "Другой", "artistId": "ar9"},
-        ],
-    }  # a compilation's other artist
-    nd.albums["al2"] = {
-        "id": "al2",
-        "song": [
-            {
-                "id": "s4",
-                "title": "Вместе",
-                "artist": "Кино feat. Гость",
-                "artistId": "ar7",
-                "artists": [{"id": "ar1"}, {"id": "ar8"}],
-            }
-        ],
-    }
+    c = env["client"]
+    async with session_scope() as s:
+        artist = Artist(uid=str(uuid.uuid4()), name="Кино", name_norm=normalize_artist("Кино").text)
+        s.add(artist)
+        await s.flush()
+        album = Album(uid=str(uuid.uuid4()), title="Группа крови", album_artist="Кино", artist_id=artist.id)
+        s.add(album)
+        await s.flush()
+        for nd_id, title, deezer in (("nd100", "Песня 100", "100"), ("s2", "Кукушка", None), ("s4", "Вместе", None)):
+            s.add(
+                Track(
+                    uid=str(uuid.uuid4()),
+                    path=f"{title}.mp3",
+                    nd_song_id=nd_id,
+                    deezer_track_id=deezer,
+                    album_id=album.id,
+                    artist="Кино",
+                    title=title,
+                    fingerprint=f"кино|{title}",
+                )
+            )
+        # a compilation's track of another artist is not the artist's
+        s.add(
+            Track(
+                uid=str(uuid.uuid4()),
+                path="Чужая.mp3",
+                nd_song_id="s3",
+                artist="Другой",
+                title="Чужая",
+                fingerprint="другой|чужая",
+            )
+        )
+        artist_uid = artist.uid
     from app.services import svc
 
     async def search(q, kinds=("artist", "album", "track"), limit=10):
@@ -510,31 +522,52 @@ async def test_a_wave_by_a_navidrome_artist_takes_its_songs_and_its_deezer_artis
         wave, "generators", lambda p, seed, artist, seeds: got.append(artist) or fake(p, seed, artist, seeds)
     )
 
-    r = await c.post("/api/wave/start", json={"seed": {"nd_artist_id": "ar1"}, "mode": "discover"})
+    r = await c.post("/api/wave/start", json={"seed": {"artist_uid": artist_uid}, "mode": "discover"})
 
     assert r.status_code == 200, r.text
     w = r.json()
-    assert w["title"] == "Волна: Кино" and w["seed"] == {"artist_ref": "dz:1", "artist": "Кино", "nd_artist_id": "ar1"}
+    assert w["title"] == "Волна: Кино" and w["seed"] == {
+        "artist_ref": "dz:1",
+        "artist": "Кино",
+        "artist_uid": artist_uid,
+    }
     assert got[0]["ref"] == "dz:1"  # the exact name among Deezer's artists
-    assert {t.ref for t in got[0]["songs"]} == {"dz:100", "nd:s2", "nd:s4"}  # not the compilation's other artist
+    assert {t.ref for t in got[0]["songs"]} == {"dz:100", "nd:s2", "nd:s4"}
     st = wave._rt[w["session_id"]].state
     assert st.seed_artist == artist_key("Кино")
-    assert (await c.post("/api/wave/start", json={"seed": {"nd_artist_id": "nope"}})).status_code == 404
+    assert (await c.post("/api/wave/start", json={"seed": {"artist_uid": "nope"}})).status_code == 404
 
 
 async def test_artist_from_library_track_resolves_and_survives_restart(env, monkeypatch) -> None:
-    c, nd = env["client"], env["nd"]
-    nd.songs["song"] = {"id": "song", "artistId": "ar1"}
-    nd.songs["noartist"] = {"id": "noartist"}
-    nd.artists["ar1"] = {"id": "ar1", "name": "Кино", "album": []}
+    from app.db import session_scope
+    from app.matching.normalize import normalize_artist
+    from app.models import Artist, Track
+
+    c = env["client"]
+    async with session_scope() as s:
+        artist = Artist(uid=str(uuid.uuid4()), name="Кино", name_norm=normalize_artist("Кино").text)
+        s.add(artist)
+        await s.flush()
+        for nd_id, credited in (("song", "Кино"), ("noartist", "Безымянный")):
+            s.add(
+                Track(
+                    uid=str(uuid.uuid4()),
+                    path=f"{nd_id}.mp3",
+                    nd_song_id=nd_id,
+                    artist=credited,
+                    title=nd_id,
+                    fingerprint=f"{credited}|{nd_id}",
+                )
+            )
+        artist_uid = artist.uid
     fake_sources(monkeypatch, [tr(5000 + i) for i in range(10)])
     response = await c.post("/api/wave/start", json={"seed": {"nd_song_id": "song", "by_artist": True}})
     assert response.status_code == 200, response.text
     out = response.json()
-    assert out["seed"]["nd_artist_id"] == "ar1"
+    assert out["seed"]["artist_uid"] == artist_uid
     await wave.reset()
     next_response = await c.post(f"/api/wave/{out['session_id']}/next", json={})
-    assert next_response.status_code == 200 and next_response.json()["seed"]["nd_artist_id"] == "ar1"
+    assert next_response.status_code == 200 and next_response.json()["seed"]["artist_uid"] == artist_uid
     for song in ("missing", "noartist"):
         assert (
             await c.post("/api/wave/start", json={"seed": {"nd_song_id": song, "by_artist": True}})

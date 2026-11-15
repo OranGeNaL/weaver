@@ -285,7 +285,6 @@ HomeMusic — это персональный музыкальный серви�
 | Цикл | Модуль | Частота |
 |---|---|---|
 | `scheduler_loop` | `housekeeping.py` | раз в сутки, в `backup_hour` |
-| `scrobbles_loop` | `plays.py` | первый запуск через 2 минуты, далее раз в час |
 | `schedule_loop` | `mixes/core.py` | проверка пользователей, которым пора собрать микс |
 | `playlist_adds_loop` | `jobs/downloads.py` | каждые 30 секунд |
 | SSE keepalive | `api/events.py` | `ping` каждые 20 секунд |

@@ -24,6 +24,19 @@ Hub SHALL отдавать `GET /healthz` без авторизации с пр�
 - **THEN** он MAY использовать соответствующее расширение API
 - **AND** старый клиент продолжает работать без него
 
+### Requirement: Capability избранного Hub
+
+Hub SHALL сообщать в `/healthz.capabilities` возможность `hub_liked_v1`, означающую, что `/api/starred` и `/api/library/liked` обслуживаются Hub и содержат `track_uids`.
+
+#### Scenario: Новый клиент
+- **WHEN** клиент видит `hub_liked_v1`
+- **THEN** он MAY использовать `track_uids` и `/api/library/liked`
+- **AND** старый клиент продолжает использовать `song_ids`
+
+#### Scenario: Старый клиент
+- **WHEN** клиент не знает `hub_liked_v1`
+- **THEN** он работает с прежними полями `/api/starred`
+
 ### Requirement: Административная диагностика
 
 Hub SHALL отдавать администратору расширенный health с проверкой провайдеров и статусом Soulseek. Эти endpoint'ы MUST быть доступны только администратору.

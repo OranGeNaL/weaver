@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
@@ -14,6 +15,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -423,15 +425,52 @@ class AssistantChat(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+class Playlist(Base):
+    """A playlist of the Hub: the only owner of playlists since stage 5. `uid` is what the API shows."""
+
+    __tablename__ = "playlists"
+    __table_args__ = (Index("ix_playlists_owner", "owner_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    uid: Mapped[str] = mapped_column(String(36), unique=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(512))
+    # «Микс дня» and other playlists the Hub builds: shown only to their owner
+    system: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class PlaylistItem(Base):
+    """One position of a playlist. Duplicates are allowed; `anchor_uid` is the uid of the neighbouring item."""
+
+    __tablename__ = "playlist_items"
+    __table_args__ = (
+        UniqueConstraint("playlist_id", "uid", name="uq_playlist_items_playlist_uid"),
+        Index("ix_playlist_items_order", "playlist_id", "position"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    uid: Mapped[str] = mapped_column(String(36), unique=True)
+    playlist_id: Mapped[int] = mapped_column(ForeignKey("playlists.id", ondelete="CASCADE"))
+    track_uid: Mapped[str] = mapped_column(ForeignKey("tracks.uid", ondelete="CASCADE"), index=True)
+    # numeric so a background insert goes between two neighbours without rewriting every row
+    position: Mapped[Decimal] = mapped_column(Numeric(30, 10))
+    anchor_uid: Mapped[str | None] = mapped_column(String(36))
+    added_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class PendingPlaylistAdd(Base):
     __tablename__ = "pending_playlist_adds"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    playlist_id: Mapped[str] = mapped_column(String(64), index=True)
+    playlist_uid: Mapped[str] = mapped_column(String(36), index=True)
+    anchor_uid: Mapped[str | None] = mapped_column(String(36))  # the item it goes after; None: the end
+    before_uid: Mapped[str | None] = mapped_column(String(36))  # a later item of the batch it must precede
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     download_item_id: Mapped[int] = mapped_column(ForeignKey("download_items.id", ondelete="CASCADE"), index=True)
     position: Mapped[int] = mapped_column(Integer, default=0)
-    applied_song_id: Mapped[str | None] = mapped_column(String(64))  # anchor while an earlier item needs review
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -472,8 +511,12 @@ class ImportCollection(Base):
     position: Mapped[int] = mapped_column(Integer, default=0)
     selected: Mapped[bool] = mapped_column(Boolean, default=True)
     cover_url: Mapped[str | None] = mapped_column(String(1024))
+    # the Hub playlist this collection became (source of truth since stage 5)
+    playlist_uid: Mapped[str | None] = mapped_column(String(36))
+    track_uids: Mapped[list[Any]] = mapped_column(JSONB, default=list)  # what the Hub playlist holds now
+    # deprecated aliases until stage 7: the same uid and the same track uids
     nd_playlist_id: Mapped[str | None] = mapped_column(String(64))
-    nd_song_ids: Mapped[list[Any]] = mapped_column(JSONB, default=list)  # what the Navidrome playlist holds now
+    nd_song_ids: Mapped[list[Any]] = mapped_column(JSONB, default=list)
 
 
 class ImportItem(Base):
@@ -533,7 +576,8 @@ class PlayEvent(Base):
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))  # UTC
     kind: Mapped[str] = mapped_column(String(16))  # start/skip/finish/like/unlike/dislike/undislike
     ref: Mapped[str | None] = mapped_column(String(64))  # catalog track
-    nd_song_id: Mapped[str | None] = mapped_column(String(64))  # Navidrome song
+    track_uid: Mapped[str | None] = mapped_column(String(36), index=True)  # the Hub track
+    nd_song_id: Mapped[str | None] = mapped_column(String(64))  # Navidrome song (deprecated alias until stage 7)
     target_type: Mapped[str] = mapped_column(String(16), default="track", server_default="track")
     nd_album_id: Mapped[str | None] = mapped_column(String(64), index=True)
     nd_artist_id: Mapped[str | None] = mapped_column(String(64), index=True)
@@ -545,6 +589,9 @@ class PlayEvent(Base):
     listened_ms: Mapped[int | None] = mapped_column()
     track_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     superseded_scrobble: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # a scrobble a Hub client sent (`POST /api/plays/scrobble`): an un-superseded one is a counted listen
+    scrobble: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    origin: Mapped[str | None] = mapped_column(String(16))
     position_s: Mapped[float | None] = mapped_column(Float)
     duration_s: Mapped[float | None] = mapped_column(Float)
     context: Mapped[str | None] = mapped_column(String(128))  # mix:<id>, wave:<session>, album, playlist, search...
@@ -566,6 +613,7 @@ class FavoriteSubject(Base):
     target_type: Mapped[str] = mapped_column(String(16))
     canonical_key: Mapped[str] = mapped_column(String(128))
     ref: Mapped[str | None] = mapped_column(String(64), index=True)
+    uid: Mapped[str | None] = mapped_column(String(36), index=True)  # the Hub track/album/artist uid
     nd_id: Mapped[str | None] = mapped_column(String(64), index=True)
     aliases: Mapped[list[Any]] = mapped_column(JSONB, default=list)
     data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
@@ -588,18 +636,6 @@ class Dislike(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
-class NavidromeSync(Base):
-    """How far the Hub has read a user's Navidrome scrobble history (`app.plays.import_scrobbles`)."""
-
-    __tablename__ = "navidrome_sync"
-
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
-    last_scrobble_id: Mapped[int] = mapped_column(Integer, default=0)
-    synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    favorites_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    favorites_bootstrapped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-
 class MixSettings(Base):
     """A user's «Микс дня» settings (MIXES.md 6): mode, the hour of the build, the playlist, onboarding artists."""
 
@@ -608,7 +644,8 @@ class MixSettings(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     mode: Mapped[str] = mapped_column(String(16), default="normal")  # normal/favorites/discover
     mix_hour: Mapped[int] = mapped_column(Integer, default=5)  # local time (`Settings.timezone`)
-    nd_playlist_id: Mapped[str | None] = mapped_column(String(64))  # «Микс дня» in Navidrome: one id for good
+    nd_playlist_id: Mapped[str | None] = mapped_column(String(64))  # deprecated alias until stage 7
+    playlist_uid: Mapped[str | None] = mapped_column(String(36))  # «Микс дня» in the Hub: one uid for good
     # onboarding: [{ref, name}] the user picked on «Что вы слушаете?» (a new user without history)
     artists_json: Mapped[list[Any]] = mapped_column(JSONB, default=list)
     last_build_on: Mapped[date | None] = mapped_column(Date)  # local date of the last scheduled build attempt
@@ -626,7 +663,8 @@ class Mix(Base):
     title: Mapped[str] = mapped_column(String(256))
     description: Mapped[str] = mapped_column(Text, default="")
     mode: Mapped[str] = mapped_column(String(16))
-    nd_playlist_id: Mapped[str | None] = mapped_column(String(64))
+    nd_playlist_id: Mapped[str | None] = mapped_column(String(64))  # deprecated alias until stage 7
+    playlist_uid: Mapped[str | None] = mapped_column(String(36))  # the Hub playlist of the mix
     status: Mapped[str] = mapped_column(String(16), default="active")  # active/closed
     batch_id: Mapped[int | None] = mapped_column(ForeignKey("download_batches.id", ondelete="SET NULL"))
     stats_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)  # generators, timings (the report)

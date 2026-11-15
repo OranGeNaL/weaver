@@ -154,11 +154,28 @@ async def test_album_songs_are_owned_tracks_with_the_hubs_refs(env):
 
 
 async def test_liked_lists_the_newest_like_first(env):
-    r = await env["client"].get("/api/nd/liked")
-    assert r.status_code == 200, r.text
-    d = r.json()
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import select
+
+    from app.api.schemas import FavoriteTarget
+    from app.db import session_scope
+    from app.favorites import command
+    from app.models import User
+
+    async with session_scope() as s:
+        user = (await s.execute(select(User))).scalars().first()
+        assert user is not None
+        now = datetime.now(UTC)
+        await command(s, user, [FavoriteTarget(ref="dz:100")], liked=True, operation="old", ts=now - timedelta(days=2))
+        await command(
+            s, user, [FavoriteTarget(nd_song_id="ndZ")], liked=True, operation="new", ts=now - timedelta(days=1)
+        )
+
+    d = (await env["client"].get("/api/nd/liked")).json()
     assert [t["nd_song_id"] for t in d["songs"]] == ["ndZ", "ndK"]
-    assert [a["id"] for a in d["albums"]] == ["alK"] and [a["name"] for a in d["artists"]] == ["Кино"]
+    # albums/artists are Hub objects: nothing was liked there, so the lists stay empty
+    assert d["albums"] == [] and d["artists"] == []
 
 
 async def test_catalog_like_is_listed_before_download_and_unlike_removes_it(env):
@@ -210,15 +227,13 @@ async def test_old_catalog_like_uses_stored_metadata_without_network(env, cache_
     assert (song["title"], song["artist"]) == (("WHAT TO DO?", "Jackboys") if cache_key else ("dz:999", ""))
 
 
-async def test_own_likes_deduplicate_library_aliases_and_override_stale_nd_unlikes(env):
+async def test_own_like_and_unlike_show_up_immediately(env):
     c = env["client"]
     target = {"ref": "dz:100"}
     assert (await c.post("/api/star", json={"targets": [target]})).status_code == 200
-    songs = (await c.get("/api/nd/liked")).json()["songs"]
-    assert [t["ref"] for t in songs] == ["dz:100", "nd:ndZ"]
+    assert [t["ref"] for t in (await c.get("/api/nd/liked")).json()["songs"]] == ["dz:100"]
     assert (await c.post("/api/star", json={"targets": [target], "unstar": True})).status_code == 200
-    # This fake ND still returns ndK: the explicit decision must win immediately.
-    assert [t["ref"] for t in (await c.get("/api/nd/liked")).json()["songs"]] == ["nd:ndZ"]
+    assert (await c.get("/api/nd/liked")).json()["songs"] == []
 
 
 async def test_pending_import_likes_are_visible_only_to_their_user_and_own_unlike_wins(env):
@@ -293,29 +308,155 @@ async def test_artist_albums_newest_year_first_then_without_a_year(env):
 
 async def test_playlist_page_remove_and_delete(env):
     c = env["client"]
-    r = await c.get("/api/playlists/pl1")
+    await add_track("Кино", "Звезда", "ndZ")
+    created = await c.post("/api/playlists", json={"name": "Дорога"})
+    assert created.status_code == 200, created.text
+    uid = created.json()["id"]
+    added = await c.post(f"/api/playlists/{uid}/add", json={"song_ids": ["ndK", "ndZ"]})
+    assert added.status_code == 200 and added.json()["added"] == 2
+
+    p = (await c.get(f"/api/playlists/{uid}")).json()
+    assert (p["name"], p["song_count"]) == ("Дорога", 2)
+    assert [t["ref"] for t in p["tracks"]] == ["dz:100", "nd:ndZ"]
+
+    assert (await c.post(f"/api/playlists/{uid}/remove", json={"indexes": [1]})).json()["removed"] == 1
+    assert [t["ref"] for t in (await c.get(f"/api/playlists/{uid}")).json()["tracks"]] == ["dz:100"]
+    assert (await c.post(f"/api/playlists/{uid}/remove", json={"indexes": []})).status_code == 422
+
+    assert (await c.delete(f"/api/playlists/{uid}")).json() == {"ok": True}
+    assert (await c.get(f"/api/playlists/{uid}")).status_code == 404
+
+
+async def test_playlist_reorder_and_anchor(env):
+    c = env["client"]
+    await add_track("Кино", "Звезда", "ndZ")
+    uid = (await c.post("/api/playlists", json={"name": "Дорога"})).json()["id"]
+    added = (await c.post(f"/api/playlists/{uid}/add", json={"song_ids": ["ndK", "ndZ"]})).json()
+    first, second = added["uids"]
+    # the anchor puts the new track right after the named item, not at the end
+    extra = (await c.post(f"/api/playlists/{uid}/add", json={"song_ids": ["ndK"], "anchor_uid": first})).json()
+    third = extra["uids"][0]
+    refs = [t["ref"] for t in (await c.get(f"/api/playlists/{uid}")).json()["tracks"]]
+    assert refs == ["dz:100", "dz:100", "nd:ndZ"]
+    assert (first, extra) != (second, None)
+    # a new order: the named items first, in that order
+    await c.post(f"/api/playlists/{uid}/reorder", json={"item_uids": [second, first, third]})
+    page = (await c.get(f"/api/playlists/{uid}")).json()
+    assert [t["ref"] for t in page["tracks"]] == ["nd:ndZ", "dz:100", "dz:100"]
+
+
+async def test_liked_endpoint_and_starred_track_uids(env):
+    from sqlalchemy import select
+
+    from app.db import session_scope
+    from app.models import Track
+
+    c = env["client"]
+    async with session_scope() as s:
+        uid = (await s.execute(select(Track.uid).where(Track.nd_song_id == "ndK"))).scalar_one()
+    r = await c.post("/api/star", json={"uids": [uid]})
     assert r.status_code == 200, r.text
-    p = r.json()
-    assert (p["name"], p["song_count"]) == ("Дорога", 2) and [t["ref"] for t in p["tracks"]] == ["dz:100", "nd:ndZ"]
-
-    assert (await c.post("/api/playlists/pl1/remove", json={"indexes": [1, 1]})).json() == {"ok": True}
-    upd = [p for n, p in env["state"]["calls"] if n == "updatePlaylist"]
-    assert upd[-1]["playlistId"] == "pl1" and upd[-1]["songIndexToRemove"] == "1"
-    assert (await c.post("/api/playlists/pl1/remove", json={"indexes": []})).status_code == 422
-
-    assert (await c.delete("/api/playlists/pl1")).json() == {"ok": True}
-    assert ("deletePlaylist", "pl1") in [(n, p.get("id")) for n, p in env["state"]["calls"]]
+    starred = (await c.get("/api/starred")).json()
+    assert starred["track_uids"] == [uid]
+    liked = (await c.get("/api/library/liked")).json()
+    assert [t["uid"] for t in liked["tracks"]] == [uid]
+    assert liked["albums"] == [] and liked["artists"] == []
 
 
-async def test_playlist_errors_map_navidromes_codes(env):
-    c, fail = env["client"], env["state"]["fail"]
-    fail["getPlaylist"] = 70
-    assert (await c.get("/api/playlists/gone")).status_code == 404
-    fail["updatePlaylist"] = 50  # not the owner
-    assert (await c.post("/api/playlists/pl1/remove", json={"indexes": [0]})).status_code == 403
-    fail["deletePlaylist"] = 0  # anything else Navidrome says
-    r = await c.delete("/api/playlists/pl1")
-    assert r.status_code == 502 and r.json()["detail"].startswith("Navidrome")
+async def test_trashed_track_is_not_an_index_in_a_playlist(env):
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select
+
+    from app.db import session_scope
+    from app.models import Track
+
+    c = env["client"]
+    await add_track("Кино", "Звезда", "ndZ")
+    uid = (await c.post("/api/playlists", json={"name": "Дорога"})).json()["id"]
+    await c.post(f"/api/playlists/{uid}/add", json={"song_ids": ["ndK", "ndZ"]})
+    # the first track goes to the trash: the page drops it and `/remove` numbers only what the page shows
+    async with session_scope() as s:
+        track = (await s.execute(select(Track).where(Track.nd_song_id == "ndK"))).scalar_one()
+        track.deleted_at = datetime.now(UTC)
+    page = (await c.get(f"/api/playlists/{uid}")).json()
+    assert page["song_count"] == len(page["tracks"]) == 1
+    listed = next(p for p in (await c.get("/api/playlists")).json() if p["id"] == uid)
+    assert listed["song_count"] == 1  # the list agrees with the page: the trashed track is not counted
+    assert [t["ref"] for t in page["tracks"]] == ["nd:ndZ"]
+    assert (await c.post(f"/api/playlists/{uid}/remove", json={"indexes": [0]})).json()["removed"] == 1
+    assert (await c.get(f"/api/playlists/{uid}")).json()["tracks"] == []
+
+
+async def test_parallel_playlist_inserts_keep_every_item(env):
+    import asyncio
+
+    from sqlalchemy import select
+
+    from app.db import session_scope
+    from app.models import Track
+    from app.playlists import add_tracks, get_by_uid
+    from app.playlists import items as playlist_items
+
+    c = env["client"]
+    await add_track("Кино", "Звезда", "ndZ")
+    uid = (await c.post("/api/playlists", json={"name": "Параллельный"})).json()["id"]
+    async with session_scope() as s:
+        pl = await get_by_uid(s, uid)
+        assert pl is not None
+        track = (await s.execute(select(Track).where(Track.nd_song_id == "ndK"))).scalar_one()
+        playlist_id, track_uid = pl.id, track.uid
+
+    async def one() -> None:
+        async with session_scope() as s:
+            pl = await get_by_uid(s, uid)
+            assert pl is not None
+            await add_tracks(s, pl, [track_uid])
+
+    await asyncio.gather(*(one() for _ in range(6)))
+    async with session_scope() as s:
+        rows = await playlist_items(s, playlist_id)
+    assert len(rows) == 6 and len({i.uid for i in rows}) == 6
+
+
+async def test_playlist_rebalance_keeps_the_order(env):
+    from sqlalchemy import select
+
+    from app.db import session_scope
+    from app.models import Track
+    from app.playlists import add_tracks, get_by_uid
+    from app.playlists import items as playlist_items
+
+    c = env["client"]
+    await add_track("Кино", "Звезда", "ndZ")
+    uid = (await c.post("/api/playlists", json={"name": "Длинный"})).json()["id"]
+    await c.post(f"/api/playlists/{uid}/add", json={"song_ids": ["ndK", "ndZ"]})
+    async with session_scope() as s:
+        pl = await get_by_uid(s, uid)
+        assert pl is not None
+        rows = await playlist_items(s, pl.id)
+        anchor, playlist_id = rows[0].uid, pl.id
+        track = (await s.execute(select(Track).where(Track.nd_song_id == "ndK"))).scalar_one()
+        track_uid = track.uid
+
+    # halving the gap towards the next item exhausts it and forces a rebalance
+    async with session_scope() as s:
+        pl = await get_by_uid(s, uid)
+        assert pl is not None
+        for _ in range(60):
+            created = await add_tracks(s, pl, [track_uid], anchor_uid=anchor)
+            anchor = created[0].uid
+    async with session_scope() as s:
+        rows = await playlist_items(s, playlist_id)
+    positions = [i.position for i in rows]
+    assert positions == sorted(positions) and len(set(positions)) == len(positions)
+
+
+async def test_playlist_unknown_is_404(env):
+    c = env["client"]
+    assert (await c.get("/api/playlists/nope")).status_code == 404
+    assert (await c.post("/api/playlists/nope/add", json={"song_ids": ["ndK"]})).status_code == 404
+    assert (await c.delete("/api/playlists/nope")).status_code == 404
 
 
 async def test_navidrome_unreachable_is_502(env):
@@ -323,7 +464,6 @@ async def test_navidrome_unreachable_is_502(env):
     c = env["client"]
     assert (await c.get("/api/nd/home")).status_code == 502
     assert (await c.get("/api/nd/cover/al-alK")).status_code == 502
-    assert (await c.get("/api/playlists/pl1")).status_code == 502
 
 
 async def test_cover_is_proxied_as_the_user(env):

@@ -233,6 +233,7 @@ async def test_profile_weights_and_decay(env) -> None:
     await add_event(me, "skip", nd="nd3", at=NOW, position=10)
     await add_event(me, "skip", nd="nd3", at=NOW, position=100)  # after 30 s: 70 of the 170 s past them (file: 200 s)
     await add_event(me, "like", nd="nd7", at=NOW - timedelta(days=1))
+    await add_event(me, "like", nd="nd4", at=NOW)  # ♥ without a playback event; its own download adds nothing
     await add_event(me, "skip", nd="nd8", at=NOW, position=199)  # a second before the end
     async with session_scope() as s:
         batch = DownloadBatch(user_id=me, origin="catalog")
@@ -275,11 +276,6 @@ async def test_profile_weights_and_decay(env) -> None:
             s,
             user,
             now=NOW,
-            starred=[
-                {"id": "nd4", "starred": "2026-10-22T12:00:00Z"},
-                {"id": "nd6", "starred": "2026-10-22T12:00:00Z"},
-                {"id": "nd7", "starred": "2026-10-21T12:00:00Z"},
-            ],
         )
 
     score = {t.nd_song_id: round(t.score, 3) for t in p.tracks.values()}
@@ -298,6 +294,50 @@ async def test_profile_weights_and_decay(env) -> None:
     # nd2 and nd4 tie at 1.0: the profile's order (events first)
     assert [t.nd_song_id for t in p.seeds(8)] == ["nd1", "nd8", "nd2", "nd4", "nd7"]
     assert p.disliked(ref=None, nd_song_id="nd5", artist="x", artist_ref=None)
+
+
+async def test_v1_profile_does_not_count_an_imported_like(env) -> None:
+    """An import's ♥ is provenance: v1 must neither score it nor mark the track liked (the v2 path already does)."""
+    from app.api.schemas import FavoriteTarget
+    from app.db import session_scope
+    from app.favorites import record
+    from app.mixes.taste import build_profile
+    from app.models import Import, ImportCollection, ImportItem, User
+
+    me = env["admin"]
+    tid = await add_track(10)
+    async with session_scope() as s:
+        user = await s.get(User, me)
+        imp = Import(user_id=me, source="yandex", method="token", status="done")
+        s.add(imp)
+        await s.flush()
+        coll = ImportCollection(import_id=imp.id, kind="likes", external_id="likes", title="Likes")
+        s.add(coll)
+        await s.flush()
+        s.add(
+            ImportItem(
+                import_id=imp.id,
+                collection_id=coll.id,
+                position=0,
+                external_id="1",
+                ref="dz:10",
+                status="done",
+                track_id=tid,
+            )
+        )
+        await record(s, me, FavoriteTarget(ref="dz:10"), True, operation="import-like", client="import", ts=NOW)
+        profile = await build_profile(s, user, now=NOW, model="v1")
+
+    track = profile.find(ref="dz:10")
+    assert track is not None
+    assert not track.liked and track.score == 0
+
+    # a later own like of the same track overrides the imported provenance, as in v2
+    async with session_scope() as s:
+        await record(s, me, FavoriteTarget(ref="dz:10"), True, operation="own-relike", client="pwa", ts=NOW)
+        profile = await build_profile(s, user, now=NOW, model="v1")
+    track = profile.find(ref="dz:10")
+    assert track is not None and track.liked and track.score > 0
 
 
 async def test_own_download_alone_weighs_nothing_but_stays_in_the_profile(env) -> None:
@@ -325,7 +365,7 @@ async def test_own_download_alone_weighs_nothing_but_stays_in_the_profile(env) -
             )
         )
         await s.flush()
-        p = await build_profile(s, await s.get(User, me), now=NOW, starred=[])
+        p = await build_profile(s, await s.get(User, me), now=NOW)
 
     t = p.tracks["nd:nd1"]
     assert t.downloaded and t.score == 0.0
@@ -365,7 +405,7 @@ async def test_skip_after_30_s_takes_the_length_of_the_event(env) -> None:
             )
         )
         await s.flush()
-        p = await build_profile(s, await s.get(User, me), now=NOW, starred=[])
+        p = await build_profile(s, await s.get(User, me), now=NOW)
 
     assert round(p.tracks["nd:nd1"].score, 3) == 0.4  # x = 50 / 100: 2 · 0.5 / (1 + 3 · 0.5)
 
@@ -381,7 +421,7 @@ async def test_cold_start_seeds_from_picked_artists(env) -> None:
             MixSettings(user_id=env["admin"], mode="normal", mix_hour=5, artists_json=[{"ref": "dz:1", "name": "Кино"}])
         )
         await s.flush()
-        p = await build_profile(s, await s.get(User, env["admin"]), starred=[])
+        p = await build_profile(s, await s.get(User, env["admin"]))
 
     assert not p.empty and not p.seeds(8)
     assert [(t.artist, t.title) for t in await cold_seeds(p, 8)] == [("Кино", "Группа крови")]
@@ -458,10 +498,17 @@ async def test_build_queues_quiet_downloads_and_writes_the_playlist(env, monkeyp
     assert all(r.downloaded_for_mix for r in active if not r.familiar)
     r = await env["client"].get("/api/downloads")
     assert r.status_code == 200 and all(x["star"] for x in r.json())  # clients hide them
-    # the playlist «Микс дня» has the songs the library has, in the mix's order
-    pl = env["nd"].playlists[settings.nd_playlist_id]
-    assert pl["name"] == "Микс дня" and pl["songs"] == [r.nd_song_id for r in active if r.nd_song_id]
-    assert mix.title in pl["comment"] and mix.nd_playlist_id == settings.nd_playlist_id
+    # the playlist «Микс дня» is a local system playlist with the songs the library has, in the mix's order
+    from app.playlists import get_owned
+    from app.playlists import items as playlist_items
+
+    async with session_scope() as s:
+        settings = await s.get(MixSettings, me)
+        pl = await get_owned(s, me, settings.playlist_uid)
+        rows_pl = await playlist_items(s, pl.id) if pl else []
+    assert pl is not None and pl.name == "Микс дня" and pl.system
+    assert len(rows_pl) == len([r for r in active if r.track_id])
+    assert mix.playlist_uid == settings.playlist_uid
 
 
 async def test_a_song_that_did_not_download_gives_its_place_to_the_reserve(env, monkeypatch) -> None:
@@ -490,9 +537,15 @@ async def test_a_song_that_did_not_download_gives_its_place_to_the_reserve(env, 
     sub = next(r for r in rows.values() if r.position == failed.position and r.id != failed.id)
     assert rows[failed.id].state == "failed" and sub.state == "active" and not sub.familiar
     assert sub.download_item_id  # the substitute is downloaded now
+    from app.models import Track
+    from app.playlists import get_owned
+    from app.playlists import track_uids as playlist_uids
+
     async with session_scope() as s:
-        pid = (await s.get(MixSettings, me)).nd_playlist_id
-    assert "nd5999" in env["nd"].playlists[pid]["songs"]
+        pid = (await s.get(MixSettings, me)).playlist_uid
+        pl = await get_owned(s, me, pid)
+        want = (await s.get(Track, tid)).uid
+        assert want in await playlist_uids(s, pl.id)
 
 
 async def test_next_mix_keeps_the_playlist_and_closes_the_old_one(env, monkeypatch) -> None:
@@ -508,8 +561,16 @@ async def test_next_mix_keeps_the_playlist_and_closes_the_old_one(env, monkeypat
 
     async with session_scope() as s:
         old = await s.get(Mix, first.id)
+    from app.models import MixSettings, Playlist
+
     assert old.status == "closed" and second.status == "active"
-    assert second.nd_playlist_id == first.nd_playlist_id and len(env["nd"].playlists) == 1
+    assert second.playlist_uid == first.playlist_uid
+    async with session_scope() as s:
+        st = await s.get(MixSettings, me)
+        assert st.playlist_uid == first.playlist_uid
+        assert (
+            await s.execute(select(func.count()).select_from(Playlist).where(Playlist.owner_id == me))
+        ).scalar() == 1
 
 
 async def test_no_history_no_mix(env) -> None:
@@ -553,9 +614,22 @@ async def keep_by(case: str, env, me: int, other: int, track_id: int) -> None:
     elif case == "listened 30 s":
         await add_event(other, "skip", ref="dz:7", position=31)
     elif case == "starred":
-        env["nd"].starred["other"] = {"nd7"}
+        from app.api.schemas import FavoriteTarget
+        from app.favorites import record
+        from app.models import Track
+
+        async with session_scope() as s:
+            t = await s.get(Track, track_id)
+            await record(s, other, FavoriteTarget(uid=t.uid, ref="dz:7"), True, client="pwa")
     elif case == "in a playlist":
-        env["nd"].playlists["plX"] = {"name": "Моё", "owner": "other", "songs": ["nd7"], "comment": ""}
+        from app.models import Playlist, PlaylistItem, Track
+
+        async with session_scope() as s:
+            t = await s.get(Track, track_id)
+            pl = Playlist(uid=f"pl-{track_id}", owner_id=other, name="Моё")
+            s.add(pl)
+            await s.flush()
+            s.add(PlaylistItem(uid=f"pli-{track_id}", playlist_id=pl.id, track_uid=t.uid, position=1024))
     elif case == "asked to download":
         async with session_scope() as s:
             b = DownloadBatch(user_id=other, origin="catalog")
@@ -585,8 +659,6 @@ async def keep_by(case: str, env, me: int, other: int, track_id: int) -> None:
             s.add(c)
             await s.flush()
             s.add(ImportItem(import_id=imp.id, collection_id=c.id, external_id="y7", ref="dz:7", status="waiting"))
-    elif case == "Navidrome down":
-        env["nd"].down = True
 
 
 @pytest.mark.parametrize(
@@ -599,7 +671,6 @@ async def keep_by(case: str, env, me: int, other: int, track_id: int) -> None:
         "asked to download",
         "another mix",
         "an import",
-        "Navidrome down",
     ],
 )
 async def test_a_song_of_the_old_mix_stays(env, case: str) -> None:

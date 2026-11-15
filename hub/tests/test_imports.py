@@ -179,6 +179,39 @@ async def jobs(kind: str) -> list:
         return list((await s.execute(select(Job).where(Job.kind == kind, Job.status == "queued"))).scalars())
 
 
+async def local_playlist(playlist_uid: str | None) -> list[str]:
+    from app.db import session_scope
+    from app.models import Track
+    from app.playlists import get_by_uid
+    from app.playlists import items as playlist_items
+
+    if not playlist_uid:
+        return []
+    async with session_scope() as s:
+        pl = await get_by_uid(s, playlist_uid)
+        if pl is None:
+            return []
+        rows = await playlist_items(s, pl.id)
+        uids = [i.track_uid for i in rows]
+        tracks = (
+            {t.uid: t for t in (await s.execute(select(Track).where(Track.uid.in_(uids)))).scalars()} if uids else {}
+        )
+        return [tracks[u].nd_song_id or tracks[u].uid for u in uids if u in tracks]
+
+
+async def liked_refs() -> set[str]:
+    """The user's own track ♥ as refs (nd ids for library tracks, catalog refs otherwise)."""
+    from app.db import session_scope
+    from app.favorites import snapshot
+    from app.models import User
+
+    async with session_scope() as s:
+        user = (await s.execute(select(User))).scalars().first()
+        assert user is not None
+        states = await snapshot(s, user.id)
+    return {x.nd_id or x.ref or x.uid or "" for x in states.values() if x.liked and x.target_type == "track"}
+
+
 async def prepared(c: httpx.AsyncClient) -> dict:
     r = await c.post("/api/imports", json={"source": "yandex", "method": "token", "token": "secret-token"})
     assert r.status_code == 200, r.text
@@ -267,8 +300,10 @@ async def test_spotify_export_preview_and_economy_import_preserve_playlist_order
     )
     assert response.status_code == 200, response.text
     await run_imports()
-    assert any(p["name"] == "Spotify mix" and p["songs"] == ["ndB", "ndA"] for p in env["state"]["playlists"].values())
-    assert "ndA" in env["state"]["stars"]
+    after = (await client.get(f"/api/imports/{imp['id']}")).json()
+    pl_uid = next(x["playlist_uid"] for x in after["collections"] if x["kind"] == "playlist")
+    assert await local_playlist(pl_uid) == ["ndB", "ndA"]
+    assert "ndA" in await liked_refs()
     assert (await client.post(f"/api/imports/{imp['id']}/sync")).status_code == 409
 
 
@@ -298,7 +333,7 @@ async def test_economy_import_likes_and_playlists_in_order(env):
     from app.jobs.downloads import imports_done
     from app.models import DownloadItem, Import
 
-    c, state = env["client"], env["state"]
+    c = env["client"]
     imp = await prepared(c)
     r = await c.post(
         f"/api/imports/{imp['id']}/start",
@@ -317,10 +352,10 @@ async def test_economy_import_likes_and_playlists_in_order(env):
     assert rows[playlist, "Город золотой"]["nd_song_id"] == "ndA"
     assert rows[imp["collections"][4]["id"], "Что-то"]["status"] == "skipped"  # a dislike is only kept
 
-    # the playlist holds what the library has, in Yandex's order; ♥ — again one by one from the oldest like
-    assert state["playlists"] == {"pl1": {"name": "Дорога", "songs": ["ndA", "ndB"]}}
-    assert state["star_log"][-2:] == [("star", ["ndA"]), ("star", ["ndB"])]
-    assert state["stars"] == ["ndA", "ndB"]
+    # the Hub playlist holds what the library has, in Yandex's order; ♥ are local decisions
+    pl_uid = next(x["playlist_uid"] for x in imp["collections"] if x["kind"] == "playlist")
+    assert await local_playlist(pl_uid) == ["ndA", "ndB"]
+    assert await liked_refs() == {"ndA", "ndB"}
     # the liked track the library lacks shows ♥ by its catalog ref
     stars = (await c.get("/api/starred")).json()
     assert {k: stars[k] for k in ("song_ids", "album_ids", "artist_ids", "refs")} == {
@@ -364,24 +399,25 @@ async def test_economy_import_likes_and_playlists_in_order(env):
         item.status, item.track_id = "done", track_id
         await imports_done(s, [item])
     await run_imports()
-    assert state["playlists"]["pl1"]["songs"] == ["ndC", "ndA", "ndB"]
+    assert await local_playlist(pl_uid) == ["ndC", "ndA", "ndB"]
     assert {x["status"] for x in await items(c, imp) if x["title"] == "Группа крови" and x["kind"] == "track"} == {
         "done"
     }
-    # ♥ in Yandex's order: Группа крови was liked after Город золотой and before Осень, so Осень is starred again after it
-    assert state["star_log"][-3:] == [("unstar", ["ndC", "ndB"]), ("star", ["ndC"]), ("star", ["ndB"])]
-    assert state["stars"] == ["ndA", "ndC", "ndB"]
+    assert await liked_refs() == {"ndA", "ndC", "ndB"}
 
     # the user takes the ♥ off Город золотой in the app: the import leaves it alone from then on
+    from app.api.schemas import FavoriteTarget
+    from app.favorites import command
     from app.imports.apply import sync_likes
+    from app.models import User
 
-    state["stars"].remove("ndA")
+    async with session_scope() as s:
+        user = (await s.execute(select(User))).scalars().first()
+        await command(s, user, [FavoriteTarget(nd_song_id="ndA")], liked=False, operation="app-unlike")
     async with session_scope() as s:
         await sync_likes(s, await s.get(Import, imp["id"]))
-    assert state["stars"] == ["ndC", "ndB"]
-    assert {x["status"] for x in await items(c, imp, collection_id=likes) if x["title"] == "Город золотой"} == {
-        "skipped"
-    }
+    assert "ndA" not in await liked_refs()
+    assert await liked_refs() == {"ndC", "ndB"}
 
 
 async def test_all_likes_are_downloaded_once(env):
@@ -561,23 +597,6 @@ async def test_matching_verdicts(env):
         assert (await resolve_track(s, "yandex", "exact", cases["exact"])).ref == "dz:100"  # remembered
         with pytest.raises(CatalogDown):
             await resolve_track(s, "yandex", "new", track("Кино", "Кукушка"))
-
-
-@pytest.mark.parametrize(
-    ("starred", "want", "again"),
-    [
-        ([], ["a", "b"], ["a", "b"]),
-        (["a", "b"], ["a", "b", "c"], ["c"]),
-        (["a", "c"], ["a", "b", "c"], ["b", "c"]),
-        (["a", "b"], ["a", "b"], []),
-        (["b", "a"], ["a", "b"], ["a", "b"]),
-    ],
-    ids=["first", "newer-like", "older-like", "nothing-new", "reordered"],
-)
-def test_restar_plan(starred, want, again):
-    from app.imports.apply import restar_plan
-
-    assert restar_plan(starred, want) == again
 
 
 def test_playlist_and_like_order():

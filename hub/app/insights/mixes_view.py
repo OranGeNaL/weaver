@@ -188,6 +188,7 @@ async def detail(s: AsyncSession, h: History, mix_id: int) -> dict[str, Any] | N
         **row(h, info),
         "description": m.description,
         "nd_playlist_id": m.nd_playlist_id,
+        "playlist_uid": m.playlist_uid,
         "funnel": funnel,
         "seeds": seeds,
         "seed_labels": stats.get("seeds"),

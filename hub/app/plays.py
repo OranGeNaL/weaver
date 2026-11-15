@@ -1,18 +1,18 @@
-"""Listening data for mixes and «Моя волна» (MIXES.md 3): events from the app and the PWA, «Не нравится», and the
-scrobble history of Navidrome (other clients) imported every hour.
+"""Listening data for mixes and «Моя волна» (MIXES.md 3): events from the app and the PWA, scrobbles of Hub clients,
+«Не нравится».
 
-- An event names its track by a catalog `ref` and/or a Navidrome `nd_song_id`; the Hub fills in the other one where
-  it knows it (a library track's Deezer id, the download or import row that brought the file in).
+- An event names its track by a Hub `track_uid` and/or a catalog `ref`; the Navidrome `nd_song_id` stays a deprecated
+  alias until stage 7. The Hub fills in the other identifiers where it knows them.
 - `event_id` is the client's: a batch sent again (the app retries when offline) stores nothing twice.
-- A Navidrome scrobble is a `finish` with client "navidrome". The app's own events of the same song near it win: a
-  scrobble is not imported next to them, and a scrobble imported first is dropped when they arrive (`DEDUP_WINDOW`
-  plus the track's length: Navidrome counts a play at half of it, the app's `finish` comes at its end).
-- ♥ that an import of another service set are not the user's own (M4): `imported_likes`.
+- A client scrobble is a `finish` with `scrobble=true`/`origin=client` and the Hub track uid. The app's own measured
+  events of the same song near it win: a scrobble is not counted next to them, and a scrobble that arrived first is
+  marked `superseded_scrobble` when they come (`DEDUP_WINDOW` plus the track's length).
+- ♥ that an import of another service set are not the user's own (M4): `imported_likes` lists them for callers
+  that still work with Navidrome ids; the profile itself reads `favorites.imported_targets`.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from collections.abc import Iterable
@@ -25,29 +25,26 @@ from sqlalchemy import Result, delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.schemas import PlayEventIn
+from app.api.schemas import PlayEventIn, ScrobbleIn
 from app.catalog.models import split_ref
-from app.db import session_scope
 from app.models import (
     CatalogCache,
     Dislike,
     DownloadItem,
     Import,
     ImportItem,
-    NavidromeSync,
     PlayEvent,
     Track,
-    User,
     utcnow,
 )
 
 log = logging.getLogger(__name__)
 
 PLAY_KINDS = ("start", "skip", "finish")
+# every event of a playback attempt: a checkpoint carries the cumulative `listened_ms` that may cross the threshold
+PLAYBACK_KINDS = ("start", "progress", "interrupted", "error", "skip", "finish")
 DEDUP_WINDOW = timedelta(minutes=5)
 MAX_FUTURE = timedelta(hours=1)  # a client clock this far ahead is wrong: the event gets the time it came in
-SYNC_EVERY_S = 3600
-FIRST_SYNC_DELAY_S = 120
 
 
 def _rowcount(res: Result[Any]) -> int:
@@ -139,6 +136,51 @@ async def _ref_of_song(s: AsyncSession, nd_song_id: str) -> str | None:
             .limit(1)
         )
     ).scalar_one_or_none()
+
+
+async def track_uid_of(s: AsyncSession, ref: str | None, nd_song_id: str | None) -> str | None:
+    """The Hub `uid` of a library track named by a catalog ref and/or a deprecated Navidrome song id."""
+    if nd_song_id:
+        uid = (
+            await s.execute(
+                select(Track.uid)
+                .where(Track.nd_song_id == nd_song_id, Track.deleted_at.is_(None))
+                .order_by(Track.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if uid:
+            return uid
+    if ref:
+        src, id_ = split_ref(ref)
+        if src == "dz":
+            uid = (
+                await s.execute(
+                    select(Track.uid)
+                    .where(Track.deezer_track_id == id_, Track.deleted_at.is_(None))
+                    .order_by(Track.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if uid:
+                return uid
+        song = await _song_of_ref(s, ref)
+        if song:
+            return await track_uid_of(s, None, song)
+    return None
+
+
+async def track_ids_of_uid(s: AsyncSession, uid: str) -> tuple[str | None, str | None]:
+    """The catalog ref and the deprecated Navidrome song of a Hub track uid."""
+    t = (
+        await s.execute(select(Track).where(Track.uid == uid, Track.deleted_at.is_(None)).limit(1))
+    ).scalar_one_or_none()
+    if t is None:
+        return None, None
+    ref = f"dz:{t.deezer_track_id}" if t.deezer_track_id else None
+    if ref is None and t.nd_song_id:
+        ref = await _ref_of_song(s, t.nd_song_id)
+    return ref or f"lib:{uid}", t.nd_song_id
 
 
 @dataclass
@@ -241,20 +283,58 @@ async def _track_length(s: AsyncSession, nd_song_id: str, duration_s: float | No
 
 
 async def _drop_scrobbles_near(s: AsyncSession, user_id: int, ev: PlayEvent) -> None:
-    """The app's own event of a song replaces a Navidrome scrobble of that very listen imported before it came."""
-    assert ev.nd_song_id
-    w = DEDUP_WINDOW + await _track_length(s, ev.nd_song_id, ev.duration_s)
+    """The app's own measured event of a track replaces a client scrobble of that same listen (by any identifier)."""
+    conds = _same_track(ev)
+    if conds is None:
+        return
+    length = await _track_length(s, ev.nd_song_id, ev.duration_s) if ev.nd_song_id else _duration(ev.duration_s)
+    w = DEDUP_WINDOW + length
     await s.execute(
         update(PlayEvent)
         .where(
             PlayEvent.user_id == user_id,
-            PlayEvent.client == "navidrome",
+            PlayEvent.scrobble.is_(True),
             PlayEvent.kind == "finish",
-            PlayEvent.nd_song_id == ev.nd_song_id,
             PlayEvent.ts.between(ev.ts - w, ev.ts + w),
+            or_(*conds),
         )
         .values(superseded_scrobble=True)
     )
+
+
+async def _track_duration(s: AsyncSession, uid: str | None, nd_song_id: str | None) -> float | None:
+    q = select(Track.duration_s).where(Track.deleted_at.is_(None)).limit(1)
+    q = q.where(Track.uid == uid) if uid else q.where(Track.nd_song_id == nd_song_id)
+    value = (await s.execute(q)).scalar_one_or_none()
+    return float(value) if value else None
+
+
+async def _is_counted_listen(
+    s: AsyncSession, uid: str | None, nd: str | None, listened_ms: int | None, duration_s: float | None
+) -> bool:
+    """The summary counts a measured listen when cumulative `listened_ms` crosses its threshold; only that wins."""
+    if listened_ms is None:
+        return False
+    from app.listening_summary import listened_threshold_ms
+
+    duration = duration_s or await _track_duration(s, uid, nd)
+    return listened_ms >= listened_threshold_ms(duration)
+
+
+def _duration(duration_s: float | None) -> timedelta:
+    return timedelta(seconds=min(float(duration_s or 0), 3600))
+
+
+def _same_track(ev: PlayEvent) -> list | None:
+    """Predicates naming the same library track: the Hub uid first, then the deprecated aliases."""
+    conds = []
+    if ev.track_uid:
+        conds.append(PlayEvent.track_uid == ev.track_uid)
+    if ev.nd_song_id:
+        conds.append(PlayEvent.nd_song_id == ev.nd_song_id)
+    if ev.ref:
+        conds.append(PlayEvent.ref == ev.ref)
+    return conds or None
 
 
 async def _listening_metadata(s: AsyncSession, e: PlayEventIn, nd: str | None) -> dict[str, Any] | None:
@@ -396,12 +476,16 @@ async def record_events(
             if e.kind in ("start", "progress", "interrupted", "error", "skip", "finish")
             else None
         )
+        uid = e.uid if e.target_type == "track" else None
+        if e.target_type == "track" and not uid:
+            uid = await track_uid_of(session, ref, nd)
         values = dict(
             user_id=user_id,
             event_id=e.event_id,
             ts=event_time(e.ts, now),
             kind=e.kind,
             ref=ref,
+            track_uid=uid,
             nd_song_id=nd,
             position_s=e.position_s,
             duration_s=e.duration_s,
@@ -440,7 +524,12 @@ async def record_events(
                     target_data=e.target_data,
                 ),
             )
-        if e.kind in PLAY_KINDS and nd and e.client != "navidrome":
+        if (
+            e.kind in PLAYBACK_KINDS
+            and e.client != "navidrome"
+            and (uid or ref or nd)
+            and await _is_counted_listen(session, uid, nd, e.listened_ms, e.duration_s)
+        ):
             await _drop_scrobbles_near(session, user_id, PlayEvent(**values))
         if e.kind == "dislike":
             await add_dislike(
@@ -467,7 +556,6 @@ async def record_events(
         for key, state in after_favorites.items():
             previous = before_favorites.get(key)
             if previous is None or previous.liked != state.liked:
-                state.event.mirror_pending = True
                 if state.target_type == "track" and state.ref and not state.liked:
                     from app.favorites import clear_pending
 
@@ -478,6 +566,91 @@ async def record_events(
 
                 await clear_pending(session, user_id, previous.ref)
     return out
+
+
+async def record_scrobble(
+    session: AsyncSession, user_id: int, e: ScrobbleIn, *, now: datetime | None = None
+) -> tuple[PlayEvent, bool]:
+    """Store a client scrobble; returns (event, duplicate). A scrobble near a measured app event is superseded."""
+    now = now or utcnow()
+    existing = (
+        await session.execute(select(PlayEvent).where(PlayEvent.user_id == user_id, PlayEvent.event_id == e.event_id))
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing, True  # a resent scrobble: keep the stored verdict (`counted`) truthful
+    ref, nd = await Ids(session).complete(e.ref, e.nd_song_id)
+    uid = e.track_uid or await track_uid_of(session, ref, nd)
+    if not (uid or ref or nd):
+        raise ValueError("scrobble names no track")
+    ts = event_time(e.ts, now)
+    length = (
+        await _track_length(session, nd, e.duration_s) if nd else timedelta(seconds=min(float(e.duration_s or 0), 3600))
+    )
+    conds = []
+    if uid:
+        conds.append(PlayEvent.track_uid == uid)
+    if nd:
+        conds.append(PlayEvent.nd_song_id == nd)
+    if ref:
+        conds.append(PlayEvent.ref == ref)
+    w = DEDUP_WINDOW + length
+    rows = list(
+        (
+            await session.execute(
+                select(PlayEvent).where(
+                    PlayEvent.user_id == user_id,
+                    PlayEvent.kind.in_(PLAYBACK_KINDS),
+                    or_(*conds),
+                    PlayEvent.ts.between(ts - w, ts + w),
+                )
+            )
+        ).scalars()
+    )
+    measured = False
+    for row in rows:
+        if row.scrobble or row.client == "navidrome":
+            continue
+        if await _is_counted_listen(session, row.track_uid, row.nd_song_id, row.listened_ms, row.duration_s):
+            measured = True
+            break
+    twin = any(row.scrobble and not row.superseded_scrobble for row in rows)
+    metadata = await _listening_metadata(
+        session,
+        PlayEventIn(
+            event_id=e.event_id,
+            ts=ts,
+            kind="finish",
+            ref=ref,
+            uid=uid,
+            nd_song_id=nd,
+            client=e.client,
+            track_metadata=e.track_metadata,
+        ),
+        nd,
+    )
+    values = dict(
+        user_id=user_id,
+        event_id=e.event_id,
+        ts=ts,
+        kind="finish",
+        ref=ref,
+        track_uid=uid,
+        nd_song_id=nd,
+        duration_s=e.duration_s or (length.total_seconds() or None),
+        position_s=e.position_s,
+        context=e.context,
+        client=e.client,
+        received_at=now,
+        track_metadata=metadata,
+        scrobble=True,
+        origin="client",
+        superseded_scrobble=measured or twin,
+    )
+    res = await session.execute(pg_insert(PlayEvent).values(**values).on_conflict_do_nothing())
+    stored = (
+        await session.execute(select(PlayEvent).where(PlayEvent.user_id == user_id, PlayEvent.event_id == e.event_id))
+    ).scalar_one()
+    return stored, not _rowcount(res)
 
 
 async def user_events(
@@ -609,107 +782,3 @@ async def dislike_event(
             target_type=target_type,
         )
     )
-
-
-# --- Navidrome scrobbles ---------------------------------------------------------------------------------------
-
-
-async def _listened_near(s: AsyncSession, user_id: int, nd_song_id: str, ts: datetime, length: timedelta) -> bool:
-    w = DEDUP_WINDOW + length
-    found = (
-        await s.execute(
-            select(PlayEvent.id)
-            .where(
-                PlayEvent.user_id == user_id,
-                PlayEvent.nd_song_id == nd_song_id,
-                PlayEvent.client != "navidrome",
-                PlayEvent.kind.in_(PLAY_KINDS),
-                PlayEvent.ts.between(ts - w, ts + w),
-            )
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    return found is not None
-
-
-async def import_scrobbles(user: User) -> int:
-    """New scrobbles of the user in Navidrome → `finish` events (client "navidrome"). Returns how many were added."""
-    from app.library.navidrome import NavidromeHistory
-    from app.security import decrypt
-
-    async with session_scope() as session:
-        sync = await session.get(NavidromeSync, user.id)
-        last = sync.last_scrobble_id if sync else 0
-    if not user.nd_username or not user.nd_password_enc:
-        return 0  # no Navidrome account (stage 4): there is no ND scrobble history to read
-    async with NavidromeHistory(user.nd_username, decrypt(user.nd_password_enc)) as nd:
-        rows = await nd.scrobbles_after(last)
-    added = 0
-    async with session_scope() as session:
-        fill = Ids(session)
-        for x in rows:
-            song, sid = x.get("mediaFileId"), int(x["id"])
-            if not song or not x.get("submissionTime"):
-                continue
-            ts = datetime.fromtimestamp(int(x["submissionTime"]), UTC)
-            length = await _track_length(session, song, None)
-            superseded = await _listened_near(session, user.id, song, ts, length)
-            ref, _ = await fill.complete(None, song)
-            metadata = await _listening_metadata(
-                session,
-                PlayEventIn(event_id=f"nd:{sid}", ts=ts, kind="finish", ref=ref, nd_song_id=song, client="navidrome"),
-                song,
-            )
-            res = await session.execute(
-                pg_insert(PlayEvent)
-                .values(
-                    user_id=user.id,
-                    event_id=f"nd:{sid}",
-                    ts=ts,
-                    kind="finish",
-                    ref=ref,
-                    nd_song_id=song,
-                    duration_s=length.total_seconds() or None,
-                    client="navidrome",
-                    received_at=utcnow(),
-                    track_metadata=metadata,
-                    superseded_scrobble=superseded,
-                )
-                .on_conflict_do_nothing()
-            )
-            added += _rowcount(res) if not superseded else 0
-        sync = await session.get(NavidromeSync, user.id)
-        if sync is None:
-            sync = NavidromeSync(user_id=user.id, last_scrobble_id=0)
-            session.add(sync)
-        sync.last_scrobble_id = max([last, *(int(x["id"]) for x in rows)])
-        sync.synced_at = utcnow()
-    return added
-
-
-async def sync_navidrome() -> int:
-    """Imports the new scrobbles of every user; a user Navidrome doesn't let in (password changed) is skipped."""
-    async with session_scope() as session:
-        users = list((await session.execute(select(User).order_by(User.id))).scalars())
-    total = 0
-    for u in users:
-        try:
-            total += await import_scrobbles(u)
-        except Exception as e:
-            log.warning("navidrome scrobbles of user %s: %r", u.id, e)
-        try:
-            from app.favorites import sync_user
-
-            await sync_user(u)
-        except Exception as e:
-            log.warning("navidrome favorites of user %s: %r", u.id, e)
-    if total:
-        log.info("navidrome scrobbles: %s new plays", total)
-    return total
-
-
-async def scrobbles_loop() -> None:
-    await asyncio.sleep(FIRST_SYNC_DELAY_S)
-    while True:
-        await sync_navidrome()
-        await asyncio.sleep(SYNC_EVERY_S)

@@ -472,7 +472,9 @@ async def test_counted_listens_match_the_summary_and_hours_are_local(hub):
         attempt(m, late, "dz:100", "ndK", context="album"),
         attempt(m, late + timedelta(minutes=5), "dz:300", end="skip", heard_ms=12_000, context="album"),
         attempt(m, datetime(2026, 3, 1, 9, tzinfo=UTC), "dz:200", "ndM", context="search", duration=200),
-        pe(m, "finish", datetime(2026, 3, 14, 8, tzinfo=UTC), None, "ndM", client="navidrome"),  # a scrobble
+        pe(
+            m, "finish", datetime(2026, 3, 14, 8, tzinfo=UTC), None, "ndM", client="pwa", scrobble=True, origin="client"
+        ),
         pe(m, "finish", datetime(2026, 3, 14, 9, tzinfo=UTC), "dz:300", client="app/1.0.0", position_s=200),  # legacy
         attempt(m, datetime(2026, 2, 1, 9, tzinfo=UTC), "dz:100", "ndK", context="album"),
     )  # before the period

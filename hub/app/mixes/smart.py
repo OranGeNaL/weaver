@@ -68,7 +68,8 @@ def valid_context(context: str) -> bool:
 
 
 def is_ref(song_id: str) -> bool:
-    """An id with a colon is a catalog ref (a ♥ not downloaded yet); without — a Navidrome song id."""
+    """An id with a colon is a catalog ref (a ♥ not downloaded yet); without — a Hub track uid or a deprecated
+    Navidrome song id."""
     return ":" in song_id
 
 
@@ -203,14 +204,17 @@ async def own_infos(ids: list[str]) -> dict[str, OwnInfo]:
     """What the Hub knows of the context's songs (the library record; for a ♥ not downloaded yet — the catalog
     cache). A song it knows nothing of is still played: it has no artist and no title here."""
     out = {i: OwnInfo(i, nd_song_id=None if is_ref(i) else i, ref=i if is_ref(i) else None) for i in ids}
-    nd_ids = [i for i in ids if not is_ref(i)]
+    plain = [i for i in ids if not is_ref(i)]
     dz = {split_ref(i)[1]: i for i in ids if is_ref(i) and i.startswith("dz:")}
     async with session_scope() as s:
         rows: list[Track] = []
-        for k in range(0, len(nd_ids), 500):
+        for k in range(0, len(plain), 500):
+            chunk = plain[k : k + 500]
             rows += (
                 await s.execute(
-                    select(Track).where(Track.nd_song_id.in_(nd_ids[k : k + 500]), Track.deleted_at.is_(None))
+                    select(Track).where(
+                        or_(Track.nd_song_id.in_(chunk), Track.uid.in_(chunk)), Track.deleted_at.is_(None)
+                    )
                 )
             ).scalars()
         for k in range(0, len(dz), 500):
@@ -220,7 +224,7 @@ async def own_infos(ids: list[str]) -> dict[str, OwnInfo]:
                 )
             ).scalars()
         for t in rows:
-            i = t.nd_song_id if t.nd_song_id in out else dz.get(str(t.deezer_track_id))
+            i = t.uid if t.uid in out else (t.nd_song_id if t.nd_song_id in out else dz.get(str(t.deezer_track_id)))
             if i is None or out[i].title:
                 continue
             ct = library_track(t)
@@ -794,8 +798,8 @@ async def hide(user: User, sid: str, ref: str | None, nd_song_id: str | None) ->
 
 
 async def accept(user: User, sid: str, ref: str | None, nd_song_id: str | None) -> tuple[SmartItem, str | None]:
-    """«+»: marks the recommendation as taken (what it raises in the next picks). Returns the item and the
-    Navidrome playlist the track has to be put in (`None` in «Понравившиеся»: the client likes it itself)."""
+    """«+»: marks the recommendation as taken (what it raises in the next picks). Returns the item and the Hub
+    playlist uid the track has to be put in (`None` in «Понравившиеся»: the client likes it itself)."""
     rt = await _runtime(sid, user)
     item = await _item(sid, ref, nd_song_id)
     async with rt.lock:

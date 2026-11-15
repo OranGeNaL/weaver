@@ -202,6 +202,7 @@ async def import_out(s: AsyncSession, imp: Import) -> ImportOut:
                 count=counts.get(c.id, (0, 0))[0],
                 owned=counts.get(c.id, (0, 0))[1],
                 cover_url=c.cover_url,
+                playlist_uid=c.playlist_uid,
                 nd_playlist_id=c.nd_playlist_id,
             )
             for c in colls

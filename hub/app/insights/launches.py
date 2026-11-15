@@ -219,7 +219,8 @@ def _attempt(events: list[PlayEvent], aliases: Aliases, grouped: bool) -> Attemp
                 a.late_skip = True
         if not a.measured and a.heard_at is None and _heard(e, e.duration_s or duration):
             a.heard_at = e.ts
-    if a.client == "navidrome" and not a.measured and a.finished:
+    a.scrobble = a.scrobble or any(e.scrobble for e in events) or a.client == "navidrome"
+    if a.scrobble and not a.measured and a.finished:
         a.scrobble, a.counted_at, a.heard_at, a.finished = True, first.ts, first.ts, False
     if a.measured:
         a.heard_at = a.counted_at
@@ -367,7 +368,7 @@ def _launches(h: History) -> list[Launch]:
         out.append(launch)
     rest: list[Attempt] = []
     for a in h.attempts:
-        if a.client == "navidrome":
+        if a.scrobble or a.client == "navidrome":
             continue  # a scrobble is evidence of listening, not a launch
         sid = wave_of(a.launch_id) or wave_of(a.context)
         lid = f"wave:{sid}" if sid else a.launch_id
@@ -439,7 +440,7 @@ def _attach_mix(h: History, launch: Launch) -> None:
         return
     pid = launch.context.split(":", 1)[1] if launch.context and ":" in launch.context else None
     if pid:
-        if pid == info.mix.nd_playlist_id:
+        if pid in (info.mix.playlist_uid, info.mix.nd_playlist_id):
             launch.mix_id, launch.mix_attribution = info.mix.id, "playlist_id"
         return
     started = [a for a in launch.attempts if a.started] or launch.attempts

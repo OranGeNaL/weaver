@@ -7,7 +7,6 @@ import logging
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
@@ -24,6 +23,7 @@ from app.api.schemas import (
     LibArtistOut,
     LibArtistPageOut,
     LibHomeOut,
+    LibLikedOut,
     LibraryImportIn,
     LibraryImportOut,
     LibTrackOut,
@@ -33,12 +33,11 @@ from app.api.schemas import (
     TracksMoveIn,
     TrackSourceOut,
 )
-from app.auth import admin_user, current_user, user_navidrome
+from app.auth import admin_user, current_user
 from app.catalog.models import split_ref
 from app.config import get_settings
 from app.db import get_session
 from app.events import bus
-from app.favorites import TargetType
 from app.jobs.queue import notify
 from app.library import artists as artists_lib
 from app.library import covers, editor, export, probe, tagger
@@ -277,8 +276,9 @@ async def _starred_album_ids(s: AsyncSession, user_id: int) -> list[int]:
             continue
         refs = {x for x in (st.ref, *(st.aliases or [])) if x}
         dz |= {r.split(":", 1)[1] for r in refs if r.startswith("dz:")}
-        uids |= {r.split(":", 1)[1] for r in refs if r.startswith("album:")}
-        uids |= {r for r in refs if not r.startswith(("dz:", "ref:", "nd:", "album:"))}
+        uids |= {r.split(":", 1)[1] for r in refs if r.startswith(("album:", "uid:"))}
+        uids |= {r for r in refs if not r.startswith(("dz:", "ref:", "nd:", "album:", "uid:"))}
+        uids |= {st.uid} if st.uid else set()
     if not dz and not uids:
         return []
     conds = []
@@ -750,53 +750,37 @@ async def restore_track(
 
 @router.get("/api/starred", response_model=StarredOut)
 async def starred(user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+    """The user's ♥, served by the Hub only (`hub_liked_v1`)."""
     from app.api.schemas import FavoriteTarget
     from app.favorites import ND_FIELDS, AliasIndex, imported_targets, snapshot
     from app.imports.apply import pending_like_refs
     from app.models import FavoriteSubject
 
-    nd = user_navidrome(user)
-    try:
-        body = await nd.get_starred2()
-    finally:
-        await nd.aclose()
     states = await snapshot(s, user.id)
-    subjects = [
-        dict(
-            target_type=x.target_type,
-            key=x.key,
-            ref=x.ref,
-            nd_id=x.nd_id,
-            liked=x.liked,
-            liked_since=x.since,
-            target_data=x.data,
-            event_id=x.event.event_id,
-            aliases=x.aliases,
-            provenance="own",
-        )
-        for x in states.values()
-    ]
     index = AliasIndex([x.event for x in states.values()], list((await s.execute(select(FavoriteSubject))).scalars()))
     for state in states.values():
         index.join(state.target_type, set(state.aliases))
     imported = {index.root(k) for k in await imported_targets(s, user.id)}
-    for typ, field in (("track", "song"), ("album", "album"), ("artist", "artist")):
-        for obj in body.get(field, []):
-            if not obj.get("id"):
-                continue
-            target = FavoriteTarget(target_type=cast(TargetType, typ), **{ND_FIELDS[typ]: obj["id"]})
-            key = index.key(target)
-            if key in imported and key not in states:
-                subjects.append(
-                    dict(
-                        target_type=typ,
-                        key=key[1],
-                        nd_id=obj["id"],
-                        liked=True,
-                        aliases=[f"nd:{obj['id']}"],
-                        provenance="import",
-                    )
-                )
+    subjects = []
+    for state in states.values():
+        provenance = (
+            "import" if index.root((state.target_type, min(state.aliases or [state.key]))) in imported else "own"
+        )
+        subjects.append(
+            dict(
+                target_type=state.target_type,
+                key=state.key,
+                ref=state.ref,
+                uid=state.uid,
+                nd_id=state.nd_id,
+                liked=state.liked,
+                liked_since=state.since,
+                target_data=state.data,
+                event_id=state.event.event_id,
+                aliases=state.aliases,
+                provenance=provenance,
+            )
+        )
     refs = set(await pending_like_refs(s, user.id))
     for ref in sorted(refs):
         key = index.key(FavoriteTarget(ref=ref))
@@ -806,19 +790,95 @@ async def starred(user: User = Depends(current_user), s: AsyncSession = Depends(
                     target_type="track",
                     key=key[1],
                     ref=ref,
+                    uid=None,
                     nd_id=None,
                     liked=True,
                     aliases=[f"ref:{ref}"],
                     provenance="import",
                 )
             )
+    song_ids: list[str] = []
+    album_ids: list[str] = []
+    artist_ids: list[str] = []
+    track_uids: list[str] = []
+    for state in states.values():
+        if not state.liked:
+            continue
+        nd_id = getattr(state.event, ND_FIELDS[state.target_type], None) or state.nd_id
+        if state.target_type == "track":
+            if nd_id:
+                song_ids.append(nd_id)
+            if state.uid:
+                track_uids.append(state.uid)
+        elif state.target_type == "album" and nd_id:
+            album_ids.append(nd_id)
+        elif state.target_type == "artist" and nd_id:
+            artist_ids.append(nd_id)
     refs.update(x.ref for x in states.values() if x.target_type == "track" and x.liked and x.ref and not x.nd_id)
     return StarredOut(
-        song_ids=[x["id"] for x in body.get("song", []) if x.get("id")],
-        album_ids=[x["id"] for x in body.get("album", []) if x.get("id")],
-        artist_ids=[x["id"] for x in body.get("artist", []) if x.get("id")],
+        song_ids=list(dict.fromkeys(song_ids)),
+        album_ids=list(dict.fromkeys(album_ids)),
+        artist_ids=list(dict.fromkeys(artist_ids)),
+        track_uids=list(dict.fromkeys(track_uids)),
         refs=sorted(refs),
         subjects=subjects,
+    )
+
+
+@router.get("/api/library/liked", response_model=LibLikedOut)
+async def liked(user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+    """Tracks, albums and artists the user ♥: own decisions override imported ones, newest first."""
+    from app.favorites import snapshot
+
+    states = [x for x in (await snapshot(s, user.id)).values() if x.liked]
+    states.sort(key=lambda x: (x.since or x.event.ts, x.event.id or 0), reverse=True)
+    track_uids = {x.uid for x in states if x.target_type == "track" and x.uid}
+    tracks_ = (
+        list(
+            (
+                await s.execute(
+                    select(Track).where(Track.uid.in_(track_uids), Track.deleted_at.is_(None)).order_by(Track.id.desc())
+                )
+            ).scalars()
+        )
+        if track_uids
+        else []
+    )
+    out_tracks = [await _full_track_out(s, t) for t in tracks_]
+    album_ids = await _starred_album_ids(s, user.id)
+    albums = [a for a in (await s.execute(select(Album).where(Album.id.in_(album_ids)))).scalars()] if album_ids else []
+    albums.sort(key=lambda a: album_ids.index(a.id))
+    album_out_list = await _albums_out(s, albums)
+    artist_uids = {x.uid for x in states if x.target_type == "artist" and x.uid}
+    artists = (
+        list((await s.execute(select(Artist).where(Artist.uid.in_(artist_uids)))).scalars()) if artist_uids else []
+    )
+    counts = (
+        dict(
+            (
+                await s.execute(
+                    select(Album.artist_id, func.count(Album.id))
+                    .where(Album.artist_id.in_([a.id for a in artists]))
+                    .group_by(Album.artist_id)
+                )
+            ).all()
+        )
+        if artists
+        else {}
+    )
+    return LibLikedOut(
+        tracks=out_tracks,
+        albums=album_out_list,
+        artists=[
+            LibArtistOut(
+                uid=a.uid,
+                name=a.name,
+                sort_name=a.sort_name,
+                album_count=int(counts.get(a.id, 0) or 0),
+                has_cover=a.cover_blob_id is not None,
+            )
+            for a in artists
+        ],
     )
 
 
@@ -830,45 +890,26 @@ async def star(
     from app.favorites import command
 
     targets = list(body.targets)
+    targets += [FavoriteTarget(uid=x) for x in body.uids]
     targets += [FavoriteTarget(nd_song_id=x) for x in body.song_ids]
     targets += [FavoriteTarget(target_type="album", nd_album_id=x) for x in body.album_ids]
     targets += [FavoriteTarget(target_type="artist", nd_artist_id=x) for x in body.artist_ids]
     if body.refs and not body.unstar:
         raise HTTPException(400, "Чтобы отметить трек каталога, поставьте его в загрузку с ♥")
     targets += [FavoriteTarget(ref=x) for x in body.refs]
-    nd = user_navidrome(user)
     try:
-        duplicate_unlike = False
-        if body.unstar and body.event_id and len(targets) == 1:
-            from app.models import PlayEvent
-
-            duplicate_unlike = (
-                await session.execute(
-                    select(PlayEvent.id).where(PlayEvent.user_id == user.id, PlayEvent.event_id == body.event_id)
-                )
-            ).first() is not None
         if body.catalog_album_ref:
             src, id_ = split_ref(body.catalog_album_ref)
             album_filter = Album.deezer_album_id == id_ if src == "dz" else Album.id == -1
-            song_id = (
-                await session.execute(
-                    select(Track.nd_song_id)
-                    .join(Album, Album.id == Track.album_id)
-                    .where(Track.nd_song_id.is_not(None), album_filter)
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            if song_id is None:
+            album = (await session.execute(select(Album).where(album_filter).limit(1))).scalar_one_or_none()
+            if album is None:
                 raise HTTPException(409, "Этого альбома ещё нет в библиотеке — сначала скачайте его")
-            song = await nd.get_song(song_id)
-            if not song.get("albumId"):
-                raise HTTPException(409, "Альбом ещё не появился в Navidrome")
             targets.append(
                 FavoriteTarget(
                     target_type="album",
                     ref=body.catalog_album_ref,
-                    nd_album_id=song["albumId"],
-                    target_data={"artist": song.get("artist")},
+                    uid=album.uid,
+                    target_data={"artist": album.album_artist},
                 )
             )
         events = await command(
@@ -880,7 +921,6 @@ async def star(
             ts=body.ts,
             client=body.client,
             context=body.context,
-            nd=nd,
         )
         # Telemetry may have stored the same decision before the command. Pending downloads
         # still need cancellation, but an older unlike must not cancel a newer like.
@@ -894,14 +934,10 @@ async def star(
                 state = next((x for x in states.values() if x.target_type == "track" and x.ref == target.ref), None)
                 if state and not state.liked:
                     await clear_pending(session, user.id, target.ref)
-                    if duplicate_unlike and state.nd_id:
-                        await nd.unstar(song_ids=[state.nd_id])
     except Exception:
         # Preserve successful chunks of a bulk request even if a later chunk fails.
         await session.commit()
         raise
-    finally:
-        await nd.aclose()
     await session.commit()
     bus.publish(user.id, "library", {"kind": "unstarred" if body.unstar else "starred"})
     return {"ok": True, "event_ids": [e.event_id for e in events]}

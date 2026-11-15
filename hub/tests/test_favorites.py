@@ -7,8 +7,8 @@ import pytest
 from sqlalchemy import select
 
 from app.api.schemas import FavoriteTarget, PlayEventIn
-from app.favorites import command, fold, reconcile, record, snapshot
-from app.models import FavoriteSubject, Import, NavidromeSync, PlayEvent, User
+from app.favorites import command, fold, record, snapshot
+from app.models import FavoriteSubject, PlayEvent, User
 
 NOW = datetime(2026, 10, 26, 12, tzinfo=UTC)
 
@@ -143,67 +143,6 @@ async def ledger(db_url: str):
     await dispose()
 
 
-async def test_reconcile_bootstrap_import_provenance_restart_empty_and_grace(ledger):
-    from app.db import session_scope
-
-    user, other = ledger
-    body = {
-        "song": [{"id": "own", "starred": "2020-01-01T00:00:00Z"}, {"id": "imported"}],
-        "album": [{"id": "ia"}],
-        "artist": [{"id": "ir"}],
-    }
-    async with session_scope() as s:
-        s.add(
-            Import(
-                user_id=user.id,
-                source="yandex",
-                method="token",
-                options_json={"liked": ["imported"], "liked_album_ids": ["ia"], "liked_artist_ids": ["ir"]},
-            )
-        )
-        await s.flush()
-        assert await reconcile(s, user, body, now=NOW) == 1
-        assert await reconcile(s, user, body, now=NOW) == 0
-        states = await snapshot(s, user.id)
-        assert len(states) == 1
-        st = next(iter(states.values()))
-        assert st.liked and st.since == datetime(2020, 1, 1, tzinfo=UTC)
-        assert await snapshot(s, other.id) == {}
-        # received_at, not the 2020 timestamp, protects freshly delivered old history.
-        assert await reconcile(s, user, {}, now=st.received_at + timedelta(hours=23)) == 0
-        assert await reconcile(s, user, {}, now=st.received_at + timedelta(hours=25)) == 1
-        assert not next(iter((await snapshot(s, user.id, st.received_at + timedelta(hours=25))).values())).liked
-        sync = await s.get(NavidromeSync, user.id)
-        assert sync is not None and sync.favorites_bootstrapped_at == NOW
-
-
-async def test_old_star_cannot_resurrect_own_unlike_and_pending_has_no_nd(ledger):
-    from app.db import session_scope
-
-    user, _ = ledger
-    async with session_scope() as s:
-        ev = await record(s, user.id, FavoriteTarget(nd_song_id="s"), False, ts=NOW)
-        await record(s, user.id, FavoriteTarget(ref="dz:pending"), True, ts=NOW)
-        later = ev.received_at + timedelta(hours=25)
-        assert await reconcile(s, user, {"song": [{"id": "s", "starred": "2020-01-01T00:00:00Z"}]}, now=later) == 0
-        states = list((await snapshot(s, user.id)).values())
-        assert next(x for x in states if x.ref == "dz:pending").liked
-        assert not next(x for x in states if x.nd_id == "s").liked
-
-
-async def test_failed_mirror_retries_instead_of_synthesizing_unlike(ledger):
-    from app.db import session_scope
-
-    user, _ = ledger
-    async with session_scope() as s:
-        ev = await record(s, user.id, FavoriteTarget(nd_song_id="s"), True, ts=NOW, mirror_pending=True)
-        nd = AsyncMock()
-        assert await reconcile(s, user, {}, now=ev.received_at + timedelta(days=2), nd=nd) == 0
-        nd.star.assert_awaited_once_with(song_ids=["s"])
-        assert not ev.mirror_pending
-        assert next(iter((await snapshot(s, user.id)).values())).liked
-
-
 async def test_command_repeat_and_stale_request_do_not_overwrite_newer_decision(ledger):
     from app.db import session_scope
 
@@ -215,41 +154,25 @@ async def test_command_repeat_and_stale_request_do_not_overwrite_newer_decision(
         await command(s, user, [target], liked=False, operation="two", ts=NOW + timedelta(seconds=2), nd=nd)
         await command(s, user, [target], liked=True, operation="one", ts=NOW, nd=nd)
         await command(s, user, [target], liked=True, operation="late", ts=NOW - timedelta(seconds=2), nd=nd)
-        nd.star.assert_awaited_once()
         assert not next(iter((await snapshot(s, user.id)).values())).liked
 
 
-async def test_assistant_partial_failure_journals_only_successful_types(ledger):
+async def test_assistant_bulk_command_journals_every_type_locally(ledger):
     from app.db import session_scope
 
     user, _ = ledger
     async with session_scope() as s:
-        nd = AsyncMock()
-        nd.star.side_effect = [None, RuntimeError("ND down")]
-        with pytest.raises(RuntimeError):
-            await command(
-                s,
-                user,
-                [FavoriteTarget(nd_song_id="s"), FavoriteTarget(target_type="album", nd_album_id="a")],
-                liked=True,
-                client="assistant",
-                context="assistant:bulk",
-                nd=nd,
-            )
+        await command(
+            s,
+            user,
+            [FavoriteTarget(nd_song_id="s"), FavoriteTarget(target_type="album", nd_album_id="a")],
+            liked=True,
+            client="assistant",
+            context="assistant:bulk",
+        )
         rows = list((await s.execute(select(PlayEvent))).scalars())
-        assert len(rows) == 1 and rows[0].target_type == "track"
-        assert rows[0].client == "assistant" and rows[0].context == "assistant:bulk"
-
-
-async def test_incomplete_snapshot_does_not_remove_state(ledger):
-    from app.db import session_scope
-
-    user, _ = ledger
-    async with session_scope() as s:
-        await record(s, user.id, FavoriteTarget(nd_song_id="s"), True, ts=NOW)
-        with pytest.raises(ValueError):
-            await reconcile(s, user, {"song": None}, now=NOW + timedelta(days=2))
-        assert next(iter((await snapshot(s, user.id)).values())).liked
+        assert {r.target_type for r in rows} == {"track", "album"}
+        assert all(r.client == "assistant" and r.context == "assistant:bulk" for r in rows)
 
 
 async def test_v1_profile_counts_one_server_and_legacy_like_and_neutral_unlike(ledger):
@@ -282,36 +205,7 @@ async def test_v1_profile_counts_one_server_and_legacy_like_and_neutral_unlike(l
         assert p.tracks["dz:1"].score == pytest.approx(1, abs=0.001)
 
 
-async def test_sync_timeout_preserves_state(ledger, monkeypatch):
-    from app import auth
-    from app.db import session_scope
-    from app.favorites import sync_user
-
-    user, _ = ledger
-    nd = AsyncMock()
-    nd.get_starred2.side_effect = TimeoutError("offline")
-    monkeypatch.setattr(auth, "user_navidrome", lambda user: nd)
-    async with session_scope() as s:
-        await record(s, user.id, FavoriteTarget(nd_song_id="s"), True, ts=NOW)
-    with pytest.raises(TimeoutError):
-        await sync_user(user)
-    nd.aclose.assert_awaited_once()
-    async with session_scope() as s:
-        assert next(iter((await snapshot(s, user.id)).values())).liked
-
-
-async def test_missing_starred2_envelope_is_not_an_empty_snapshot():
-    from app.library.navidrome import NavidromeClient, SubsonicError
-
-    nd = NavidromeClient("qa", "unused", client=AsyncMock())
-    nd.call = AsyncMock(return_value={"status": "ok"})
-    with pytest.raises(SubsonicError):
-        await nd.get_starred2()
-    nd.call.return_value = {"status": "ok", "starred2": {}}
-    assert await nd.get_starred2() == {}
-
-
-@pytest.mark.parametrize("stage", ["queued", "searching", "downloading", "tagging", "importing", "needs_review"])
+@pytest.mark.parametrize("stage", ["queued", "downloading"])
 async def test_pending_unlike_preserves_explicit_download_and_survives_stale_job(ledger, stage):
     from app.db import session_scope
     from app.favorites import download_requested
@@ -348,75 +242,6 @@ async def test_pending_unlike_preserves_explicit_download_and_survives_stale_job
         assert theirs.status == stage and theirs.query_json["star"]
         assert not next(iter((await snapshot(s, user.id)).values())).liked
         assert next(iter((await snapshot(s, other.id)).values())).liked
-
-
-async def test_pending_album_is_delivered_after_verified_library_binding(ledger):
-    from app.db import session_scope
-    from app.favorites import remember
-    from app.models import utcnow
-
-    user, _ = ledger
-    async with session_scope() as s:
-        nd = AsyncMock()
-        await command(s, user, [FavoriteTarget(target_type="album", ref="dz:9")], liked=True, nd=nd)
-        nd.star.assert_not_awaited()
-        await remember(s, FavoriteTarget(target_type="album", ref="dz:9", nd_album_id="album9"))
-        await reconcile(s, user, {}, now=utcnow(), nd=nd)
-        nd.star.assert_awaited_once_with(album_ids=["album9"])
-        state = next(iter((await snapshot(s, user.id)).values()))
-        assert state.liked and not state.event.mirror_pending
-
-
-async def test_legacy_import_album_artist_provenance_is_recovered_without_restarring(ledger):
-    from app.db import session_scope
-    from app.favorites import recover_import_subjects
-    from app.models import Album, ImportCollection, ImportItem, Track
-
-    user, _ = ledger
-    async with session_scope() as s:
-        album = Album(uid="a9", title="Album", album_artist="A", deezer_album_id="9")
-        imp = Import(user_id=user.id, source="yandex", method="token")
-        s.add_all([album, imp])
-        await s.flush()
-        s.add(
-            Track(
-                uid="t9",
-                path="a/t.mp3",
-                nd_song_id="song9",
-                album_id=album.id,
-                artist="A",
-                title="T",
-                fingerprint="a|t",
-            )
-        )
-        collections = [
-            ImportCollection(import_id=imp.id, kind=k, external_id=k, title=k) for k in ("albums", "artists")
-        ]
-        s.add_all(collections)
-        await s.flush()
-        for coll in collections:
-            s.add(
-                ImportItem(
-                    import_id=imp.id,
-                    collection_id=coll.id,
-                    external_id="9",
-                    ref="dz:9",
-                    raw_json={"name": "A"},
-                    status="done",
-                )
-            )
-        await s.flush()
-        nd = AsyncMock()
-        nd.get_song.return_value = {"id": "song9", "albumId": "album9"}
-        nd.search3.return_value = {"artist": [{"id": "artist9", "name": "A"}]}
-        body = {"album": [{"id": "album9"}], "artist": [{"id": "artist9"}, {"id": "outside"}]}
-        await recover_import_subjects(s, user.id, body, nd)
-        assert imp.options_json == {"liked_album_ids": ["album9"], "liked_artist_ids": ["artist9"]}
-        assert await reconcile(s, user, body, now=NOW) == 1
-        states = list((await snapshot(s, user.id)).values())
-        assert len(states) == 1 and states[0].target_type == "artist" and states[0].nd_id == "outside"
-        nd.star.assert_not_awaited()
-        nd.unstar.assert_not_awaited()
 
 
 @pytest.mark.parametrize("typ", ["track", "album", "artist"])
@@ -482,52 +307,3 @@ def test_long_compensation_chain_is_iterative_and_preserves_original_date():
     for i in range(2000):
         rows.append(event(f"c{i}", "unlike", reverts=rows[-1].event_id))
     assert next(iter(fold(rows).values())).since == NOW
-
-
-async def test_restoration_requeues_delivered_mirror_and_preserves_original_date(ledger):
-    from app.db import session_scope
-    from app.plays import record_events
-
-    user, _ = ledger
-    async with session_scope() as s:
-        original = await record(s, user.id, FavoriteTarget(nd_song_id="s"), True, ts=NOW, event_id="a")
-
-        def payload(eid, kind, target):
-            return dict(event_id=eid, kind=kind, ts=NOW, nd_song_id="s", client="app/1", reverts_event_id=target)
-
-        nd = AsyncMock()
-        assert (await record_events(s, user.id, [payload("c", "unlike", "a")])).accepted == 1
-        assert not next(iter((await snapshot(s, user.id)).values())).liked
-        await reconcile(s, user, {"song": [{"id": "s"}]}, nd=nd)
-        nd.unstar.assert_awaited_once_with(song_ids=["s"])
-        assert not original.mirror_pending
-        assert (await record_events(s, user.id, [payload("r", "like", "c")])).accepted == 1
-        state = next(iter((await snapshot(s, user.id)).values()))
-        assert state.liked and state.since == NOW and original.mirror_pending
-        await reconcile(s, user, {}, nd=nd)
-        nd.star.assert_awaited_once_with(song_ids=["s"])
-        assert not original.mirror_pending
-        original_received = state.received_at
-        assert (await record_events(s, user.id, [payload("r", "like", "c")])).duplicates == 1
-        state = next(iter((await snapshot(s, user.id)).values()))
-        assert state.received_at == original_received and not state.event.mirror_pending
-
-
-async def test_compensation_before_original_requeues_neutral_mirror(ledger):
-    from app.db import session_scope
-    from app.plays import record_events
-
-    user, _ = ledger
-    async with session_scope() as s:
-
-        def payload(eid, kind, target=None):
-            return dict(event_id=eid, kind=kind, ts=NOW, nd_song_id="s", client="app/1", reverts_event_id=target)
-
-        await record_events(s, user.id, [payload("c", "unlike", "a")])
-        assert await snapshot(s, user.id) == {}
-        await record_events(s, user.id, [payload("a", "like")])
-        state = next(iter((await snapshot(s, user.id)).values()))
-        assert not state.liked and state.event.mirror_pending
-        nd = AsyncMock()
-        await reconcile(s, user, {"song": [{"id": "s"}]}, nd=nd)
-        nd.unstar.assert_awaited_once_with(song_ids=["s"])

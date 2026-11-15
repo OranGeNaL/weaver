@@ -7,8 +7,8 @@ Job kinds (background: below the user's downloads, `PRIORITY_MIX`):
   best of the reserve, the playlist gets the songs that are in the library now.
 
 Downloads of a mix are the Hub's own (`query_json["mix"]`, `library.owned.quiet`): not in «Загрузки», no
-notifications, background network priority. The playlist «Микс дня» is one per user (`MixSettings.nd_playlist_id`):
-its songs are replaced, its id stays, so the app and «Keep synced» follow it.
+notifications, background network priority. The playlist «Микс дня» is a system playlist of the Hub
+(`MixSettings.playlist_uid`, `owner_id` = the user): its songs are replaced, its uid stays.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ from app.models import (
     MixItem,
     MixSettings,
     PlayEvent,
+    Playlist,
     Track,
     User,
     utcnow,
@@ -125,17 +126,11 @@ async def handle_build(job: Job) -> None:
 
 async def build_for(user_id: int) -> Mix | None:
     """Builds the user's mix of today and puts it in place of the previous one. None: nothing to build it from."""
-    from app.plays import import_scrobbles
-
     async with session_scope() as s:
         user = await s.get(User, user_id)
         if user is None:
             return None
         mode = (await settings_of(s, user_id)).mode
-    try:
-        await import_scrobbles(user)  # the freshest history (Navidrome's scrobbles come hourly otherwise)
-    except Exception as e:
-        log.info("mix %s: scrobbles not synced: %r", user_id, e)
     cfg = get_settings().cfg.mixes
     shadow_snapshot = None
     shadow_error = None
@@ -318,14 +313,28 @@ async def sync(mix_id: int) -> None:
             if it.state == "active":
                 await queue_download(s, mix, it)
         await s.flush()
-        songs = [i.nd_song_id for i in sorted(items, key=lambda i: i.position) if i.state == "active" and i.nd_song_id]
+        ordered = sorted(items, key=lambda i: i.position)
+        songs = [i.nd_song_id for i in ordered if i.state == "active" and i.nd_song_id]
+        track_ids = [i.track_id for i in ordered if i.state == "active" and i.track_id]
+        uids = (
+            {t.id: t.uid for t in (await s.execute(select(Track).where(Track.id.in_(track_ids)))).scalars()}
+            if track_ids
+            else {}
+        )
+        track_uids = [uids[t] for t in track_ids if t in uids]
         user = await s.get(User, mix.user_id)
         settings = await settings_of(s, mix.user_id)
-        if user is not None and songs != (mix.stats_json or {}).get("playlist_songs"):
-            pid = await write_playlist(user, settings.nd_playlist_id, songs, mix)
+        if user is not None and track_uids != (mix.stats_json or {}).get("playlist_uids"):
+            pid = await write_playlist(s, user, settings.playlist_uid, track_uids, mix)
             if pid:
+                settings.playlist_uid = mix.playlist_uid = pid
+                # deprecated aliases until stage 7: an old client still reads these fields
                 settings.nd_playlist_id = mix.nd_playlist_id = pid
-                mix.stats_json = {**(mix.stats_json or {}), "playlist_songs": songs}
+                mix.stats_json = {
+                    **(mix.stats_json or {}),
+                    "playlist_songs": songs,
+                    "playlist_uids": track_uids,
+                }
     # the light copies for a metered network (app.light), made now so a tap finds them ready
     from app import listen
 
@@ -333,29 +342,22 @@ async def sync(mix_id: int) -> None:
     notify()
 
 
-async def write_playlist(user: User, playlist_id: str | None, songs: list[str], mix: Mix) -> str | None:
-    """«Микс дня» of the user gets these songs (created once; its id stays). None: Navidrome did not answer."""
-    from app.auth import user_navidrome
+async def write_playlist(
+    s: AsyncSession, user: User, playlist_uid: str | None, track_uids: list[str], mix: Mix
+) -> str | None:
+    """«Микс дня» of the user gets these songs (a system Hub playlist, created once; its uid stays)."""
+    from app import playlists as playlists_lib
 
-    nd = user_navidrome(user)
-    comment = f"{mix.title}. {mix.description}".strip(". ")
+    playlist = await playlists_lib.get_owned(s, user.id, playlist_uid) if playlist_uid else None
+    if playlist is None or not playlist.system:
+        # deleted in the app, or a user's own playlist: a fresh system playlist, never their list
+        playlist = await playlists_lib.create(s, user.id, PLAYLIST_NAME, system=True)
     try:
-        if playlist_id:
-            known = {p.get("id") for p in await nd.get_playlists()}
-            if playlist_id not in known:
-                playlist_id = None  # deleted in the app: a new one
-        if not playlist_id:
-            playlist_id = (await nd.create_playlist(PLAYLIST_NAME)).get("id")
-        if not playlist_id:
-            return None
-        await nd.set_playlist_songs(playlist_id, songs)
-        await nd.update_playlist(playlist_id, comment=comment[:500])
-        return playlist_id
+        await playlists_lib.replace_tracks(s, playlist, track_uids)
     except Exception as e:
         log.warning("mix %s: playlist not written: %r", mix.id, e)
         return None
-    finally:
-        await nd.aclose()
+    return playlist.uid
 
 
 # --- the replacement (6.3) --------------------------------------------------------------------------------------
@@ -384,6 +386,14 @@ async def close_previous(user_id: int, new_mix_id: int) -> None:
             for d in queued:
                 if quiet(d.query_json):
                     d.status = "cancelled"
+        settings = await s.get(MixSettings, user_id)
+        keep = settings.playlist_uid if settings is not None else None
+        stale_statement = select(Playlist).where(Playlist.owner_id == user_id, Playlist.system.is_(True))
+        if keep:
+            stale_statement = stale_statement.where(Playlist.uid != keep)
+        own = list((await s.scalars(stale_statement)).all())
+        for p in own:
+            await s.delete(p)
     await remove_unheard(await pending_cleanup(user_id))
 
 
@@ -408,31 +418,37 @@ async def pending_cleanup(user_id: int) -> list[int]:
 
 
 async def _users_keep(users: list[User]) -> tuple[set[str], set[str]] | None:
-    """Navidrome songs any user has starred or put in a playlist of their own (the mixes' playlists not counted).
-    None: some user's Navidrome did not answer — nothing may be deleted then."""
-    from app.auth import user_navidrome
+    """Hub tracks any user has ♥ or put in a playlist of their own (the mixes' playlists not counted)."""
+    from app.favorites import snapshot
+    from app.models import Playlist, PlaylistItem
 
-    async with session_scope() as s:
-        mix_playlists = set(
-            (
-                await s.execute(select(MixSettings.nd_playlist_id).where(MixSettings.nd_playlist_id.is_not(None)))
-            ).scalars()
-        )
     starred: set[str] = set()
     listed: set[str] = set()
-    for u in users:
-        nd = user_navidrome(u)
-        try:
-            starred.update(x["id"] for x in (await nd.get_starred2()).get("song") or [] if x.get("id"))
-            for pl in await nd.get_playlists():
-                if pl.get("id") in mix_playlists:
-                    continue
-                listed.update(x["id"] for x in (await nd.get_playlist(pl["id"])).get("entry") or [] if x.get("id"))
-        except Exception as e:
-            log.warning("mix cleanup: Navidrome of user %s did not answer (%r): nothing is deleted", u.id, e)
-            return None
-        finally:
-            await nd.aclose()
+    async with session_scope() as s:
+        mix_playlists = {
+            uid
+            for uid in (
+                await s.execute(select(MixSettings.playlist_uid).where(MixSettings.playlist_uid.is_not(None)))
+            ).scalars()
+            if uid
+        }
+        own_playlists = select(Playlist.id)
+        if mix_playlists:
+            own_playlists = own_playlists.where(Playlist.uid.not_in(mix_playlists))
+        listed.update(
+            (
+                await s.execute(select(PlaylistItem.track_uid).where(PlaylistItem.playlist_id.in_(own_playlists)))
+            ).scalars()
+        )
+        for u in users:
+            try:
+                for st in (await snapshot(s, u.id)).values():
+                    if st.target_type == "track" and st.liked:
+                        # the uid is primary; an old row may only have the deprecated aliases
+                        starred.add(st.uid or st.ref or (f"nd:{st.nd_id}" if st.nd_id else ""))
+            except Exception as e:
+                log.warning("mix cleanup: ♥ of user %s not read (%r): nothing is deleted", u.id, e)
+                return None
     return starred, listed
 
 
@@ -454,9 +470,14 @@ async def kept_reasons(s: AsyncSession, it: MixItem, track: Track, starred: set[
     ).scalar_one_or_none()
     if listened is not None:
         why.append("listened")
-    if song and song in starred:
+    keys = {track.uid}
+    if track.deezer_track_id:
+        keys.add(f"dz:{track.deezer_track_id}")
+    if track.nd_song_id:
+        keys.add(f"nd:{track.nd_song_id}")
+    if keys & starred:
         why.append("starred")
-    if song and song in listed:
+    if track.uid in listed:
         why.append("playlist")
     explicit = [
         d

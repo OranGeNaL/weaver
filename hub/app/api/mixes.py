@@ -77,6 +77,7 @@ async def mix_out(s: AsyncSession, mix: Mix, user_id: int) -> MixOut:
         mode_title=MODE_TITLES.get(mix.mode, mix.mode),
         created_at=mix.created_at,
         nd_playlist_id=mix.nd_playlist_id,
+        playlist_uid=mix.playlist_uid,
         ready=sum(1 for t in out if t.nd_song_id),
         total=len(out),
         tracks=out,
@@ -92,6 +93,7 @@ async def settings_out(s: AsyncSession, user_id: int) -> MixSettingsOut:
         timezone=get_settings().timezone,  # type: ignore[arg-type]
         next_build_at=core.next_build_at(st.mix_hour),
         nd_playlist_id=st.nd_playlist_id,
+        playlist_uid=st.playlist_uid,
         artists=list(st.artists_json or []),
     )
 

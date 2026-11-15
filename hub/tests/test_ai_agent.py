@@ -11,6 +11,7 @@ import uuid
 import httpx
 import pytest
 import respx
+from sqlalchemy import select
 
 from tests.support import app_client, grant_navidrome
 
@@ -120,7 +121,9 @@ async def env(hub_env, monkeypatch):
             mock.post(f"{LLM}/chat/completions").mock(side_effect=llm_handler)
             async with app_client(app) as client:
                 await grant_navidrome("admin")  # stage-4 transition: the ND proxy tests need ND credentials
-                yield {"client": client, "state": state, "yandex": await yandex_import()}
+                info = await yandex_import()
+                await seed_local(info)
+                yield {"client": client, "state": state, "yandex": info}
 
 
 async def yandex_import() -> dict:
@@ -144,6 +147,7 @@ async def yandex_import() -> dict:
         likes = ImportCollection(import_id=imp.id, kind="likes", external_id="likes", title="Мне нравится")
         s.add(likes)
         await s.flush()
+        uids = {}
         for pos, nd_id in enumerate(["ndB", "ndA"]):
             artist, title = SONGS[nd_id]
             t = Track(
@@ -156,6 +160,7 @@ async def yandex_import() -> dict:
             )
             s.add(t)
             await s.flush()
+            uids[nd_id] = t.uid
             s.add(
                 ImportItem(
                     import_id=imp.id,
@@ -168,7 +173,80 @@ async def yandex_import() -> dict:
                     track_id=t.id,
                 )
             )
-        return {"import_id": imp.id, "likes_id": likes.id}
+        imp.options_json = {"liked": ["ndA", "ndB"], "liked_uids": [uids["ndA"], uids["ndB"]]}
+        return {"import_id": imp.id, "likes_id": likes.id, "uids": uids}
+
+
+async def seed_local(info: dict) -> None:
+    """A Hub playlist «Тест» plus the user's own ♥ (ndA, ndB and ndC), newest last, as stage 5 keeps them."""
+    from datetime import UTC, datetime, timedelta
+
+    from app.api.schemas import FavoriteTarget
+    from app.db import session_scope
+    from app.favorites import record
+    from app.matching.normalize import fingerprint
+    from app.models import Playlist, Track, User
+    from app.playlists import add_tracks
+
+    async with session_scope() as s:
+        user = (await s.execute(select(User))).scalars().first()
+        assert user is not None
+        artist, title = SONGS["ndC"]
+        ndc = Track(
+            uid=str(uuid.uuid4()),
+            path=f"{artist}/{title}.mp3",
+            nd_song_id="ndC",
+            artist=artist,
+            title=title,
+            fingerprint=fingerprint(artist, title),
+        )
+        s.add(ndc)
+        await s.flush()
+        pl = Playlist(uid="pl1", owner_id=user.id, name="Тест")
+        s.add(pl)
+        await s.flush()
+        await add_tracks(s, pl, [info["uids"]["ndA"], info["uids"]["ndB"]], added_by=user.id)
+        now = datetime.now(UTC)
+        for offset, nd_id in ((3, "ndB"), (2, "ndA"), (1, "ndC")):
+            await record(
+                s,
+                user.id,
+                FavoriteTarget(nd_song_id=nd_id),
+                True,
+                operation=f"seed-{nd_id}",
+                ts=now - timedelta(seconds=offset),
+                client="pwa",
+            )
+
+
+async def local_playlist(uid: str) -> dict:
+    from app.db import session_scope
+    from app.models import Track
+    from app.playlists import get_by_uid
+    from app.playlists import items as playlist_items
+
+    async with session_scope() as s:
+        pl = await get_by_uid(s, uid)
+        if pl is None:
+            return {}
+        rows = await playlist_items(s, pl.id)
+        uids = [i.track_uid for i in rows]
+        tracks = (
+            {t.uid: t for t in (await s.execute(select(Track).where(Track.uid.in_(uids)))).scalars()} if uids else {}
+        )
+        return {"name": pl.name, "songs": [tracks[u].nd_song_id for u in uids if u in tracks]}
+
+
+async def local_stars() -> set[str]:
+    from app.db import session_scope
+    from app.favorites import snapshot
+    from app.models import User
+
+    async with session_scope() as s:
+        user = (await s.execute(select(User))).scalars().first()
+        assert user is not None
+        states = await snapshot(s, user.id)
+    return {x.nd_id for x in states.values() if x.liked and x.target_type == "track" and x.nd_id}
 
 
 async def chat(env, text: str, *script: dict) -> dict:
@@ -246,7 +324,7 @@ async def test_daily_limit_covers_all_chats_images_and_legacy_tasks(env):
         },
     )
     assert confirmed.status_code == 200, confirmed.text
-    assert env["state"]["deleted"] == ["pl1"]
+    assert await local_playlist("pl1") == {}
     assert (await c.get("/api/assistant/chats")).status_code == 200
 
 
@@ -398,10 +476,14 @@ async def test_moves_yandex_likes_into_a_playlist_without_asking(env):
         ),
         completion("Готово: 2 трека в плейлисте «Яндекс Музыка», ♥ снято."),
     )
-    state = env["state"]
-    new = next(v for v in state["playlists"].values() if v["name"] == "Яндекс Музыка")
+    from app.db import session_scope
+    from app.models import Playlist
+
+    async with session_scope() as s:
+        pl = (await s.execute(select(Playlist).where(Playlist.name == "Яндекс Музыка"))).scalar_one()
+    new = await local_playlist(pl.uid)
     assert new["songs"] == ["ndB", "ndA"]  # Yandex's order: the newest like first
-    assert state["stars"] == ["ndC"]  # the user's own ♥ stays
+    assert await local_stars() == {"ndC"}  # the user's own ♥ stays
     assert out["done"] == ["Создан плейлист «Яндекс Музыка»: 2 трека", "♥ снято: 2 трека"]
     assert out["actions"] == [] and "task_id" not in out
     overview = tool_results(env)[0]
@@ -416,10 +498,11 @@ async def test_starred_songs_name_the_import_that_starred_them(env):
         env, "что из яндекса?", completion(calls=[tool_call("list_starred", only="imports")]), completion("Два трека.")
     )
     res = tool_results(env)[0]
-    assert res["cols"] == ["song_id", "song", "album", "import_id"]
+    assert res["cols"] == ["track_uid", "track", "album", "import_id"]
+    uids = env["yandex"]["uids"]
     assert [r[:2] + r[3:] for r in res["rows"]] == [
-        ["ndA", "Кино — Группа крови", env["yandex"]["import_id"]],
-        ["ndB", "ДДТ — Осень", env["yandex"]["import_id"]],
+        [uids["ndA"], "Кино — Группа крови", env["yandex"]["import_id"]],
+        [uids["ndB"], "ДДТ — Осень", env["yandex"]["import_id"]],
     ]
 
 
@@ -435,7 +518,7 @@ async def test_removes_songs_from_a_playlist_and_renames_it(env):
         ),
         completion("Готово."),
     )
-    assert env["state"]["playlists"]["pl1"] == {"name": "Рок", "songs": ["ndA"]}
+    assert await local_playlist("pl1") == {"name": "Рок", "songs": ["ndA"]}
     assert out["done"] == ["Из плейлиста «Тест» убрано 1 трек", "Плейлист «Тест» переименован в «Рок»"]
 
 
@@ -446,7 +529,7 @@ async def test_deleting_a_playlist_waits_for_confirmation(env):
         completion(calls=[tool_call("delete_playlist", playlist_ids=["pl1"])]),
         completion("Удалю после подтверждения."),
     )
-    assert env["state"]["deleted"] == []
+    assert await local_playlist("pl1") != {}
     assert out["actions"] == [{"type": "delete_playlist", "playlist_id": "pl1", "name": "Тест"}]
     assert out["summary"] == "Удалить плейлист «Тест»"
     c = env["client"]
@@ -455,7 +538,7 @@ async def test_deleting_a_playlist_waits_for_confirmation(env):
     r = await c.post(f"/api/assistant/chat/{out['task_id']}/confirm", json={"confirm_token": out["confirm_token"]})
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": True, "playlists_deleted": ["pl1"], "tracks_deleted": 0}
-    assert env["state"]["deleted"] == ["pl1"]
+    assert await local_playlist("pl1") == {}
 
 
 @pytest.mark.parametrize(

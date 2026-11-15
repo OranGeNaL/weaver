@@ -1,17 +1,17 @@
-"""Typed favorite decisions, causal rollback, verified aliases and Navidrome reconciliation.
+"""Typed favorite decisions, causal rollback and verified aliases.
 
-The journal is the source of own state. Imported stars remain display-only provenance.
-No scoring window is applied when folding state; consumers decide how old a contribution may be.
+The journal is the only source of own state: the Hub is the single owner of ♥ since stage 5. Imported stars remain
+display-only provenance. No scoring window is applied when folding state; consumers decide how old a contribution may
+be.
 """
 
 from __future__ import annotations
 
 import hashlib
-import logging
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
 from sqlalchemy import select
@@ -20,13 +20,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import FavoriteTarget
 from app.models import (
-    Album,
     DownloadItem,
     FavoriteSubject,
     Import,
     ImportCollection,
     ImportItem,
-    NavidromeSync,
     PlayEvent,
     Track,
     User,
@@ -36,10 +34,9 @@ from app.models import (
 # the three kinds of a ♥ (FavoriteTarget.target_type); the database keeps them as plain text
 TargetType = Literal["track", "album", "artist"]
 
-log = logging.getLogger(__name__)
+log = None
 ND_FIELDS = {"track": "nd_song_id", "album": "nd_album_id", "artist": "nd_artist_id"}
 ND_LISTS = {"track": "song", "album": "album", "artist": "artist"}
-GRACE = timedelta(hours=24)
 
 
 def decision_id(operation: str, target_type: str, key: str) -> str:
@@ -63,9 +60,19 @@ def subject_data(raw: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def aliases(obj: Any) -> set[str]:
+    """The Hub uid, the catalog ref and the deprecated Navidrome id of one target, as alias keys."""
     typ = obj.target_type or "track"
     nd = getattr(obj, ND_FIELDS[typ], None)
-    return {x for x in (f"ref:{obj.ref}" if obj.ref else None, f"nd:{nd}" if nd else None) if x}
+    uid = getattr(obj, "uid", None) or getattr(obj, "track_uid", None)
+    return {
+        x
+        for x in (
+            f"ref:{obj.ref}" if obj.ref else None,
+            f"uid:{uid}" if uid else None,
+            f"nd:{nd}" if nd else None,
+        )
+        if x
+    }
 
 
 class AliasIndex:
@@ -111,6 +118,7 @@ class State:
     nd_id: str | None = None
     data: dict[str, Any] | None = None
     aliases: list[str] = field(default_factory=list)
+    uid: str | None = None
 
 
 def causal_activity(rows: list[PlayEvent], index: AliasIndex):
@@ -263,6 +271,7 @@ def fold(
             e.ref or (prev.ref if prev else None),
             getattr(e, ND_FIELDS[k[0]]) or (prev.nd_id if prev else None),
             {**(prev.data or {} if prev else {}), **(e.target_data or {})},
+            uid=getattr(e, "track_uid", None) or (prev.uid if prev else None),
         )
     # A rolled-back first like still has a neutral state and must not bootstrap from ND as a new like.
     for e in reversed(ordered):
@@ -274,6 +283,7 @@ def fold(
         if k in out:
             st = out[k]
             st.ref, st.nd_id = subject.ref or st.ref, subject.nd_id or st.nd_id
+            st.uid = getattr(subject, "uid", None) or st.uid
             st.data = {**(subject.data or {}), **(st.data or {})}
     for key, st in out.items():
         st.aliases = sorted(
@@ -294,6 +304,7 @@ async def snapshot(session: AsyncSession, user_id: int, now: datetime | None = N
 
         fill = Ids(session)
         await fill.prime(partial)
+
         for ref, nd in set(partial):
             ref, nd = await fill.complete(ref, nd)
             if ref and nd:
@@ -361,13 +372,22 @@ async def record(
     target = target.model_copy()
     if target.target_type == "track":
         target.ref, target.nd_song_id = await Ids(s).complete(target.ref, target.nd_song_id)
+        from app.plays import track_ids_of_uid, track_uid_of
+
+        if not target.uid:
+            target.uid = await track_uid_of(s, target.ref, target.nd_song_id)
+        elif not (target.ref and target.nd_song_id):
+            ref, nd = await track_ids_of_uid(s, target.uid)
+            target.ref = target.ref or ref
+            target.nd_song_id = target.nd_song_id or nd
     row = await remember(s, target)
     eid = event_id or decision_id(operation or uuid.uuid4().hex, target.target_type, row.canonical_key)
     now = utcnow()
     await s.execute(
         insert(PlayEvent)
         .values(
-            **target.model_dump(),
+            **target.model_dump(exclude={"uid"}),
+            track_uid=target.uid if target.target_type == "track" else None,
             user_id=user_id,
             event_id=eid,
             ts=event_time(ts or now, now) if normalize else ts or now,
@@ -389,6 +409,7 @@ def target_of(state: State) -> FavoriteTarget:
     return FavoriteTarget(
         target_type=cast(TargetType, state.target_type),
         ref=state.ref,
+        uid=state.uid,
         **{ND_FIELDS[state.target_type]: state.nd_id},
         target_data=state.data,
     )
@@ -406,84 +427,55 @@ async def command(
     context: str | None = None,
     nd=None,
 ) -> list[PlayEvent]:
-    """Each successful chunk is journaled immediately; callers may commit successes before reporting failure."""
-    from app.auth import user_navidrome
+    """Journal the user's decisions; the Hub is their only owner, so no external service is called.
 
-    own_nd = nd is None
-    nd = nd or user_navidrome(user)
+    A retried command is idempotent by `event_id`: it returns the stored event and never replays an old decision.
+    `nd` is accepted and ignored for callers that still pass a Navidrome client (deprecated until stage 7).
+    """
+    from app.plays import Ids, event_time, track_uid_of
+
     operation = operation or uuid.uuid4().hex
-    events = []
-    try:
-        # Chunk by type so a partial network failure never claims unperformed objects.
-        for typ in ND_FIELDS:
-            group = [t.model_copy() for t in targets if t.target_type == typ]
-            event_ids = {
-                id(t): operation if len(targets) == 1 else decision_id(operation, typ, min(aliases(t))) for t in group
-            }
-            for t in group:
-                if typ == "track":
-                    from app.plays import Ids
-
-                    t.ref, t.nd_song_id = await Ids(s).complete(t.ref, t.nd_song_id)
-            active = []
-            for target in group:
-                subject = await remember(s, target)
-                if not getattr(target, ND_FIELDS[typ]) and subject.nd_id:
-                    setattr(target, ND_FIELDS[typ], subject.nd_id)
-                eid = event_ids[id(target)]
-                previous = (
-                    await s.execute(select(PlayEvent).where(PlayEvent.user_id == user.id, PlayEvent.event_id == eid))
-                ).scalar_one_or_none()
-                if previous:
-                    events.append(previous)
-                    continue  # Retried old commands must not undo a newer decision in Navidrome.
-                from app.plays import event_time
-
-                at = event_time(ts or utcnow())
-                states = await snapshot(s, user.id)
-                current = next(
-                    (
-                        x
-                        for x in states.values()
-                        if x.target_type == typ
-                        and (
-                            (x.ref and x.ref == target.ref) or (x.nd_id and x.nd_id == getattr(target, ND_FIELDS[typ]))
-                        )
-                    ),
-                    None,
+    events: list[PlayEvent] = []
+    for typ in ND_FIELDS:
+        group = [t.model_copy() for t in targets if t.target_type == typ]
+        if not group:
+            continue
+        event_ids = {
+            id(t): operation if len(targets) == 1 else decision_id(operation, typ, min(aliases(t))) for t in group
+        }
+        for t in group:
+            if typ == "track":
+                t.ref, t.nd_song_id = await Ids(s).complete(t.ref, t.nd_song_id)
+                t.uid = t.uid or await track_uid_of(s, t.ref, t.nd_song_id)
+        for target in group:
+            subject = await remember(s, target)
+            if not getattr(target, ND_FIELDS[typ]) and subject.nd_id:
+                setattr(target, ND_FIELDS[typ], subject.nd_id)
+            if not target.uid and subject.uid:
+                target.uid = subject.uid
+            eid = event_ids[id(target)]
+            previous = (
+                await s.execute(select(PlayEvent).where(PlayEvent.user_id == user.id, PlayEvent.event_id == eid))
+            ).scalar_one_or_none()
+            if previous:
+                events.append(previous)
+                continue  # a retried command leaves the newer decision alone
+            at = event_time(ts or utcnow())
+            events.append(
+                await record(
+                    s,
+                    user.id,
+                    target,
+                    liked,
+                    operation=operation,
+                    ts=at,
+                    client=client,
+                    context=context,
+                    event_id=eid,
                 )
-                if current and current.event.ts > at:
-                    events.append(
-                        await record(s, user.id, target, liked, ts=at, event_id=eid, client=client, context=context)
-                    )
-                    continue  # Delayed commands enter history without overwriting the live mirror.
-                active.append(target)
-            group = active
-            for start in range(0, len(group), 200):
-                chunk = group[start : start + 200]
-                ids = list(dict.fromkeys(getattr(t, ND_FIELDS[typ]) for t in chunk if getattr(t, ND_FIELDS[typ])))
-                if ids:
-                    await (nd.star if liked else nd.unstar)(**{typ + "_ids" if typ != "track" else "song_ids": ids})
-                for target in chunk:
-                    events.append(
-                        await record(
-                            s,
-                            user.id,
-                            target,
-                            liked,
-                            operation=operation,
-                            ts=ts,
-                            client=client,
-                            context=context,
-                            event_id=event_ids[id(target)],
-                            mirror_pending=not bool(getattr(target, ND_FIELDS[typ])),
-                        )
-                    )
-                    if not liked and typ == "track" and target.ref:
-                        await clear_pending(s, user.id, target.ref)
-    finally:
-        if own_nd:
-            await nd.aclose()
+            )
+            if not liked and typ == "track" and target.ref:
+                await clear_pending(s, user.id, target.ref)
     return events
 
 
@@ -561,21 +553,30 @@ async def imported_targets(s: AsyncSession, user_id: int) -> set[tuple[str, str]
     for imp in imports:
         opts = imp.options_json or {}
         for typ, opt in (("track", "liked"), ("album", "liked_album_ids"), ("artist", "liked_artist_ids")):
-            keys.update((typ, f"nd:{x}") for x in opts.get(opt, []))
+            for x in opts.get(opt, []):
+                keys.update({(typ, f"nd:{x}"), (typ, f"uid:{x}")})  # nd ids of old imports, uids since stage 5
+        for x in opts.get("liked_uids", []):
+            keys.add(("track", f"uid:{x}"))
     rows = (
         await s.execute(
-            select(ImportItem.ref, ImportCollection.kind)
+            select(ImportItem.ref, ImportItem.track_id, ImportCollection.kind)
             .join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
             .where(
                 ImportItem.import_id.in_([i.id for i in imports]),
                 ImportCollection.selected.is_(True),
                 ImportCollection.kind.in_(("likes", "albums", "artists")),
-                ImportItem.ref.is_not(None),
             )
         )
     ).all()
     kinds = {"likes": "track", "albums": "album", "artists": "artist"}
-    keys.update((kinds[k], f"ref:{r}") for r, k in rows)
+    for ref, track_id, kind in rows:
+        typ = kinds[kind]
+        if ref:
+            keys.add((typ, f"ref:{ref}"))
+        if track_id is not None and typ == "track":
+            uid = (await s.execute(select(Track.uid).where(Track.id == track_id))).scalar_one_or_none()
+            if uid:
+                keys.add((typ, f"uid:{uid}"))
     return keys
 
 
@@ -585,231 +586,3 @@ def parse_time(value: Any) -> datetime | None:
         return dt.astimezone(UTC) if dt.tzinfo else dt.replace(tzinfo=UTC)
     except (ValueError, TypeError):
         return None
-
-
-async def reconcile(s: AsyncSession, user: User, body: dict, *, now: datetime | None = None, nd=None) -> int:
-    """A complete, successful getStarred2 snapshot; callers must not pass transport failures as {}."""
-    now = now or utcnow()
-    if not isinstance(body, dict) or any(k in body and not isinstance(body[k], list) for k in ND_LISTS.values()):
-        raise ValueError("incomplete starred2 snapshot")
-    before = await snapshot(s, user.id, now)
-    provenance = await imported_targets(s, user.id)
-    # Old imports did not persist verified ND album/artist ids. Unknown objects of such
-    # a type are quarantined until verified enrichment or a real own decision, never guessed.
-    subjects = list((await s.execute(select(FavoriteSubject))).scalars())
-    index = AliasIndex([x.event for x in before.values()], subjects)
-    verified_refs = {(x.target_type, f"ref:{x.ref}") for x in subjects if x.ref and x.nd_id}
-    legacy_types = {
-        typ
-        for typ, key in provenance
-        if typ != "track"
-        and key.startswith("ref:")
-        and not any(index.root((typ, key)) == index.root(verified) for verified in verified_refs)
-    }
-    imported = {index.root(k) for k in provenance}
-    have: dict[tuple[str, str], FavoriteTarget] = {}
-    dates = {}
-    for typ, list_name in ND_LISTS.items():
-        for obj in body.get(list_name, []):
-            if not isinstance(obj, dict) or not obj.get("id"):
-                raise ValueError("incomplete starred2 object")
-            target = FavoriteTarget(
-                target_type=cast(TargetType, typ),
-                **{ND_FIELDS[typ]: str(obj["id"])},
-                target_data={k: obj[k] for k in ("name", "artist", "title", "duration") if k in obj},
-            )
-            key = index.key(target)
-            have[key], dates[key] = target, parse_time(obj.get("starred"))
-            await remember(s, target)
-    changed = 0
-    for key in sorted(before.keys() | have.keys()):
-        state, target = before.get(key), have.get(key)
-        if state and state.event.mirror_pending:
-            # A failed own delivery is retried, never interpreted as an outside unstar.
-            if nd is not None and state.nd_id:
-                await (nd.star if state.liked else nd.unstar)(
-                    **{"song_ids" if state.target_type == "track" else state.target_type + "_ids": [state.nd_id]}
-                )
-                state.event.mirror_pending = False
-            continue
-        if state and now - state.received_at < GRACE:
-            continue
-        if target and state is None and (key in imported or key[0] in legacy_types):
-            continue
-        if state is None and target:
-            at = min(dates.get(key) or now, now)
-            await record(
-                s,
-                user.id,
-                target,
-                True,
-                ts=at,
-                normalize=False,
-                operation=f"ndbaseline:{key}",
-                client="navidrome",
-                context="favorite:bootstrap",
-            )
-            changed += 1
-        elif state and bool(target) != state.liked and state.nd_id:
-            # A known unstar is not overwritten by the same stale baseline on restart.
-            at = dates.get(key) if target else now
-            if target and (at is None or at <= state.event.ts):
-                continue  # A pre-existing ND star cannot resurrect a known own unlike.
-            at = at if at and state.event.ts < at <= now else now
-            await record(
-                s,
-                user.id,
-                target or target_of(state),
-                bool(target),
-                ts=at,
-                normalize=False,
-                operation=f"ndsync:{state.event.event_id}:{int(bool(target))}",
-                client="navidrome",
-                context="favorite:reconcile",
-            )
-            changed += 1
-    sync = await s.get(NavidromeSync, user.id)
-    if sync is None:
-        sync = NavidromeSync(user_id=user.id, last_scrobble_id=0)
-        s.add(sync)
-    sync.favorites_synced_at = now
-    sync.favorites_bootstrapped_at = sync.favorites_bootstrapped_at or now
-    return changed
-
-
-async def sync_user(user: User) -> int:
-    from app.auth import user_navidrome
-    from app.db import session_scope
-
-    nd = user_navidrome(user)
-    try:
-        body = await nd.get_starred2()
-        async with session_scope() as s:
-            await enrich_pending_subjects(s, nd)
-            await recover_import_subjects(s, user.id, body, nd)
-            return await reconcile(s, user, body, nd=nd)
-    finally:
-        await nd.aclose()
-
-
-async def enrich_pending_subjects(s: AsyncSession, nd) -> None:
-    """Verified late binding of catalog album/artist decisions when their library objects arrive."""
-    from app.catalog.models import split_ref
-    from app.matching.normalize import normalize_artist
-
-    rows = list(
-        (
-            await s.execute(
-                select(FavoriteSubject).where(
-                    FavoriteSubject.nd_id.is_(None), FavoriteSubject.target_type.in_(("album", "artist"))
-                )
-            )
-        ).scalars()
-    )
-    for row in rows:
-        try:
-            nd_id = None
-            if row.target_type == "album" and row.ref:
-                src, id_ = split_ref(row.ref)
-                if src != "dz":
-                    continue
-                song = (
-                    await s.execute(
-                        select(Track.nd_song_id)
-                        .join(Album, Album.id == Track.album_id)
-                        .where(
-                            Album.deezer_album_id == id_,
-                            Track.nd_song_id.is_not(None),
-                            Track.deleted_at.is_(None),
-                        )
-                        .limit(1)
-                    )
-                ).scalar_one_or_none()
-                if song:
-                    nd_id = (await nd.get_song(song)).get("albumId")
-            elif name := (row.data or {}).get("name"):
-                found = (await nd.search3(name, song_count=0, artist_count=5)).get("artist", [])
-                matches = [a for a in found if normalize_artist(a.get("name")).text == normalize_artist(name).text]
-                if len(matches) == 1:
-                    nd_id = matches[0].get("id")
-            if nd_id:
-                await remember(
-                    s,
-                    FavoriteTarget(
-                        target_type=cast(TargetType, row.target_type),
-                        ref=row.ref,
-                        **{ND_FIELDS[row.target_type]: nd_id},
-                        target_data=row.data,
-                    ),
-                )
-        except Exception as exc:
-            log.info("favorite subject %s/%s deferred: %r", row.target_type, row.ref, exc)
-
-
-async def recover_import_subjects(s: AsyncSession, user_id: int, body: dict, nd) -> None:
-    """Recover legacy import provenance through verified ND responses, never a guessed song-derived id."""
-    from app.catalog.models import split_ref
-    from app.matching.normalize import normalize_artist
-
-    rows = (
-        await s.execute(
-            select(Import, ImportItem, ImportCollection.kind)
-            .join(ImportItem, ImportItem.import_id == Import.id)
-            .join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
-            .where(
-                Import.user_id == user_id,
-                ImportCollection.selected.is_(True),
-                ImportCollection.kind.in_(("albums", "artists")),
-                ImportItem.ref.is_not(None),
-            )
-        )
-    ).all()
-    subjects = list((await s.execute(select(FavoriteSubject))).scalars())
-    verified: set[tuple[str, str | None]] = {(x.target_type, x.ref) for x in subjects if x.ref and x.nd_id}
-    for imp, item, kind in rows:
-        typ = "album" if kind == "albums" else "artist"
-        if (typ, item.ref) in verified:
-            continue
-        nd_id = None
-        try:
-            if typ == "album":
-                if not item.ref:
-                    continue
-                src, catalog_id = split_ref(item.ref)
-                if src != "dz":
-                    continue
-                song = (
-                    await s.execute(
-                        select(Track.nd_song_id)
-                        .join(Album, Album.id == Track.album_id)
-                        .where(
-                            Album.deezer_album_id == catalog_id,
-                            Track.nd_song_id.is_not(None),
-                            Track.deleted_at.is_(None),
-                        )
-                        .limit(1)
-                    )
-                ).scalar_one_or_none()
-                if song:
-                    nd_id = (await nd.get_song(song)).get("albumId")
-            else:
-                name = (item.raw_json or {}).get("name")
-                if not name:
-                    continue
-                found = (await nd.search3(name, song_count=0, artist_count=5)).get("artist", [])
-                matches = [a for a in found if normalize_artist(a.get("name")).text == normalize_artist(name).text]
-                if len(matches) == 1:
-                    nd_id = matches[0].get("id")
-            if not nd_id:
-                continue
-            await remember(
-                s, FavoriteTarget(target_type=typ, ref=item.ref, **{ND_FIELDS[typ]: nd_id}, target_data=item.raw_json)
-            )
-            verified.add((typ, item.ref))
-            # A verified relationship is metadata even when the imported star has already been removed.
-            if any(obj.get("id") == nd_id for obj in body.get(ND_LISTS[typ], [])):
-                opt = "liked_album_ids" if typ == "album" else "liked_artist_ids"
-                opts = imp.options_json or {}
-                imp.options_json = {**opts, opt: list(dict.fromkeys([*(opts.get(opt) or []), nd_id]))}
-        except Exception as exc:
-            log.info("favorite import metadata %s/%s deferred: %r", typ, item.ref, exc)

@@ -4,7 +4,7 @@
   30 s — up to +2 by how much of the rest was heard, rising slowly at first and steeply near the end (`skip_weight`);
   each × `0.5 ^ (days / 30)`. A download of the user's own weighs nothing: such a track is in the profile (`downloaded`,
   the stash, fallback seeds) with the score of its other events, 0 without them. ♥ that an import of another service
-  set don't count (`plays.imported_likes`).
+  set don't count (`favorites.imported_targets`).
 - A track is known by its catalog `ref` and/or its Navidrome song; `key` is `nd:<song>` when the library has it
   (the key of its audio vector), else the `ref`.
 - Seeds: up to `seeds` best tracks of the last 30 days, ≤ 2 of an artist; without such — own ♥ and downloads, the
@@ -213,12 +213,11 @@ async def build_profile(
     s: AsyncSession,
     user: User,
     now: datetime | None = None,
-    starred: list[dict[str, Any]] | None = None,
     *,
     model: str = "v1",
     timezone: str | None = None,
 ) -> Profile:
-    """v1 scoring with permanent, deduplicated favorite state. `starred` is an optional successful snapshot."""
+    """v1 scoring with permanent, deduplicated favorite state: the Hub's own journal is the only source."""
     now = now or utcnow()
     if model == "v2":
         from app.config import get_settings
@@ -232,13 +231,10 @@ async def build_profile(
         raise ValueError("online taste model must be v1 or v2")
     p = Profile(user_id=user.id, now=now)
     b = _Builder(s, p)
-    from app.favorites import reconcile, snapshot
+    from app.favorites import imported_targets, snapshot
 
-    # An explicitly supplied successful snapshot is useful for isolated callers/tests.
-    # Ordinary profile reads use the local ledger and never reinterpret network errors as unstars.
-    if starred is not None:
-        await reconcile(s, user, {"song": starred}, now=now)
     favorites = await snapshot(s, user.id, now)
+    imported = await imported_targets(s, user.id)
     late_skips: list[tuple[TasteTrack, float, float]] = []  # skips after 30 s without the length in the event
 
     events = await user_events(s, user.id, HISTORY_DAYS, now=now)
@@ -268,14 +264,30 @@ async def build_profile(
         if e.kind == "finish" or (e.kind == "skip" and (e.position_s or 0) >= EARLY_SKIP_S):
             p.artist_listens[t.key] = p.artist_listens.get(t.key, 0) + 1  # per track for now, per artist below
 
+    # a repeated like is not a new decision, but it does mark the track as the user's own again (as `imported_likes`)
+    from app.favorites import aliases as favorite_aliases
+
+    own_liked: set[str] = set()
+    for e in events:
+        if (
+            e.kind == "like"
+            and e.target_type == "track"
+            and e.client != "import"
+            and (e.target_data or {}).get("provenance") != "import"
+        ):
+            own_liked.update(favorite_aliases(e))
+
     for state in favorites.values():
         if state.target_type != "track" or not state.liked:
             continue
         t = await b.track(state.ref, state.nd_id)
         if t is None:
             continue
-        t.liked = True
-        if state.since and state.since >= now - timedelta(days=HISTORY_DAYS):
+        # an import's ♥ is provenance, not the user's own choice (M4); a later own like overrides it, as in v2
+        from_import = any((state.target_type, alias) in imported for alias in (state.aliases or [state.key]))
+        own = (not from_import) or bool(own_liked & set(state.aliases or []))
+        t.liked = t.liked or own
+        if own and state.since and state.since >= now - timedelta(days=HISTORY_DAYS):
             t.score += W_LIKE * decay(state.since, now)
         t.last_event = max(filter(None, [t.last_event, state.since]), default=None)
         data = state.data or {}

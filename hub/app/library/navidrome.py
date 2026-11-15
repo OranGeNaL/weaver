@@ -54,7 +54,8 @@ class NavidromeClient:
 
     def _auth_params(self) -> dict[str, str]:
         salt = secrets.token_hex(8)
-        token = hashlib.md5((self._password + salt).encode("utf-8")).hexdigest()
+        # Subsonic demands the md5 token; usedforsecurity=False states it is a protocol value, not a security hash.
+        token = hashlib.md5((self._password + salt).encode("utf-8"), usedforsecurity=False).hexdigest()
         return {"u": self.username, "t": token, "s": salt, "v": API_VERSION, "c": CLIENT_NAME, "f": "json"}
 
     async def call(
@@ -322,72 +323,3 @@ class NavidromeAdmin:
     @classmethod
     def forget_token(cls) -> None:
         cls._token = None
-
-
-class NavidromeHistory:
-    """A user's own scrobble history from Navidrome's REST API (`GET /api/scrobble`, 0.59+; the Subsonic API has
-    none): `{id, mediaFileId, submissionTime}` rows, `mediaFileId` being the Subsonic song id. Signs in as the user
-    (`/auth/login`, rate-limited by Navidrome: tokens are kept per user for a day)."""
-
-    _tokens: dict[str, tuple[str, str, float]] = {}  # username -> (JWT, Navidrome user id, when)
-    TOKEN_TTL_S = 86400  # Navidrome's tokens live 48 h
-
-    def __init__(self, username: str, password: str, client: httpx.AsyncClient | None = None):
-        self.base_url = get_settings().navidrome_url.rstrip("/")
-        self.username, self._password = username, password
-        self._client = client or httpx.AsyncClient(timeout=httpx.Timeout(30, connect=10))
-        self._own_client = client is None
-
-    async def __aenter__(self) -> NavidromeHistory:
-        return self
-
-    async def __aexit__(self, *exc) -> None:
-        if self._own_client:
-            await self._client.aclose()
-
-    async def _login(self, fresh: bool = False) -> tuple[str, str]:
-        cached = NavidromeHistory._tokens.get(self.username)
-        if fresh or cached is None or time.monotonic() - cached[2] > self.TOKEN_TTL_S:
-            r = await self._client.post(
-                f"{self.base_url}/auth/login", json={"username": self.username, "password": self._password}
-            )
-            if r.status_code == 401:
-                raise AuthError(40, "login failed")
-            r.raise_for_status()
-            body = r.json()
-            cached = (body["token"], str(body["id"]), time.monotonic())
-            NavidromeHistory._tokens[self.username] = cached
-        return cached[0], cached[1]
-
-    async def scrobbles_after(self, last_id: int, page: int = 200) -> list[dict]:
-        """The user's scrobbles with an id above `last_id`, oldest first (read newest first, page by page)."""
-        out: list[dict] = []
-        start = 0
-        while True:
-            for fresh in (False, True):
-                token, nd_user_id = await self._login(fresh)
-                r = await self._client.get(
-                    f"{self.base_url}/api/scrobble",
-                    params={
-                        "user_id": nd_user_id,
-                        "_sort": "id",
-                        "_order": "DESC",
-                        "_start": start,
-                        "_end": start + page,
-                    },
-                    headers={"X-ND-Authorization": f"Bearer {token}"},
-                )
-                if r.status_code != 401:
-                    break
-            r.raise_for_status()
-            rows = r.json()
-            fresh_rows = [x for x in rows if int(x.get("id", 0)) > last_id]
-            out += fresh_rows
-            if len(rows) < page or len(fresh_rows) < len(rows):
-                break
-            start += page
-        return sorted(out, key=lambda x: int(x["id"]))
-
-    @classmethod
-    def forget_tokens(cls) -> None:
-        cls._tokens.clear()

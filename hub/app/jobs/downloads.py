@@ -40,7 +40,7 @@ from app.matching.select import (
     trusted_original,
     uploaded_in_time,
 )
-from app.models import DownloadBatch, DownloadItem, Job, PendingPlaylistAdd, Track, User
+from app.models import DownloadBatch, DownloadItem, Job, PendingPlaylistAdd, Track
 from app.net import make_client
 from app.providers.base import Candidate, ProviderError, TrackQuery, file_ref
 from app.services import svc
@@ -753,112 +753,6 @@ async def mixes_done(s: AsyncSession, items: list[DownloadItem]) -> None:
         await downloads_changed(s, items)
 
 
-async def star_liked(s: AsyncSession, items: list[DownloadItem]) -> None:
-    """Items queued with ♥ (`DownloadIn.star`) are done: star their songs in Navidrome for the user who asked. A
-    picked file imported next to an older version of the song (`replaces`) takes the ♥ off that version."""
-    from app.auth import user_navidrome
-
-    liked = [i for i in items if i.track_id]
-    if not liked:
-        return
-    old = {i.id: i.query_json["replaces"] for i in liked if i.query_json.get("replaces")}
-    songs = dict(
-        (
-            await s.execute(
-                select(Track.id, Track.nd_song_id).where(Track.id.in_({i.track_id for i in liked} | set(old.values())))
-            )
-        ).all()
-    )
-    by_user: dict[int, list[str]] = {}
-    off_by_user: dict[int, list[str]] = {}
-    for i in liked:
-        if i.track_id is not None and (nd_id := songs.get(i.track_id)):
-            from app.api.schemas import FavoriteTarget
-            from app.favorites import record, remember, snapshot
-            from app.models import PlayEvent
-
-            i = await s.get(DownloadItem, i.id, populate_existing=True)
-            if i is None:
-                continue
-            if not i.query_json.get("star") or i.query_json.get("star_cancelled"):
-                continue
-            ref = item_ref(i)
-            target = FavoriteTarget(ref=ref, nd_song_id=nd_id, target_data=i.query_json.get("query"))
-            extra = [f"nd:{songs[old[i.id]]}"] if i.id in old and songs.get(old[i.id]) else []
-            original = (
-                await s.execute(
-                    select(PlayEvent).where(
-                        PlayEvent.user_id == i.user_id, PlayEvent.event_id == i.query_json.get("star_event_id")
-                    )
-                )
-            ).scalar_one_or_none()
-            if original and original.ref:
-                extra.append(f"ref:{original.ref}")  # a picked provider file may acquire a catalog ref later
-            await remember(s, target, extra_aliases=extra)
-            states = await snapshot(s, i.user_id)
-            state = next(
-                (
-                    x
-                    for x in states.values()
-                    if x.target_type == "track" and (x.nd_id == nd_id or (ref and x.ref == ref))
-                ),
-                None,
-            )
-            if state and not state.liked:
-                # A terminal failure rolls back the promise, but a successful manual retry may restore it.
-                if original is None or state.event.event_id != original.event_id:
-                    continue
-                event = await record(
-                    s,
-                    i.user_id,
-                    target,
-                    True,
-                    operation=f"retry:{original.event_id}",
-                    client="hub",
-                    context="download:retry",
-                    mirror_pending=True,
-                )
-                i.query_json = {**i.query_json, "star_event_id": event.event_id}
-            i.query_json = {**i.query_json, "star_failed": False}
-            by_user.setdefault(i.user_id, []).append(nd_id)
-            old_song = old.get(i.id)
-            if old_song is not None and (off := songs.get(old_song)) and off != nd_id:
-                off_by_user.setdefault(i.user_id, []).append(off)
-    for user_id, song_ids in by_user.items():
-        user = await s.get(User, user_id)
-        if user is None:
-            continue
-        nd = user_navidrome(user)
-        try:
-            await nd.star(song_ids=song_ids)
-            from app.favorites import snapshot
-
-            for state in (await snapshot(s, user_id)).values():
-                if state.target_type == "track" and state.nd_id in song_ids:
-                    state.event.mirror_pending = False
-            bus.publish(user_id, "library", {"kind": "starred", "song_ids": song_ids})
-            if off := off_by_user.get(user_id):
-                await nd.unstar(song_ids=off)
-                bus.publish(user_id, "library", {"kind": "unstarred", "song_ids": off})
-        except Exception as e:
-            log.warning("star after download failed for user %s: %r", user_id, e)
-        finally:
-            await nd.aclose()
-
-
-def insert_playlist_songs(current: list[str], entries: list[tuple[str | None, str]]) -> list[str]:
-    """Insert newly ready songs before their next persisted anchor, preserving unrelated playlist entries."""
-    songs = list(current)
-    cursor = len(songs)
-    for applied, song in reversed(entries):
-        if applied:
-            # Search backwards: the playlist may already have contained another copy of this song.
-            cursor = next((i for i in range(cursor - 1, -1, -1) if songs[i] == applied), cursor)
-        else:
-            songs.insert(cursor, song)
-    return songs
-
-
 async def playlist_adds_loop() -> None:
     """Recover pending additions on startup and retry Navidrome failures without another download or scan."""
     while True:
@@ -872,11 +766,9 @@ async def playlist_adds_loop() -> None:
 
 async def process_playlist_adds(s: AsyncSession) -> None:
     """Wait for active downloads, pass manual review, and insert a reviewed song back into its requested place."""
-    from app.auth import user_navidrome
+    from app.playlists import add_tracks, get_by_uid
 
     # Serialize the readers through the transaction commit, including concurrent scan/download completions.
-    # A transaction-scoped advisory lock does what SQLite's global write lock used to: an asyncio lock released
-    # before the commit would let the next caller see uncommitted additions and add them twice.
     await s.execute(select(func.pg_advisory_xact_lock(PLAYLIST_ADDS_LOCK_KEY)))
     rows = (
         await s.execute(
@@ -884,7 +776,7 @@ async def process_playlist_adds(s: AsyncSession) -> None:
             .join(DownloadItem, DownloadItem.id == PendingPlaylistAdd.download_item_id)
             .outerjoin(Track, Track.id == DownloadItem.track_id)
             .order_by(
-                PendingPlaylistAdd.playlist_id,
+                PendingPlaylistAdd.playlist_uid,
                 DownloadItem.batch_id,
                 PendingPlaylistAdd.position,
                 PendingPlaylistAdd.id,
@@ -893,50 +785,45 @@ async def process_playlist_adds(s: AsyncSession) -> None:
     ).all()
     groups: dict[tuple[int, str], list[tuple[PendingPlaylistAdd, DownloadItem, Track | None]]] = {}
     for add, item, track in rows:
-        groups.setdefault((add.user_id, add.playlist_id), []).append((add, item, track))
-    for (user_id, playlist_id), entries in groups.items():
-        ready: list[tuple[PendingPlaylistAdd, str]] = []
-        for add, item, track in entries:
-            if add.applied_song_id:
-                ready.append((add, add.applied_song_id))
-                continue
-            if item.status in ("failed", "cancelled", "needs_review"):
-                continue
-            if track is not None and track.nd_song_id:
-                ready.append((add, track.nd_song_id))
-                continue
-            break  # active downloads still finish in order
-        new = [(add, song) for add, song in ready if not add.applied_song_id]
-        if new:
-            user = await s.get(User, user_id)
-            if user is None:
-                continue
-            nd = user_navidrome(user)
-            try:
-                if any(add.applied_song_id for add, _ in ready):
-                    current = [e["id"] for e in (await nd.get_playlist(playlist_id)).get("entry", [])]
-                    songs = insert_playlist_songs(current, [(a.applied_song_id, song) for a, song in ready])
-                    await nd.replace_playlist_songs(playlist_id, songs)
-                else:
-                    for k in range(0, len(new), 300):
-                        await nd.update_playlist(playlist_id, add=[song for _, song in new[k : k + 300]])
-                        # Flush each successful chunk so a later chunk's failure cannot duplicate it on retry.
-                        for add, song in new[k : k + 300]:
-                            add.applied_song_id = song
-                        await s.flush()
-            except Exception as e:
-                log.warning("playlist %s add failed: %r", playlist_id, e)
-                continue
-            finally:
-                await nd.aclose()
-            for add, song in new:
-                add.applied_song_id = song
-        blocked = False
-        for add, item, _ in entries:
-            if item.status in ("failed", "cancelled") or (add.applied_song_id and not blocked):
+        groups.setdefault((add.user_id, add.playlist_uid), []).append((add, item, track))
+    for (user_id, playlist_uid), entries in groups.items():
+        playlist = await get_by_uid(s, playlist_uid)
+        if playlist is None:
+            for add, _item, _track in entries:
                 await s.delete(add)
-            elif not add.applied_song_id:
-                blocked = True
+            continue
+        placed: dict[int, dict[int, str]] = {}  # batch -> {position: inserted item uid}
+        for add, item, track in entries:
+            if item.status in ("failed", "cancelled"):
+                await s.delete(add)
+                continue
+            if item.status == "needs_review":
+                continue  # a manual decision does not hold ready songs hostage
+            if track is None:
+                break  # active downloads still finish in order
+            done = placed.setdefault(item.batch_id, {})
+            before = [p for p in done if p < add.position]
+            after = [p for p in done if p > add.position]
+            anchor = done[max(before)] if before else (None if after else add.anchor_uid)
+            before_uid = done[min(after)] if after and not before else add.before_uid
+            created = await add_tracks(
+                s, playlist, [track.uid], anchor_uid=anchor, before_uid=before_uid, added_by=user_id
+            )
+            done[add.position] = created[0].uid
+            # the next add of this batch goes after it, even across a restart
+            nxt = [
+                a for a, i, _t in entries if i.batch_id == item.batch_id and a.position > add.position and a is not add
+            ]
+            if nxt:
+                min(nxt, key=lambda a: a.position).anchor_uid = created[0].uid
+            # an earlier row still waiting (a manual decision) comes back before this one, not to the end
+            for earlier in (
+                a for a, i, _t in entries if i.batch_id == item.batch_id and a.position < add.position and a is not add
+            ):
+                if earlier.before_uid is None:
+                    earlier.before_uid = created[0].uid
+                    earlier.anchor_uid = None
+            await s.delete(add)
     await s.flush()
 
 
@@ -952,11 +839,14 @@ async def create_items(
     star: bool = False,
     start_position: int = 0,
     favorite_events: dict[str, str] | None = None,
+    anchor_uid: str | None = None,
 ) -> int:
     for i, (q, meta, cand) in enumerate(entries):
         query_json: dict[str, Any] = {"query": q.model_dump(), "meta": meta}
         if star:
-            query_json["star"] = True  # ♥: star the song once it is in Navidrome (`star_liked`)
+            query_json["star"] = (
+                True  # ♥: the local journal already holds the decision (`favorites.download_requested`)
+            )
             if batch.origin == "assistant":
                 query_json.update(
                     favorite_client="assistant", favorite_context="assistant:bulk" if len(entries) > 1 else "assistant"
@@ -991,7 +881,8 @@ async def create_items(
         if batch.target_playlist_id:
             s.add(
                 PendingPlaylistAdd(
-                    playlist_id=batch.target_playlist_id,
+                    playlist_uid=batch.target_playlist_id,
+                    anchor_uid=anchor_uid,
                     user_id=batch.user_id,
                     download_item_id=item.id,
                     position=start_position + i,
@@ -1072,6 +963,7 @@ async def handle_expand_batch(job: Job) -> None:
             star=bool(p.get("star")),
             start_position=int(p.get("position", 0)),
             favorite_events=p.get("favorite_events"),
+            anchor_uid=p.get("anchor_uid"),
         )
     notify()
     bus.publish(batch.user_id, "batch", {"batch_id": batch.id, "queued": len(entries)})

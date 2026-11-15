@@ -130,7 +130,7 @@ async def summary(s: AsyncSession, user_id: int, start: date, end: date, timezon
             track["measured_ms"] += elapsed
             track["listens"] += int(counted)
             merge_metadata(track["metadata"], metadata)
-    scrobbles = sum(1 for row in historical if row.client == "navidrome")
+    scrobbles = sum(1 for row in historical if row.scrobble)
     legacy = len(historical) - scrobbles
     for row in historical:
         key = canonical(row.ref, row.nd_song_id)
@@ -139,7 +139,7 @@ async def summary(s: AsyncSession, user_id: int, start: date, end: date, timezon
         track = tracks.setdefault(
             key, {"ref": row.ref, "nd_song_id": row.nd_song_id, "measured_ms": 0, "listens": 0, "metadata": {}}
         )
-        if row.client == "navidrome":
+        if row.scrobble:
             track["listens"] += 1
         track["ref"] = track["ref"] or row.ref
         track["nd_song_id"] = track["nd_song_id"] or row.nd_song_id
@@ -162,7 +162,7 @@ async def summary(s: AsyncSession, user_id: int, start: date, end: date, timezon
             "tracks_with_artists": sum(bool(t["metadata"].get("artists")) for t in tracks.values()),
             "tracks_total": len(tracks),
             "measured": "cumulative player checkpoints",
-            "scrobble": "threshold evidence; duration unknown",
+            "scrobble": "client scrobble; an un-superseded one counts as a listen",
             "legacy": "unmeasured; not counted",
             "period_assignment": "checkpoint deltas attributed to checkpoint time; offline compaction may delay attribution",
         },

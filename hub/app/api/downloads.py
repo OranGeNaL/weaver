@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import listen
 from app.api.schemas import DownloadBatchOut, DownloadIn, DownloadItemOut, DownloadTrackIn, RetryIn
-from app.auth import current_user, user_navidrome
+from app.auth import current_user
 from app.catalog.models import split_ref
 from app.db import get_session
 from app.events import bus
@@ -24,17 +24,18 @@ from app.services import svc
 router = APIRouter(prefix="/api/downloads", tags=["downloads"])
 
 
-async def resolve_playlist(user: User, playlist_id: str | None, new_name: str | None) -> str | None:
+async def resolve_playlist(s: AsyncSession, user: User, playlist_id: str | None, new_name: str | None) -> str | None:
+    """The Hub playlist uid the batch goes to: an existing one of the user, or a new Hub playlist by name."""
+    from app.playlists import create, get_owned
+
     if playlist_id:
-        return playlist_id
-    if not new_name:
+        found = await get_owned(s, user.id, playlist_id)
+        if found is None:
+            raise HTTPException(404, "Плейлист не найден")
+        return found.uid
+    if not new_name or not new_name.strip():
         return None
-    nd = user_navidrome(user)
-    try:
-        pl = await nd.create_playlist(new_name.strip())
-    finally:
-        await nd.aclose()
-    return pl.get("id")
+    return (await create(s, user.id, new_name)).uid
 
 
 async def join_active(
@@ -139,7 +140,7 @@ async def create_batch(
         origin, title = "favorite-app", body.favorite_event_id
     # ♥ downloads stay out of playlists: the song is in «Понравившиеся» anyway, and the app keeps a batch's playlist
     # on the phone
-    playlist_id = None if body.star else await resolve_playlist(user, body.playlist_id, body.new_playlist_name)
+    playlist_id = None if body.star else await resolve_playlist(s, user, body.playlist_id, body.new_playlist_name)
     track_refs = list(body.track_refs)
     joined = (
         set()
@@ -197,7 +198,15 @@ async def create_batch(
         if have and (it.candidate is None or have.source_url == it.candidate.page_url):
             owned += 1
         entries.append((q, meta, it.candidate))
-    queued = await create_items(s, batch, entries, force=body.force, star=body.star, favorite_events=favorite_events)
+    queued = await create_items(
+        s,
+        batch,
+        entries,
+        force=body.force,
+        star=body.star,
+        favorite_events=favorite_events,
+        anchor_uid=body.playlist_anchor,
+    )
 
     expanding = bool(track_refs or body.album_ref or body.artist_ref)
     if expanding:
@@ -229,6 +238,7 @@ async def create_batch(
                 "star": body.star,
                 "position": len(entries),
                 "favorite_events": favorite_events,
+                "anchor_uid": body.playlist_anchor,
             },
         )
     return DownloadBatchOut(
@@ -260,9 +270,10 @@ async def list_items(
     user: User = Depends(current_user),
     s: AsyncSession = Depends(get_session, scope="function"),
 ):
+    statuses: tuple[str, ...] = tuple(x.strip() for x in status.split(",") if x.strip()) if status else ()
     stmt = select(DownloadItem).where(DownloadItem.user_id == user.id)
-    if status:
-        stmt = stmt.where(DownloadItem.status.in_([x.strip() for x in status.split(",") if x.strip()]))
+    if statuses:
+        stmt = stmt.where(DownloadItem.status.in_(statuses))
     rows = (await s.execute(stmt.order_by(DownloadItem.id.desc()).limit(limit))).scalars().all()
     links = await item_links(s, list(rows))
     return [item_out(r, links=links[r.id]) for r in rows]

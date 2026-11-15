@@ -276,6 +276,14 @@ class LibArtistPageOut(BaseModel):
     albums: list[LibAlbumOut] = []
 
 
+class LibLikedOut(BaseModel):
+    """Everything the user ♥: own decisions and imported provenance, newest first."""
+
+    tracks: list[LibTrackOut] = []
+    albums: list[LibAlbumOut] = []
+    artists: list[LibArtistOut] = []
+
+
 class LibHomeOut(BaseModel):
     recent: list[LibAlbumOut] = []
     frequent: list[LibAlbumOut] = []
@@ -344,6 +352,8 @@ class TrackPatchIn(BaseModel):
 class FavoriteTarget(BaseModel):
     target_type: Literal["track", "album", "artist"] = "track"
     ref: str | None = Field(default=None, min_length=1, max_length=64)
+    # the Hub uid of the target (track/album/artist): the primary alias since stage 5
+    uid: str | None = Field(default=None, min_length=1, max_length=36)
     nd_song_id: str | None = Field(default=None, min_length=1, max_length=64)
     nd_album_id: str | None = Field(default=None, min_length=1, max_length=64)
     nd_artist_id: str | None = Field(default=None, min_length=1, max_length=64)
@@ -354,9 +364,12 @@ class FavoriteTarget(BaseModel):
         import json
 
         ids = {"track": self.nd_song_id, "album": self.nd_album_id, "artist": self.nd_artist_id}
-        if not (self.ref or ids[self.target_type]) or any(v for k, v in ids.items() if k != self.target_type):
+        if not (self.ref or self.uid or ids[self.target_type]) or any(
+            v for k, v in ids.items() if k != self.target_type
+        ):
             raise ValueError(
-                "ref or matching nd_song_id/nd_album_id/nd_artist_id is required; identifiers must name exactly one target type"
+                "ref, uid or matching nd_song_id/nd_album_id/nd_artist_id is required; "
+                "identifiers must name exactly one target type"
             )
         if self.target_data is not None and len(json.dumps(self.target_data, ensure_ascii=False)) > 8192:
             raise ValueError("target_data exceeds 8192 characters")
@@ -367,6 +380,8 @@ class StarIn(BaseModel):
     song_ids: list[str] = []
     album_ids: list[str] = []
     artist_ids: list[str] = []
+    # Hub uids of tracks/albums/artists (the primary identifiers since stage 5)
+    uids: list[str] = []
     # catalog refs: owned tracks/albums are resolved to Navidrome ids
     catalog_album_ref: str | None = None
     # catalog tracks liked by an import and not downloaded yet (`StarredOut.refs`): only unstar applies
@@ -380,11 +395,14 @@ class StarIn(BaseModel):
 
 
 class StarredOut(BaseModel):
-    """The current user's Navidrome stars (♥ in the Hub and the app's «Понравившиеся»)."""
+    """The current user's ♥: served by the Hub only (`hub_liked_v1`)."""
 
+    # deprecated aliases until stage 7: Navidrome song/album/artist ids of the liked objects
     song_ids: list[str] = []
     album_ids: list[str] = []
     artist_ids: list[str] = []
+    # the Hub uids of the liked tracks (the primary identifiers since stage 5)
+    track_uids: list[str] = []
     subjects: list[dict[str, Any]] = []
     # catalog tracks the user liked in another service (an import) that are not in the library yet
     refs: list[str] = []
@@ -461,7 +479,8 @@ class DownloadIn(BaseModel):
     album_ref: str | None = None
     artist_ref: str | None = None  # whole discography
     record_types: list[str] = ["album", "single", "ep"]  # for artist_ref
-    playlist_id: str | None = None
+    playlist_id: str | None = None  # Hub playlist uid the new songs are added to
+    playlist_anchor: str | None = None  # the playlist item they go after; None: the end
     new_playlist_name: str | None = None
     force: bool = False  # re-download even if owned (new file next to the old one)
     star: bool = False  # ♥ on a track that isn't downloaded yet: star the songs in Navidrome once they are
@@ -667,8 +686,14 @@ class PlaylistPageOut(PlaylistOut):
 
 
 class PlaylistAddIn(BaseModel):
-    song_ids: list[str] = []
+    uids: list[str] = []  # Hub track uids (the primary identifier since stage 5)
+    song_ids: list[str] = []  # deprecated: Navidrome song ids
     library_track_ids: list[int] = []
+    anchor_uid: str | None = None  # the playlist item it goes after; None: the end
+
+
+class PlaylistReorderIn(BaseModel):
+    item_uids: list[str] = Field(min_length=1, max_length=5000)  # the new order of the playlist's items
 
 
 # --- assistant -----------------------------------------------------------------------------
@@ -786,7 +811,8 @@ class ImportCollectionOut(BaseModel):
     count: int
     owned: int = 0
     cover_url: str | None = None
-    nd_playlist_id: str | None = None
+    nd_playlist_id: str | None = None  # deprecated alias until stage 7
+    playlist_uid: str | None = None
 
 
 class ImportOut(BaseModel):
@@ -869,6 +895,7 @@ class HealthOut(BaseModel):
         "wave_origin_v1",
         "smart_shuffle_v1",
         "hub_library_v1",
+        "hub_liked_v1",
     ]
 
 
@@ -961,6 +988,27 @@ class PlayEventsOut(BaseModel):
     rejected: list[PlayEventRejected] = []
 
 
+class ScrobbleIn(BaseModel):
+    """A scrobble a Hub client sends: the track by its Hub uid (deprecated `ref`/`nd_song_id` also work)."""
+
+    event_id: str = Field(min_length=1, max_length=64)
+    track_uid: str | None = Field(default=None, min_length=1, max_length=36)
+    ref: str | None = Field(default=None, max_length=64)
+    nd_song_id: str | None = Field(default=None, max_length=64)
+    ts: datetime
+    duration_s: float | None = Field(default=None, ge=0, le=86400)
+    position_s: float | None = Field(default=None, ge=0, le=86400)
+    client: str = Field(min_length=1, max_length=32)
+    context: str | None = Field(default=None, max_length=128)
+    track_metadata: ListeningMetadata | None = None
+
+
+class ScrobbleOut(BaseModel):
+    ok: bool = True
+    duplicate: bool = False  # this event_id was stored before
+    counted: bool = True  # False: a measured app event of the same listen exists (`superseded_scrobble`)
+
+
 class DislikeIn(BaseModel):
     """«Не нравится»: a track (`ref` and/or `nd_song_id`) or an artist (`artist_ref`, catalog). `artist`/`title`
     are for showing the list."""
@@ -1023,7 +1071,8 @@ class MixOut(BaseModel):
     mode: MixMode
     mode_title: str
     created_at: datetime
-    nd_playlist_id: str | None = None  # the Navidrome playlist «Микс дня» (the same id every day)
+    nd_playlist_id: str | None = None  # deprecated alias until stage 7
+    playlist_uid: str | None = None  # the Hub playlist «Микс дня» (the same uid every day)
     ready: int  # songs in the library already (in the playlist)
     total: int
     tracks: list[MixTrackOut] = []
@@ -1035,7 +1084,8 @@ class MixSettingsOut(BaseModel):
     mix_hour: int
     timezone: str
     next_build_at: datetime  # local time
-    nd_playlist_id: str | None = None
+    nd_playlist_id: str | None = None  # deprecated alias until stage 7
+    playlist_uid: str | None = None
     artists: list[dict[str, Any]] = []  # picked on «Что вы слушаете?»: [{ref, name}]
 
 
@@ -1071,17 +1121,21 @@ class TasteArtistsIn(BaseModel):
 class WaveSeedIn(BaseModel):
     """What a wave starts from: a catalog track, a known search file, a library song or an artist."""
 
-    ref: str | None = Field(default=None, max_length=64)  # "dz:…", "nd:<song>" or "file:<provider>:<id>"
-    nd_song_id: str | None = Field(default=None, max_length=64)
+    ref: str | None = Field(default=None, max_length=64)  # "dz:…", "lib:<uid>", "nd:<song>" or "file:…"
+    song_uid: str | None = Field(default=None, max_length=36)  # a Hub track
+    artist_uid: str | None = Field(default=None, max_length=36)  # a Hub artist (the app's «Радиостанции»)
+    nd_song_id: str | None = Field(default=None, max_length=64)  # deprecated alias until stage 7
     artist_ref: str | None = Field(default=None, max_length=64)  # "dz:…"
-    nd_artist_id: str | None = Field(default=None, max_length=64)  # a Navidrome artist (the app's «Радиостанции»)
+    nd_artist_id: str | None = Field(default=None, max_length=64)  # deprecated alias until stage 7
 
     by_artist: bool = False  # resolve the artist of the supplied track
 
     @model_validator(mode="after")
     def _names_one(self) -> WaveSeedIn:
-        if not (self.ref or self.nd_song_id or self.artist_ref or self.nd_artist_id):
-            raise ValueError("ref, nd_song_id, artist_ref or nd_artist_id is required")
+        if not (
+            self.ref or self.song_uid or self.artist_uid or self.nd_song_id or self.artist_ref or self.nd_artist_id
+        ):
+            raise ValueError("ref, song_uid, artist_uid, nd_song_id, artist_ref or nd_artist_id is required")
         return self
 
 
@@ -1127,10 +1181,13 @@ class WaveOut(BaseModel):
 
 
 class SmartStartIn(BaseModel):
-    context: str = Field(max_length=80, pattern=r"^(liked|playlist:\S{1,64})$")  # "liked" or "playlist:<Navidrome id>"
+    # "liked" or "playlist:<uid>" (`playlist:<int>` is the deprecated Navidrome alias until stage 7)
+    context: str = Field(max_length=80, pattern=r"^(liked|playlist:\S{1,64})$")
     # the context's songs in its order (a playlist: new ones at the end; «Понравившиеся»: the newest first): a
     # Navidrome song id, or a catalog ref (has a colon) for a ♥ not downloaded yet
     songs: list[str] = Field(min_length=1, max_length=5000)
+    # the Hub uids of the context's songs (new clients); `songs` stays the deprecated alias of them
+    track_uids: list[str] = Field(default_factory=list, max_length=5000)
     current: str | None = Field(default=None, max_length=80)  # the song tapped or playing now: it plays first
     title: str | None = Field(default=None, max_length=256)  # the playlist's name, kept for the analytics
     origin: str | None = Field(default=None, max_length=32, pattern=ORIGIN_PATTERN)
@@ -1150,12 +1207,13 @@ class SmartNextIn(BaseModel):
 
 class SmartTrackIn(BaseModel):
     ref: str | None = Field(default=None, max_length=64)
-    nd_song_id: str | None = Field(default=None, max_length=64)
+    track_uid: str | None = Field(default=None, max_length=36)
+    nd_song_id: str | None = Field(default=None, max_length=64)  # deprecated alias until stage 7
 
     @model_validator(mode="after")
     def _names_one(self) -> SmartTrackIn:
-        if not (self.ref or self.nd_song_id):
-            raise ValueError("ref or nd_song_id is required")
+        if not (self.ref or self.track_uid or self.nd_song_id):
+            raise ValueError("ref, track_uid or nd_song_id is required")
         return self
 
 
@@ -1422,7 +1480,8 @@ class InsightsMixRow(BaseModel):
 
 class InsightsMixOut(InsightsMixRow):
     description: str
-    nd_playlist_id: str | None = None
+    nd_playlist_id: str | None = None  # deprecated alias until stage 7
+    playlist_uid: str | None = None
     funnel: dict[str, Any]
     seeds: list[dict[str, Any]]
     seed_labels: list[str] | None = None

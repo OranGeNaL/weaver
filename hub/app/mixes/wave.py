@@ -4,8 +4,8 @@ after every action.
 - A session (`WaveSession`) keeps a pool of candidates made by the generators of «Микс дня» (`app.mixes.build`:
   the same sources, filters and score), the tracks handed out and not started yet, the last 50 played, and the
   session's own skips and likes. Started from a track or an artist («Волна по треку») the pool comes from that
-  seed's radios and the seed plays first; without one — from the taste profile, as a mix. A wave by a Navidrome
-  artist (the app's «Радиостанции») adds the artist's library songs to its Deezer radios; its artist plays once in 3.
+  seed's radios and the seed plays first; without one — from the taste profile, as a mix. A wave by a Hub artist
+  (`artist_uid`, the app's «Радиостанции») adds the artist's library songs to its Deezer radios; it plays once in 3.
 - Every `next` brings the events since the previous one and picks again: an early skip (< 30 s) or «Не нравится»
   lowers the artist and what sounds like the track (the embedder's vectors); a ♥ or a track played to its end adds
   its YouTube Music radio to the pool (`session_radio`) and raises what sounds like it. An artist plays at most once
@@ -49,6 +49,7 @@ from app.mixes.taste import EARLY_SKIP_S, Profile, TasteTrack, artist_key, build
 from app.mixes.taste_math import V2Profile, saturation
 from app.mixes.taste_snapshot import TasteEvent
 from app.models import (
+    Album,
     DownloadBatch,
     DownloadItem,
     PlayEvent,
@@ -957,47 +958,21 @@ class Batch:
     recorded: Any = None
 
 
-async def _artist_songs(nd, artist_id: str, name: str) -> list[CatalogTrack]:
-    """The Navidrome artist's songs, as catalog-like tracks (their Deezer record when the Hub has one)."""
-    artist = await nd.get_artist(artist_id)
-    albums = [a["id"] for a in artist.get("album") or [] if a.get("id")][:ARTIST_ALBUMS_MAX]
-    found = await asyncio.gather(*(nd.get_album(a) for a in albums), return_exceptions=True)
-    key = artist_key(name)
-    songs: dict[str, dict[str, Any]] = {}
-    for album in found:
-        if isinstance(album, BaseException):
-            continue
-        for x in album.get("song") or []:
-            ids = {x.get("artistId"), *(a.get("id") for a in x.get("artists") or [])}
-            if x.get("id") and (artist_id in ids or artist_key(x.get("artist")) == key):
-                songs.setdefault(x["id"], x)
-    picked = random.sample(list(songs), min(ARTIST_SONGS_MAX, len(songs)))
+async def _artist_songs(artist_id: int, name: str) -> list[CatalogTrack]:
+    """The Hub artist's library songs, as catalog-like tracks (their Deezer record when the Hub has one)."""
     async with session_scope() as s:
-        rows = {
-            t.nd_song_id: t
-            for t in (
-                await s.execute(select(Track).where(Track.nd_song_id.in_(picked), Track.deleted_at.is_(None)))
-            ).scalars()
-        }
-    out = []
-    for sid in picked:
-        if (t := rows.get(sid)) is not None:
-            out.append(library_track(t))
-        else:
-            x = songs[sid]
-            out.append(
-                CatalogTrack(
-                    ref=f"nd:{sid}",
-                    source="nd",
-                    id=sid,
-                    title=x.get("title") or "",
-                    artist=x.get("artist") or name,
-                    artists=[x.get("artist") or name],
-                    album_title=x.get("album"),
-                    duration_s=x.get("duration"),
+        rows = list(
+            (
+                await s.execute(
+                    select(Track)
+                    .join(Album, Album.id == Track.album_id)
+                    .where(Album.artist_id == artist_id, Track.deleted_at.is_(None))
+                    .order_by(Track.acquired_at, Track.id)
+                    .limit(ARTIST_SONGS_MAX)
                 )
-            )
-    return out
+            ).scalars()
+        )
+    return [library_track(t) for t in rows]
 
 
 async def _catalog_artist(name: str, songs: list[CatalogTrack]) -> str | None:
@@ -1022,29 +997,61 @@ async def _catalog_artist(name: str, songs: list[CatalogTrack]) -> str | None:
 
 
 async def _seed(seed: dict[str, Any], user: User | None = None) -> tuple[CatalogTrack | None, dict[str, Any] | None]:
-    """The track or the artist a wave starts from."""
+    """The track or the artist a wave starts from: a Hub uid (`song_uid`/`artist_uid`), a catalog ref."""
+    from app.models import Artist
+
     if seed.get("by_artist"):
+        uid = seed.get("song_uid")
         nd_id = seed.get("nd_song_id")
         ref = seed.get("ref") or ""
-        if ref.startswith("nd:"):
+        if ref.startswith("lib:"):
+            uid = ref[4:]
+        elif ref.startswith("nd:"):
             nd_id = ref[3:]
-        if nd_id and user is not None:
-            from app.auth import user_navidrome
+        if uid or nd_id:
+            async with session_scope() as s:
+                q = select(Track).where(Track.deleted_at.is_(None)).limit(1)
+                q = q.where(Track.uid == uid) if uid else q.where(Track.nd_song_id == nd_id)
+                t = (await s.execute(q)).scalar_one_or_none()
+                artist_id = None
+                if t is not None and t.album_id is not None:
+                    artist_id = (
+                        await s.execute(select(Album.artist_id).where(Album.id == t.album_id))
+                    ).scalar_one_or_none()
+                artist_uid = (
+                    (await s.execute(select(Artist.uid).where(Artist.id == artist_id))).scalar_one_or_none()
+                    if artist_id
+                    else None
+                )
+                if artist_uid is None and t is not None and t.artist:
+                    # a library track without an album link: the credited artist's Hub record, by normalized name
+                    from app.matching.normalize import normalize_artist
 
-            nd = user_navidrome(user)
-            try:
-                artist_id = (await nd.get_song(nd_id)).get("artistId")
-            except Exception as e:
-                raise WaveError(404, "Исполнитель трека не найден") from e
-            finally:
-                await nd.aclose()
-            if artist_id:
-                return await _seed({"nd_artist_id": artist_id}, user)
+                    artist_uid = (
+                        await s.execute(select(Artist.uid).where(Artist.name_norm == normalize_artist(t.artist).text))
+                    ).scalar_one_or_none()
+            if artist_uid:
+                return await _seed({"artist_uid": artist_uid}, user)
         elif ref.startswith("dz:"):
             track = await catalog_track(ref)
             if track and track.artist_ref:
                 return await _seed({"artist_ref": track.artist_ref}, user)
         raise WaveError(404, "Исполнитель трека не найден")
+    uid = seed.get("song_uid")
+    ref = seed.get("ref") or ""
+    if ref.startswith("lib:") and not uid:
+        uid = ref[4:]
+    if uid:
+        async with session_scope() as s:
+            t = (
+                await s.execute(select(Track).where(Track.uid == uid, Track.deleted_at.is_(None)).limit(1))
+            ).scalar_one_or_none()
+            lt = library_track(t) if t is not None else None
+        if lt is None:
+            raise WaveError(404, "Песни нет в библиотеке")
+        if lt.source == "dz" and (full := await catalog_track(lt.ref)) is not None:
+            lt = full  # the artist's ref for its radio
+        return lt, None
     if nd := seed.get("nd_song_id"):
         async with session_scope() as s:
             t = (
@@ -1056,7 +1063,7 @@ async def _seed(seed: dict[str, Any], user: User | None = None) -> tuple[Catalog
         if lt.source == "dz" and (full := await catalog_track(lt.ref)) is not None:
             lt = full  # the artist's ref for its radio
         return lt, None
-    if ref := seed.get("ref"):
+    if ref:
         if ref.startswith("nd:"):
             return await _seed({"nd_song_id": ref[3:]}, user)
         if ref.startswith("file:"):
@@ -1081,29 +1088,28 @@ async def _seed(seed: dict[str, Any], user: User | None = None) -> tuple[Catalog
         if not ref.startswith("dz:") or (t := await catalog_track(ref)) is None:
             raise WaveError(404, "Трек не найден в каталоге")
         return t, None
+    if (artist_uid := seed.get("artist_uid")) and user is not None:
+        async with session_scope() as s:
+            artist = (await s.execute(select(Artist).where(Artist.uid == artist_uid))).scalar_one_or_none()
+            if artist is None:
+                raise WaveError(404, "Исполнитель не найден")
+            name, artist_id = artist.name, artist.id
+        songs = await _artist_songs(artist_id, name)
+        return None, {
+            "ref": await _catalog_artist(name, songs),
+            "name": name,
+            "artist_uid": artist_uid,
+            "songs": songs,
+        }
+    if seed.get("nd_artist_id"):
+        raise WaveError(404, "Исполнитель не найден: укажите artist_uid")
     if (ref := seed.get("artist_ref")) and svc.deezer is not None:
         try:
             a = await svc.deezer.get_artist(split_ref(ref)[1])
         except Exception as e:
             raise WaveError(404, "Исполнитель не найден") from e
         return None, {"ref": a.ref, "name": a.name}
-    if (nd_id := seed.get("nd_artist_id")) and user is not None:
-        from app.auth import user_navidrome
-
-        nd = user_navidrome(user)
-        try:
-            name = (await nd.get_artist(nd_id)).get("name")
-            if not name:
-                raise WaveError(404, "Исполнитель не найден")
-            songs = await _artist_songs(nd, nd_id, name)
-        except WaveError:
-            raise
-        except Exception as e:
-            raise WaveError(404, "Исполнитель не найден") from e
-        finally:
-            await nd.aclose()
-        return None, {"ref": await _catalog_artist(name, songs), "name": name, "nd_artist_id": nd_id, "songs": songs}
-    raise WaveError(400, "Нужен ref, nd_song_id, artist_ref или nd_artist_id")
+    raise WaveError(400, "Нужен ref, song_uid, artist_ref или artist_uid")
 
 
 async def clear_old(s: AsyncSession, now: datetime | None = None) -> int:
@@ -1175,7 +1181,7 @@ async def start(
             for k, v in (
                 ("artist_ref", seed_artist.get("ref")),
                 ("artist", seed_artist["name"]),
-                ("nd_artist_id", seed_artist.get("nd_artist_id")),
+                ("artist_uid", seed_artist.get("artist_uid")),
             )
             if v
         }

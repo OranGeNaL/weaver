@@ -24,10 +24,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import DownloadIn, RetryIn
-from app.catalog.models import split_ref
 from app.config import get_settings
 from app.events import bus
-from app.library.owned import annotate_albums, annotate_tracks
 from app.models import (
     AiUsage,
     Album,
@@ -37,7 +35,6 @@ from app.models import (
     ImportCollection,
     ImportItem,
     Track,
-    Upload,
     User,
     utcnow,
 )
@@ -45,7 +42,7 @@ from app.models import (
 log = logging.getLogger(__name__)
 
 MAX_STEPS = 12
-CHUNK = 200  # song ids per Navidrome call: a longer URL may be refused
+CHUNK = 200  # rows per batched write
 CONFIRM_TOOLS = {"delete_playlist", "delete_library_tracks"}
 SONGS_FROM = ("starred", "starred_from_imports", "playlist:<id>", "import_collection:<id>")
 
@@ -258,41 +255,50 @@ class ChatTools:
         self.user = user
         self.done: list[str] = []  # what the tools changed, in Russian, for the answer
         self.proposal: list[dict] = []  # changes waiting for the user's confirmation
-        self._nd = None
 
-    def nd(self):
-        if self._nd is None:
-            from app.auth import user_navidrome
-
-            self._nd = user_navidrome(self.user)
-        return self._nd
-
-    async def aclose(self) -> None:
-        if self._nd is not None:
-            await self._nd.aclose()
-
-    # --- reading -----------------------------------------------------------------------------------------------
+    async def aclose(self) -> None:  # kept for callers: no external client is held any more
+        return None
 
     async def _own_playlists(self) -> list[dict]:
-        # getPlaylists also returns other users' public playlists
-        return [p for p in await self.nd().get_playlists() if p.get("owner") in (None, self.user.nd_username)]
+        from app.playlists import list_for_user
+
+        return [
+            {"id": p.uid, "name": p.name, "songCount": count}
+            for p, count, _ in await list_for_user(self.s, self.user.id)
+        ]
 
     async def _playlist_name(self, playlist_id: str) -> str:
         return next((p.get("name") or "" for p in await self._own_playlists() if p["id"] == playlist_id), playlist_id)
 
     async def _import_liked(self) -> dict[str, int]:
-        """song id -> the import that starred it."""
+        """track uid -> the import that starred it."""
         out: dict[str, int] = {}
         for imp in (await self.s.execute(select(Import).where(Import.user_id == self.user.id))).scalars():
-            for song_id in (imp.options_json or {}).get("liked") or []:
-                out.setdefault(song_id, imp.id)
+            for uid in (imp.options_json or {}).get("liked_uids") or []:
+                out.setdefault(uid, imp.id)
         return out
 
+    async def _liked_uids(self) -> list[str]:
+        from app.favorites import snapshot
+
+        states = await snapshot(self.s, self.user.id)
+        ordered = sorted(
+            (x for x in states.values() if x.target_type == "track" and x.liked and x.uid),
+            key=lambda x: (x.since or x.event.ts, x.event.id or 0),
+            reverse=True,
+        )
+        return [x.uid for x in ordered if x.uid]
+
+    async def _starred_uids(self, kind: str) -> list[str]:
+        from app.favorites import snapshot
+
+        states = await snapshot(self.s, self.user.id)
+        return [x.uid for x in states.values() if x.target_type == kind and x.liked and x.uid]
+
     async def account_overview(self) -> Any:
-        s, uid, nd = self.s, self.user.id, self.nd()
-        starred = await nd.get_starred2()
+        s, uid = self.s, self.user.id
+        songs = await self._liked_uids()
         liked = await self._import_liked()
-        songs = starred.get("song", [])
         out: dict[str, Any] = {
             "user": self.user.username,
             "library": {
@@ -303,9 +309,9 @@ class ChatTools:
             },
             "starred": {
                 "songs": len(songs),
-                "songs_from_imports": sum(1 for x in songs if x.get("id") in liked),
-                "albums": len(starred.get("album", [])),
-                "artists": len(starred.get("artist", [])),
+                "songs_from_imports": sum(1 for x in songs if x in liked),
+                "albums": len(await self._starred_uids("album")),
+                "artists": len(await self._starred_uids("artist")),
             },
             "playlists": table(
                 ["id", "name", "songs"],
@@ -340,6 +346,7 @@ class ChatTools:
             by_coll: dict[int, list] = {}
             for cid, st, n in stat:
                 by_coll.setdefault(cid, []).append((st, n))
+            options = imp.options_json or {}
             out["imports"].append(
                 {
                     "id": imp.id,
@@ -347,11 +354,18 @@ class ChatTools:
                     "account": imp.account,
                     "status": imp.status,
                     "date": f"{imp.created_at:%Y-%m-%d}",
-                    "starred_songs": len((imp.options_json or {}).get("liked") or []),
+                    "starred_songs": len(options.get("liked_uids") or options.get("liked") or []),
                     "collections": table(
                         ["collection_id", "kind", "title", "selected", "items", "playlist_id"],
                         [
-                            [c.id, c.kind, c.title, c.selected, _counts(by_coll.get(c.id, [])), c.nd_playlist_id]
+                            [
+                                c.id,
+                                c.kind,
+                                c.title,
+                                c.selected,
+                                _counts(by_coll.get(c.id, [])),
+                                c.playlist_uid or c.nd_playlist_id,
+                            ]
                             for c in colls
                         ],
                     ),
@@ -365,16 +379,16 @@ class ChatTools:
             )
         ).all()
         out["downloads"] = {"by_status": _counts(dl), "latest": await self.get_downloads(limit=10)}
+        from app.models import Upload
+
         up = (
             await s.execute(
                 select(Upload.status, func.count(Upload.id)).where(Upload.user_id == uid).group_by(Upload.status)
             )
         ).all()
         out["uploads"] = _counts(up)
-        try:
-            out["recently_played_albums"] = [label(a) for a in await nd.get_album_list2("recent", size=5)]
-        except Exception as e:  # nice to have only
-            log.info("recent albums: %r", e)
+        recent = (await s.execute(select(Album).order_by(Album.updated_at.desc()).limit(5))).scalars()
+        out["recently_played_albums"] = [f"{a.album_artist} — {a.title}" for a in recent]
         since = utcnow() - timedelta(days=30)
         spent = (
             await s.execute(
@@ -386,79 +400,42 @@ class ChatTools:
         out["ai_spent_30d_usd"] = round(float(spent), 4)
         return out
 
-    async def search_catalog(self, q: str, kind: str = "track", limit: int = 5) -> Any:
-        from app.services import svc
-
-        deezer = cast(Any, svc.deezer)
-        res = await deezer.search(q, kinds=(kind,), limit=min(limit, 10))
-        if kind == "artist":
-            return table(["ref", "name", "fans"], [[a.ref, a.name, a.nb_fans] for a in res.artists])
-        if kind == "album":
-            return _albums(await annotate_albums(self.s, res.albums))
-        return _tracks(await annotate_tracks(self.s, res.tracks))
-
-    async def get_artist_discography(self, artist_ref: str, types: list[str] | None = None, limit: int = 20) -> Any:
-        from app.services import svc
-
-        src, id_ = split_ref(artist_ref)
-        catalog = cast(Any, svc.deezer if src == "dz" else svc.hitmoz_catalog)
-        page = await (catalog.get_artist_page(id_) if src == "dz" else catalog.get_artist(id_))
-        albums = [a for a in page.albums if not types or a.record_type in types][:limit]
-        return {"artist": page.artist.name, "releases": _albums(await annotate_albums(self.s, albums))}
-
-    async def get_album(self, album_ref: str) -> Any:
-        from app.api.catalog import get_album
-
-        a = (await annotate_albums(self.s, [await get_album(album_ref)]))[0]
-        return {
-            "ref": a.ref,
-            "title": a.title,
-            "artist": a.artist,
-            "year": a.year,
-            "in_library": a.owned_status,
-            "tracks": _tracks(a.tracks or []),
-        }
-
-    async def list_library(self, q: str, limit: int = 20) -> Any:
-        from app.api.search import search_library
-
-        return table(
-            ["track_id", "song_id", "track", "album"],
-            [[t.id, t.nd_song_id, label(t), t.album] for t in await search_library(self.s, q, limit=min(limit, 50))],
-        )
-
-    async def check_owned(self, refs: list[str]) -> Any:
-        from app.services import svc
-
-        tracks = []
-        deezer = cast(Any, svc.deezer)
-        for r in refs[:50]:
-            src, id_ = split_ref(r)
-            if src == "dz":
-                tracks.append(await deezer.get_track(id_))
-        return {t.ref: t.owned for t in await annotate_tracks(self.s, tracks)}
-
     async def list_starred(self, kind: str = "song", only: str = "all", offset: int = 0, limit: int = 100) -> Any:
-        body = await self.nd().get_starred2()
-        if kind == "album":
-            rows, page = _page([[a["id"], label(a)] for a in body.get("album", [])], offset, limit)
-            return {**page, **table(["album_id", "album"], rows)}
-        if kind == "artist":
-            rows, page = _page([[a["id"], a.get("name")] for a in body.get("artist", [])], offset, limit)
-            return {**page, **table(["artist_id", "artist"], rows)}
+        if kind in ("album", "artist"):
+            uids = await self._starred_uids(kind)
+            rows, page = _page(uids, offset, limit)
+            column = "album_uid" if kind == "album" else "artist_uid"
+            return {**page, **table([column], [[u] for u in rows])}
         liked = await self._import_liked()
-        songs = [x for x in body.get("song", []) if x.get("id")]
+        ordered_uids = await self._liked_uids()
+        tracks = (
+            {
+                t.uid: t
+                for t in (
+                    await self.s.execute(select(Track).where(Track.uid.in_(ordered_uids), Track.deleted_at.is_(None)))
+                ).scalars()
+            }
+            if ordered_uids
+            else {}
+        )
+        ordered = [tracks[u] for u in ordered_uids if u in tracks]
         if only == "imports":
-            songs = [x for x in songs if x["id"] in liked]
+            ordered = [t for t in ordered if t.uid in liked]
         elif only == "own":
-            songs = [x for x in songs if x["id"] not in liked]
-        rows, page = _page([[x["id"], label(x), x.get("album"), liked.get(x["id"])] for x in songs], offset, limit)
-        return {**page, **table(["song_id", "song", "album", "import_id"], rows)}
+            ordered = [t for t in ordered if t.uid not in liked]
+        rows, page = _page([[t.uid, label(t), t.album, liked.get(t.uid)] for t in ordered], offset, limit)
+        return {**page, **table(["track_uid", "track", "album", "import_id"], rows)}
 
     async def get_playlist(self, playlist_id: str, offset: int = 0, limit: int = 100) -> Any:
-        pl = await self.nd().get_playlist(playlist_id)
-        rows, page = _page([[i, e.get("id"), label(e)] for i, e in enumerate(pl.get("entry", []))], offset, limit)
-        return {"name": pl.get("name"), **page, **table(["index", "song_id", "song"], rows)}
+        from app.playlists import get_owned
+        from app.playlists import tracks as playlist_tracks
+
+        pl = await get_owned(self.s, self.user.id, playlist_id)
+        if pl is None:
+            raise ValueError(f"no playlist {playlist_id}")
+        found = [t for t in await playlist_tracks(self.s, pl.id) if t is not None]
+        rows, page = _page([[i, t.uid, label(t), t.album] for i, t in enumerate(found)], offset, limit)
+        return {"name": pl.name, **page, **table(["index", "track_uid", "track", "album"], rows)}
 
     async def _collection_items(self, collection_id: int) -> list[ImportItem]:
         c = await self.s.get(ImportCollection, collection_id)
@@ -476,22 +453,22 @@ class ChatTools:
     async def get_import_items(
         self, collection_id: int, status: str | None = None, offset: int = 0, limit: int = 100
     ) -> Any:
-        from app.imports.apply import _song_ids
+        from app.imports.apply import _track_uids
 
         items = await self._collection_items(collection_id)
-        songs = await _song_ids(self.s, items)
+        uids = await _track_uids(self.s, items)
         items = [i for i in items if not status or i.status == status]
         rows, page = _page(
-            [[i.id, label(i.raw_json or {}), i.status, i.match, i.ref, songs.get(i.id)] for i in items], offset, limit
+            [[i.id, label(i.raw_json or {}), i.status, i.match, i.ref, uids.get(i.id)] for i in items], offset, limit
         )
-        return {**page, **table(["item_id", "item", "status", "match", "ref", "song_id"], rows)}
+        return {**page, **table(["item_id", "item", "status", "match", "ref", "track_uid"], rows)}
 
     async def get_downloads(self, status: str | None = None, limit: int = 30) -> Any:
+        statuses: tuple[str, ...] = tuple(x.strip() for x in status.split(",") if x.strip()) if status else ()
         q = select(DownloadItem).where(DownloadItem.user_id == self.user.id)
-        if status:
-            q = q.where(DownloadItem.status.in_([x.strip() for x in status.split(",") if x.strip()]))
-        session = self.s
-        rows = (await session.execute(q.order_by(DownloadItem.id.desc()).limit(min(limit, 100)))).scalars().all()
+        if statuses:
+            q = q.where(DownloadItem.status.in_(statuses))
+        rows = (await self.s.execute(q.order_by(DownloadItem.id.desc()).limit(min(limit, 100)))).scalars().all()
         return table(
             ["item_id", "track", "status", "error"],
             [
@@ -500,43 +477,50 @@ class ChatTools:
             ],
         )
 
-    # --- changes -----------------------------------------------------------------------------------------------
-
     async def _songs(self, song_ids: list[str] | None = None, songs_from: str | None = None) -> list[str]:
-        """Song ids given by the model plus a set of songs it named (`SONGS_FROM`), in order, each once."""
-        from app.imports.apply import _song_ids, playlist_order
+        """Track uids given by the model plus a set of songs it named (`SONGS_FROM`), in order, each once."""
+        from app.imports.apply import _track_uids, playlist_order
+        from app.playlists import get_owned, track_uids
+        from app.plays import track_uid_of
 
-        ids = list(song_ids or [])
+        ids: list[str] = []
+        for x in song_ids or []:
+            uid = await track_uid_of(self.s, x if ":" in x else None, None if ":" in x else x)
+            ids.append(uid or x)
         if songs_from:
             kind, _, arg = songs_from.partition(":")
             if kind in ("starred", "starred_from_imports"):
-                starred = [x["id"] for x in (await self.nd().get_starred2()).get("song", []) if x.get("id")]
+                starred = await self._liked_uids()
                 liked = await self._import_liked() if kind == "starred_from_imports" else None
                 ids += [x for x in starred if liked is None or x in liked]
             elif kind == "playlist" and arg:
-                ids += [e["id"] for e in (await self.nd().get_playlist(arg)).get("entry", []) if e.get("id")]
+                pl = await get_owned(self.s, self.user.id, arg)
+                if pl is None:
+                    raise ValueError(f"no playlist {arg}")
+                ids += await track_uids(self.s, pl.id)
             elif kind == "import_collection" and arg.isdigit():
                 items = await self._collection_items(int(arg))
-                ids += playlist_order(items, await _song_ids(self.s, items))
+                ids += playlist_order(items, await _track_uids(self.s, items))
             else:
                 raise ValueError(f"songs_from: one of {', '.join(SONGS_FROM)}")
         return list(dict.fromkeys(x for x in ids if x))
 
-    def _publish_stars(self, kind: str, song_ids: list[str]) -> None:
-        if song_ids:
-            bus.publish(self.user.id, "library", {"kind": kind, "song_ids": song_ids})
+    def _publish_stars(self, kind: str, track_uids: list[str]) -> None:
+        if track_uids:
+            bus.publish(self.user.id, "library", {"kind": kind, "track_uids": track_uids})
 
     async def create_playlist(self, name: str, song_ids: list[str] | None = None, songs_from: str | None = None) -> Any:
+        from app.playlists import add_tracks, create
+
         name = name.strip()
         if not name:
             raise ValueError("empty name")
         ids = await self._songs(song_ids, songs_from)
-        nd = self.nd()
-        pl = await nd.create_playlist(name, ids[:CHUNK])
-        if pl.get("id") and len(ids) > CHUNK:
-            await nd.set_playlist_songs(pl["id"], ids, chunk=CHUNK)
+        pl = await create(self.s, self.user.id, name)
+        if ids:
+            await add_tracks(self.s, pl, ids, added_by=self.user.id)
         self.done.append(f"Создан плейлист «{name}»" + (f": {tracks_word(len(ids))}" if ids else ""))
-        return {"playlist_id": pl.get("id"), "songs": len(ids)}
+        return {"playlist_id": pl.uid, "songs": len(ids)}
 
     async def add_to_playlist(
         self,
@@ -545,45 +529,51 @@ class ChatTools:
         songs_from: str | None = None,
         track_refs: list[str] | None = None,
     ) -> Any:
-        nd = self.nd()
+        from app.playlists import add_tracks, get_owned, track_uids
+
+        pl = await get_owned(self.s, self.user.id, playlist_id)
+        if pl is None:
+            raise ValueError(f"no playlist {playlist_id}")
         out: dict[str, Any] = {}
         ids = await self._songs(song_ids, songs_from)
         if ids:
-            have = {e.get("id") for e in (await nd.get_playlist(playlist_id)).get("entry", [])}
+            have = set(await track_uids(self.s, pl.id))
             ids = [x for x in ids if x not in have]
-            for k in range(0, len(ids), CHUNK):
-                await nd.update_playlist(playlist_id, add=ids[k : k + CHUNK])
+            if ids:
+                await add_tracks(self.s, pl, ids, added_by=self.user.id)
             out["added"] = len(ids)
             if ids:
-                self.done.append(
-                    f"В плейлист «{await self._playlist_name(playlist_id)}» добавлено {tracks_word(len(ids))}"
-                )
+                self.done.append(f"В плейлист «{pl.name}» добавлено {tracks_word(len(ids))}")
         if track_refs:
             out["batches"] = await self._download(track_refs=track_refs, playlist_id=playlist_id)
-            self.done.append(
-                f"Поставлено в загрузку в плейлист «{await self._playlist_name(playlist_id)}»: "
-                f"{tracks_word(len(track_refs))}"
-            )
+            self.done.append(f"Поставлено в загрузку в плейлист «{pl.name}»: {tracks_word(len(track_refs))}")
         return out
 
     async def remove_from_playlist(
         self, playlist_id: str, song_ids: list[str] | None = None, songs_from: str | None = None
     ) -> Any:
-        nd = self.nd()
+        from app.playlists import get_owned, remove_indexes
+        from app.playlists import items as playlist_items
+
+        pl = await get_owned(self.s, self.user.id, playlist_id)
+        if pl is None:
+            raise ValueError(f"no playlist {playlist_id}")
         drop = set(await self._songs(song_ids, songs_from))
-        pl = await nd.get_playlist(playlist_id)
-        indexes = [i for i, e in enumerate(pl.get("entry", [])) if e.get("id") in drop][::-1]
-        for k in range(0, len(indexes), CHUNK):
-            # from the end: the indexes of the next chunk stay valid
-            await nd.update_playlist(playlist_id, remove_indexes=indexes[k : k + CHUNK])
-        if indexes:
-            self.done.append(f"Из плейлиста «{pl.get('name') or playlist_id}» убрано {tracks_word(len(indexes))}")
-        return {"removed": len(indexes)}
+        rows = await playlist_items(self.s, pl.id)
+        indexes = [i for i, item in enumerate(rows) if item.track_uid in drop]
+        removed = await remove_indexes(self.s, pl, indexes)
+        if removed:
+            self.done.append(f"Из плейлиста «{pl.name}» убрано {tracks_word(removed)}")
+        return {"removed": removed}
 
     async def rename_playlist(self, playlist_id: str, name: str) -> Any:
-        old = await self._playlist_name(playlist_id)
-        await self.nd().update_playlist(playlist_id, name=name.strip())
-        self.done.append(f"Плейлист «{old}» переименован в «{name.strip()}»")
+        from app.playlists import get_owned
+
+        pl = await get_owned(self.s, self.user.id, playlist_id)
+        if pl is None:
+            raise ValueError(f"no playlist {playlist_id}")
+        old, pl.name = pl.name, name.strip()
+        self.done.append(f"Плейлист «{old}» переименован в «{pl.name}»")
         return {"ok": True}
 
     async def star(
@@ -597,9 +587,9 @@ class ChatTools:
         from app.api.schemas import FavoriteTarget
         from app.favorites import command
 
-        targets = [FavoriteTarget(nd_song_id=x) for x in ids]
-        targets += [FavoriteTarget(target_type="album", nd_album_id=x) for x in album_ids or []]
-        targets += [FavoriteTarget(target_type="artist", nd_artist_id=x) for x in artist_ids or []]
+        targets = [FavoriteTarget(uid=x) for x in ids]
+        targets += [FavoriteTarget(target_type="album", uid=x) for x in album_ids or []]
+        targets += [FavoriteTarget(target_type="artist", uid=x) for x in artist_ids or []]
         try:
             await command(
                 self.s,
@@ -608,7 +598,6 @@ class ChatTools:
                 liked=True,
                 client="assistant",
                 context="assistant:bulk" if songs_from or len(targets) > 1 else "assistant",
-                nd=self.nd(),
             )
         except Exception:
             await self.s.commit()
@@ -629,10 +618,10 @@ class ChatTools:
         from app.api.schemas import FavoriteTarget
         from app.favorites import command
 
-        targets = [FavoriteTarget(nd_song_id=x) for x in ids]
+        targets = [FavoriteTarget(uid=x) for x in ids]
         targets += [FavoriteTarget(ref=x) for x in refs or []]
-        targets += [FavoriteTarget(target_type="album", nd_album_id=x) for x in album_ids or []]
-        targets += [FavoriteTarget(target_type="artist", nd_artist_id=x) for x in artist_ids or []]
+        targets += [FavoriteTarget(target_type="album", uid=x) for x in album_ids or []]
+        targets += [FavoriteTarget(target_type="artist", uid=x) for x in artist_ids or []]
         try:
             await command(
                 self.s,
@@ -641,7 +630,6 @@ class ChatTools:
                 liked=False,
                 client="assistant",
                 context="assistant:bulk" if songs_from or len(targets) > 1 else "assistant",
-                nd=self.nd(),
             )
         except Exception:
             await self.s.commit()
@@ -880,7 +868,6 @@ async def run_chat(
 
 
 async def confirm_chat(s: AsyncSession, user: User, task: AssistantTask, token: str) -> dict[str, Any]:
-    from app.auth import user_navidrome
     from app.library import editor
 
     if task.input_kind != "chat" or task.status != "awaiting_confirmation":
@@ -895,11 +882,12 @@ async def confirm_chat(s: AsyncSession, user: User, task: AssistantTask, token: 
     tracks = 0
     for a in actions:
         if a["type"] == "delete_playlist":
-            nd = user_navidrome(user)
-            try:
-                await nd.delete_playlist(a["playlist_id"])
-            finally:
-                await nd.aclose()
+            from app.playlists import get_owned
+            from app.playlists import remove as remove_playlist
+
+            pl = await get_owned(s, user.id, a["playlist_id"])
+            if pl is not None:
+                await remove_playlist(s, pl)
             playlists.append(a["playlist_id"])
             continue
         for t in (

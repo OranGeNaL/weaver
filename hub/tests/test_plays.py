@@ -1,7 +1,7 @@
-"""Listening data (MIXES.md 3.2): player events, «Не нравится», Navidrome's scrobble history.
+"""Listening data (MIXES.md 3.2): player events, client scrobbles, «Не нравится».
 
 The library has «Кино — Группа крови» (catalog dz:100, Navidrome song "ndK", 245 s) and a song known only to
-Navidrome ("ndX"). Navidrome is a mock that keeps the user's scrobbles (`state["scrobbles"]`).
+Navidrome ("ndX").
 """
 
 from __future__ import annotations
@@ -466,17 +466,6 @@ async def test_compensation_arriving_before_catalog_command_does_not_enqueue(env
         assert not (await s.execute(select(Job).where(Job.kind == "expand_batch"))).scalars().all()
 
 
-async def test_catalog_unlike_mirrors_to_navidrome_when_telemetry_arrived_first(env):
-    c = env["client"]
-    unlike = ev("unlike", event_id="owned-unlike", ref="dz:100")
-    await post(c, unlike)
-    r = await c.post(
-        "/api/star", json={"refs": ["dz:100"], "unstar": True, "event_id": "owned-unlike", "ts": unlike["ts"]}
-    )
-    assert r.status_code == 200, r.text
-    assert env["state"]["unstarred"] == [["ndK"]]
-
-
 async def test_scrobble_dedup_preserves_synthetic_likes_and_bounds_future(env):
     from app.db import session_scope
     from app.models import PlayEvent, User, utcnow
@@ -508,16 +497,205 @@ async def test_scrobble_dedup_preserves_synthetic_likes_and_bounds_future(env):
     assert {e.kind for e in rows} == {"finish", "like"}
 
 
-async def test_favorites_sync_still_runs_when_scrobble_import_fails(env, monkeypatch):
-    from unittest.mock import AsyncMock
+async def test_client_scrobble_is_counted_idempotent_and_excludes_future(env):
+    c = env["client"]
+    body = {"event_id": "sc1", "ref": "dz:100", "ts": iso(NOW), "client": "pwa", "duration_s": 200}
+    r = await c.post("/api/plays/scrobble", json=body)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "duplicate": False, "counted": True}
+    again = await c.post("/api/plays/scrobble", json=body)
+    assert again.status_code == 200 and again.json()["duplicate"] is True
 
-    from app import favorites, plays
+    rows = await stored()
+    scrobbles = [e for e in rows if e.scrobble]
+    assert len(scrobbles) == 1
+    scrobble = scrobbles[0]
+    assert (scrobble.kind, scrobble.client, scrobble.origin, scrobble.superseded_scrobble) == (
+        "finish",
+        "pwa",
+        "client",
+        False,
+    )
+    assert scrobble.track_uid and scrobble.ts == NOW
 
-    monkeypatch.setattr(plays, "import_scrobbles", AsyncMock(side_effect=TimeoutError()))
-    sync = AsyncMock(return_value=0)
-    monkeypatch.setattr(favorites, "sync_user", sync)
-    assert await plays.sync_navidrome() == 0
-    sync.assert_awaited_once()
+    summary = await c.get("/api/plays/summary", params={"start": "2026-10-22", "end": "2026-10-22"})
+    assert summary.status_code == 200, summary.text
+    assert summary.json()["counted_listens"] == 1 and summary.json()["scrobble_evidence"] == 1
+
+
+async def test_scrobble_near_a_measured_event_is_stored_superseded(env):
+    c = env["client"]
+    await post(
+        c,
+        {
+            "event_id": "measured-near",
+            "ts": iso(NOW),
+            "kind": "finish",
+            "client": "app/1.5.0",
+            "ref": "dz:100",
+            "playback_id": "pb-near",
+            "device_id": "dev-near",
+            "listened_ms": 245_000,
+            "duration_s": 245,
+        },
+    )
+    r = await c.post(
+        "/api/plays/scrobble",
+        json={"event_id": "sc-near", "ref": "dz:100", "ts": iso(NOW + timedelta(seconds=30)), "client": "pwa"},
+    )
+    assert r.status_code == 200 and r.json()["counted"] is False
+    summary = await c.get("/api/plays/summary", params={"start": "2026-10-22", "end": "2026-10-22"})
+    # the measured listen counts once; its superseded scrobble adds nothing
+    assert summary.json()["counted_listens"] == 1
+    assert summary.json()["scrobble_evidence"] == 0
+
+
+async def test_uid_only_scrobble_is_accepted(env):
+    from sqlalchemy import select
+
+    from app.db import session_scope
+    from app.models import Track
+
+    c = env["client"]
+    async with session_scope() as s:
+        uid = (await s.execute(select(Track.uid).where(Track.nd_song_id == "ndK"))).scalar_one()
+    r = await c.post(
+        "/api/plays/scrobble", json={"event_id": "sc-uid-only", "track_uid": uid, "ts": iso(NOW), "client": "pwa"}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "duplicate": False, "counted": True}
+    rows = [e for e in await stored() if e.scrobble]
+    assert len(rows) == 1 and rows[0].track_uid == uid
+
+
+async def test_short_attempt_does_not_supersede_a_scrobble(env):
+    c = env["client"]
+    await c.post(
+        "/api/plays/scrobble",
+        json={"event_id": "sc-short", "ref": "dz:100", "ts": iso(NOW), "client": "pwa", "duration_s": 245},
+    )
+    # 0 ms started, then a 5 s skip: below the 30 s threshold — the scrobble stays the counted listen
+    await post(
+        c,
+        ev("start", ref="dz:100", at=NOW, listened_ms=0, playback_id="pb-short", device_id="dev-short"),
+        ev(
+            "skip",
+            ref="dz:100",
+            at=NOW + timedelta(seconds=5),
+            listened_ms=5_000,
+            playback_id="pb-short",
+            device_id="dev-short",
+        ),
+    )
+    scrobbles = [e for e in await stored() if e.scrobble]
+    assert len(scrobbles) == 1 and not scrobbles[0].superseded_scrobble
+    summary = await c.get("/api/plays/summary", params={"start": "2026-10-22", "end": "2026-10-22"})
+    assert summary.json()["counted_listens"] == 1 and summary.json()["scrobble_evidence"] == 1
+
+
+async def test_progress_only_measured_attempt_supersedes_a_scrobble(env):
+    c = env["client"]
+    await c.post(
+        "/api/plays/scrobble",
+        json={"event_id": "sc-progress", "ref": "dz:100", "ts": iso(NOW), "client": "pwa", "duration_s": 245},
+    )
+    # the app sends only a checkpoint (no finish): it crossed the threshold, so it is the counted listen
+    await post(
+        c,
+        ev(
+            "progress",
+            ref="dz:100",
+            at=NOW + timedelta(seconds=40),
+            listened_ms=35_000,
+            playback_id="pb-progress",
+            device_id="dev-progress",
+        ),
+    )
+    scrobbles = [e for e in await stored() if e.scrobble]
+    assert len(scrobbles) == 1 and scrobbles[0].superseded_scrobble
+    summary = await c.get("/api/plays/summary", params={"start": "2026-10-22", "end": "2026-10-22"})
+    assert summary.json()["counted_listens"] == 1 and summary.json()["scrobble_evidence"] == 0
+
+
+async def test_uid_only_measured_finish_supersedes_a_scrobble(env):
+    from sqlalchemy import select
+
+    from app.db import session_scope
+    from app.models import Track
+
+    c = env["client"]
+    await c.post(
+        "/api/plays/scrobble",
+        json={"event_id": "sc-uid", "ref": "dz:100", "ts": iso(NOW), "client": "pwa", "duration_s": 245},
+    )
+    async with session_scope() as s:
+        uid = (await s.execute(select(Track.uid).where(Track.nd_song_id == "ndK"))).scalar_one()
+    # the app's measured event names only the Hub uid: it still replaces the scrobble of the same listen
+    await post(
+        c,
+        {
+            "event_id": "app-uid-only",
+            "ts": iso(NOW + timedelta(seconds=40)),
+            "kind": "finish",
+            "client": "app/1.5.0",
+            "uid": uid,
+            "playback_id": "pb-1",
+            "device_id": "dev-1",
+            "listened_ms": 240_000,
+            "duration_s": 245,
+        },
+    )
+    scrobbles = [e for e in await stored() if e.scrobble]
+    assert len(scrobbles) == 1 and scrobbles[0].superseded_scrobble
+    summary = await c.get("/api/plays/summary", params={"start": "2026-10-22", "end": "2026-10-22"})
+    assert summary.json()["counted_listens"] == 1 and summary.json()["scrobble_evidence"] == 0
+
+
+async def test_legacy_finish_does_not_supersede_a_scrobble(env):
+    c = env["client"]
+    await c.post(
+        "/api/plays/scrobble",
+        json={"event_id": "sc-legacy", "ref": "dz:100", "ts": iso(NOW), "client": "pwa", "duration_s": 245},
+    )
+    # a finish without checkpoints is legacy evidence: it never counts, so it must not hide the scrobble
+    await post(c, ev("finish", ref="dz:100", at=NOW + timedelta(seconds=20)))
+    scrobbles = [e for e in await stored() if e.scrobble]
+    assert len(scrobbles) == 1 and not scrobbles[0].superseded_scrobble
+    summary = await c.get("/api/plays/summary", params={"start": "2026-10-22", "end": "2026-10-22"})
+    assert summary.json()["counted_listens"] == 1 and summary.json()["scrobble_evidence"] == 1
+
+
+async def test_duplicate_scrobble_reports_the_stored_verdict(env):
+    c = env["client"]
+    body = {"event_id": "sc-dup", "ref": "dz:100", "ts": iso(NOW), "client": "pwa"}
+    first = await c.post("/api/plays/scrobble", json=body)
+    second = await c.post("/api/plays/scrobble", json=body)
+    assert first.json() == {"ok": True, "duplicate": False, "counted": True}
+    assert second.json() == {"ok": True, "duplicate": True, "counted": True}
+
+
+async def test_measured_event_supersedes_a_scrobble_that_arrived_first(env):
+    c = env["client"]
+    await c.post(
+        "/api/plays/scrobble",
+        json={"event_id": "sc-first", "ref": "dz:100", "ts": iso(NOW), "client": "pwa", "duration_s": 245},
+    )
+    await post(
+        c,
+        {
+            "event_id": "measured-after",
+            "ts": iso(NOW + timedelta(seconds=40)),
+            "kind": "finish",
+            "client": "app/1.5.0",
+            "ref": "dz:100",
+            "playback_id": "pb-after",
+            "device_id": "dev-after",
+            "listened_ms": 245_000,
+            "duration_s": 245,
+        },
+    )
+    scrobbles = [e for e in await stored() if e.scrobble]
+    assert len(scrobbles) == 1 and scrobbles[0].superseded_scrobble
 
 
 async def test_events_are_stored_once_with_both_ids(env):
@@ -619,43 +797,6 @@ async def test_dislikes_api_tracks_and_artists(env):
     assert (await c.get("/api/dislikes")).json() == []
     assert [e.kind for e in await stored()][-1] == "undislike"
     assert [(e.kind, e.target_type) for e in await stored()][-2:] == [("undislike", "track"), ("undislike", "artist")]
-
-
-async def test_navidrome_scrobbles_become_finishes_without_doubles(env):
-    from app.plays import sync_navidrome
-
-    c, state = env["client"], env["state"]
-    now = datetime.now(UTC)
-    unix = lambda dt: int(dt.timestamp())  # noqa: E731
-    # the app reported this listen itself: its scrobble (at half the track) is the same play
-    await post(c, ev("finish", nd_song_id="ndK", at=now - timedelta(hours=2), position_s=245, duration_s=245))
-    state["scrobbles"] = [
-        {"id": 1, "mediaFileId": "ndK", "submissionTime": unix(now - timedelta(hours=2, minutes=2))},
-        {"id": 2, "mediaFileId": "ndX", "submissionTime": unix(now - timedelta(hours=1))},  # the web UI
-        {"id": 3, "mediaFileId": "ndK", "submissionTime": unix(now - timedelta(minutes=30))},
-    ]
-    assert await sync_navidrome() == 2
-    nd = [e for e in await stored() if e.client == "navidrome" and not e.superseded_scrobble]
-    assert [(e.event_id, e.kind, e.nd_song_id, e.ref, e.duration_s) for e in nd] == [
-        ("nd:2", "finish", "ndX", None, 245),
-        ("nd:3", "finish", "ndK", "dz:100", 245),
-    ]
-
-    assert all(e.position_s is None for e in nd)  # a scrobble does not measure playback position
-
-    # the next hour reads only what is new
-    state["scrobbles"].append({"id": 4, "mediaFileId": "ndX", "submissionTime": unix(now)})
-    assert await sync_navidrome() == 1
-    assert state["logins"] == 1  # the token is kept
-
-    # the app was offline and sends the listen that Navidrome already counted: the app's events win
-    await post(c, ev("finish", nd_song_id="ndK", at=now - timedelta(minutes=28), position_s=245, duration_s=245))
-    assert [e.event_id for e in await stored() if e.client == "navidrome" and not e.superseded_scrobble] == [
-        "nd:2",
-        "nd:4",
-    ]
-    assert {e.event_id for e in await stored() if e.superseded_scrobble} == {"nd:1", "nd:3"}
-    assert await sync_navidrome() == 0
 
 
 async def test_import_likes_do_not_count_unless_liked_again(env):

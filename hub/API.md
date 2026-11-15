@@ -87,7 +87,7 @@ Name fields: `key, ref, nd_song_id, artist, title, owned` — local only (librar
 
 Codes (labels are the PWA's):
 - `source` (what a launch played): `mix`, `wave`, `smart` (the smart shuffle's recommendations), `playlist`, `album`, `artist`, `liked`, `search`, `queue`,
-  `continuous`, `library`, `other`, `unknown` (no context); in listening blocks also `scrobble` (Navidrome history).
+  `continuous`, `library`, `other`, `unknown` (no context); in listening blocks also `scrobble` (a client scrobble).
 - `origin` (wave) — as `WaveStartIn.origin`; `not_recorded` — an old client sent none. `seed_kind`: `own`, `track`,
   `track_artist`, `artist`, `library_artist`, `file`, `unknown` (a session known only by its events).
 - Launch `attribution`: `launch_id`, `wave_session`, `reconstructed` (wave events without a session row), `inferred`
@@ -215,6 +215,7 @@ stays that file).
 | Method | Path | Body → Response |
 |---|---|---|
 | POST | `/api/plays/events` | `{events: PlayEventIn[], expected_user_id?: number}` (≤ 500); mismatch with the authenticated user → `409` → `PlayEventsOut` `{accepted, duplicates, rejected: [{index, event_id, detail}]}`. Always `200` for a well-formed body: a malformed event is rejected alone; clients retain rejected events with diagnostics; an `event_id` the user sent before counts as `duplicates` (send a batch again freely). A `start` with a catalog `ref` is a listen of it (an economy import downloads the track: the app may play it from its precache, which never asked the stream as a listen) |
+| POST | `/api/plays/scrobble` | A scrobble of a Hub client: `{event_id, track_uid? , ref?, nd_song_id?, ts, duration_s?, position_s?, client, context?, track_metadata?}` → `ScrobbleOut {ok, duplicate, counted}`. Stored as `finish` with `scrobble=true`/`origin=client` and the Hub `track_uid`; a repeated `event_id` is `duplicate=true` (no second row). Near a measured app event of the same listen (`DEDUP_WINDOW + duration`) the scrobble is stored with `superseded_scrobble=true` and `counted=false`: the measured event wins. An un-superseded scrobble counts in `/api/plays/summary` |
 | GET | `/api/plays/summary?start=YYYY-MM-DD&end=YYYY-MM-DD&timezone=Europe/Moscow` | Inclusive calendar dates in an IANA timezone → measured attempts, cumulative milliseconds, counted listens, scrobble and legacy evidence, track snapshots and coverage. Checkpoint deltas belong to the day they were recorded; `first_observed_at` is only the earliest stored evidence. Invalid period/timezone → `422` |
 | GET | `/api/dislikes` | `DislikeOut[]` `{id, ref, nd_song_id, artist_ref, artist, title, source, created_at}`, newest first; `source`: `app`, `pwa`, `yandex_import` |
 | POST | `/api/dislikes` | `DislikeIn` `{ref?, nd_song_id?, artist_ref?, artist?, title?, context?, client?}` → `DislikeOut`. A track (`ref` and/or `nd_song_id`) **or** an artist (`artist_ref`), else `422`; the same target again is the same row (missing ids filled in). A track also gets a `dislike` event |
@@ -253,9 +254,10 @@ through all `/api/dislikes` routes, including deletion by id, are journaled too.
 `finish` — the track played to its end by itself, or the user left it after ≥ 90 % of its length; `skip` — left
 earlier (next, another track, the player closed); a skip «before 30 s» is `skip` with `position_s < 30`. Pause and
 seeking are no events. `dislike`/`undislike` events also set/clear the track's row of `/api/dislikes` (`source` `app`
-for `app/…` clients). Every hour the Hub adds the user's Navidrome scrobbles (other clients) as `finish` with client
-`navidrome`; one within 5 min + the track's length of an app/PWA `start`/`skip`/`finish` of the same song is the same
-listen and marked as superseded, whichever came first; the raw scrobble remains stored.
+for `app/…` clients). Clients send their own scrobbles to `POST /api/plays/scrobble`; the Hub imports nothing from
+Navidrome. A scrobble within 5 min + the track's length of the same track as a measured app/PWA attempt is the same
+listen: the scrobble is marked superseded, whichever came first, and the raw row remains stored. Only a measured
+attempt that crosses the listen threshold supersedes a scrobble; a shorter start/skip/checkpoint does not.
 
 The summary counts an attempt when measured listening reaches 30 seconds, or half the track for tracks shorter
 than one minute. A non-superseded Navidrome scrobble is separately labelled threshold evidence and contributes one
@@ -454,19 +456,17 @@ the storage GC does.
 `library` SSE events keep their names and payload keys: `kind`, `album_id`, `track_id`, `uid`. `album_id`/`track_id`
 stay deprecated ints until stage 7; new consumers read `uid`.
 | GET | `/api/media/blob/{sha256}` | service-only blob read: `Authorization: Bearer $MEDIA_BLOB_TOKEN`, supports `Range`; `401` without the token |
-| POST | `/api/star` | Existing `StarIn` fields remain: song_ids, album_ids, artist_ids, catalog_album_ref, refs, unstar. Adds `targets: [{target_type, ref?, nd_song_id?, nd_album_id?, nd_artist_id?, target_data?}]` (≤500), `event_id?`, `ts?`, `client?` (default pwa), `context?`. Successful objects are journaled; response `{ok:true,event_ids:[…]}`. Single target uses the supplied event_id verbatim; bulk uses stable short hashes. `refs + unstar` also clears own pending ♥; explicit/import/mix/wave downloads survive; refs without unstar →400. Typed album/artist refs work without ND ids and do not download/star their songs |
-| GET | `/api/starred` | `StarredOut` `{song_ids, album_ids, artist_ids, refs, subjects}`. ND lists remain visible, refs also include own pending track likes. Own subjects include `{target_type,key,ref,nd_id,liked,liked_since,event_id,aliases,target_data,provenance:"own"}`; known imported objects carry provenance import. Use type plus aliases for button state; an own false state takes precedence over a stale ND list |
+| POST | `/api/star` | `StarIn`: `uids` (Hub track uids), `targets: [{target_type, ref?, uid?, nd_song_id?, nd_album_id?, nd_artist_id?, target_data?}]` (≤500), `song_ids`/`album_ids`/`artist_ids` (deprecated ND aliases until stage 7), `catalog_album_ref`, `refs`, `unstar`, `event_id?`, `ts?`, `client?` (default pwa), `context?`. The Hub is the only owner of ♥: no Navidrome call is made. Successful objects are journaled; response `{ok:true,event_ids:[…]}`. A retry with the same `event_id` is idempotent and does not replay an old decision. `refs + unstar` also clears own pending ♥; explicit/import/mix/wave downloads survive; refs without unstar →400. Typed album/artist targets need no ND ids and do not download their songs |
+| GET | `/api/starred` | `StarredOut {song_ids, album_ids, artist_ids, track_uids, refs, subjects}` served by the Hub only (capability `hub_liked_v1`). `song_ids`/`album_ids`/`artist_ids` are deprecated ND aliases that stay until stage 7; new clients use `track_uids`. `refs` also include own pending track likes and catalog-only likes. Subjects include `{target_type,key,ref,uid,nd_id,liked,liked_since,event_id,aliases,target_data,provenance:"own"\|"import"}`. Use type plus aliases for button state |
+| GET | `/api/library/liked` | `LibLikedOut {tracks: LibTrackOut[], albums: LibAlbumOut[], artists: LibArtistOut[]}`: own ♥ and imported provenance, own decision overrides the imported one, newest first. No external service is called |
 
-An `/api/star` retry with the same event_id does not reapply an old command to Navidrome. Delayed commands older
-than the effective decision are journaled without overwriting the mirror. Successful chunks of a bulk assistant/API
-operation remain journaled if a later chunk fails. For a wave buffer, reuse the returned per-object event_id and the
-same typed target so `/api/plays/events` returns duplicate.
+An `/api/star` retry with the same event_id is journaled once and never replays an old decision. Delayed commands
+older than the effective decision land in history without overwriting the live state. Successful chunks of a bulk
+assistant/API operation remain journaled if a later chunk fails. For a wave buffer, reuse the returned per-object
+event_id and the same typed target so `/api/plays/events` returns duplicate.
 
-The hourly scrobble loop independently reconciles favorites from a successful complete getStarred2 response.
-Failure/incomplete response changes no state; a successful empty snapshot is real absence. It waits 24h after the
-latest nonduplicate received decision/compensation, preserves pending refs without an ND song, and retries known
-undelivered own mirrors. Import provenance covers all three types; ambiguous legacy album/artist imports are
-quarantined from bootstrap until verified or explicitly acted upon. A stale ND star cannot resurrect an own unlike.
+There is no reconciliation with Navidrome: the journal of `favorites` is the only source of ♥, imported likes keep
+`provenance: "import"` and are not treated as the user's own choice for the taste profile.
 
 ## Uploads (FR-5)
 | Method | Path | Body → Response |
@@ -480,12 +480,19 @@ quarantined from bootstrap until verified or explicitly acted upon. A stale ND s
 ## Playlists
 | Method | Path | Body → Response |
 |---|---|---|
-| GET | `/api/playlists` | `PlaylistOut[]` (current user's Navidrome playlists) |
-| POST | `/api/playlists` | `PlaylistCreateIn` → `PlaylistOut` |
-| POST | `/api/playlists/{id}/add` | `PlaylistAddIn` → `{ok}` |
-| GET | `/api/playlists/{id}` | → `PlaylistPageOut` (`PlaylistOut` + `tracks: NdSongOut[]` in playlist order); `404` unknown or not visible to the user, `502` Navidrome error or no answer |
-| POST | `/api/playlists/{id}/remove` | `PlaylistRemoveIn {indexes: int[]}` (1–500 positions from 0; a song may be in a playlist twice) → `{ok}`; `403` not the owner, `404` unknown, `502` Navidrome error or no answer |
-| DELETE | `/api/playlists/{id}` | → `{ok}`; `403` not the owner, `404` unknown, `502` Navidrome error or no answer |
+Hub playlists (capability `hub_liked_v1` covers ♥ only; playlists are Hub-owned since stage 5). `id` is the playlist
+`uid` — an opaque string. The list shows the user's own playlists and their `system` ones (a mix is `system=true` with
+`owner_id` = the user); other users' playlists are never shown.
+
+| Method | Path | Body → Response |
+|---|---|---|
+| GET | `/api/playlists` | `PlaylistOut[] {id (uid), name, song_count, duration_s, cover_art}` |
+| POST | `/api/playlists` | `PlaylistCreateIn {name}` → `PlaylistOut`; empty name → `400` |
+| POST | `/api/playlists/{uid}/add` | `PlaylistAddIn {uids?, song_ids?, library_track_ids?, anchor_uid?}` → `{ok, added, uids}`. `uids` are Hub track uids; `song_ids` (deprecated ND ids) and `library_track_ids` are resolved to them. `anchor_uid` is a playlist item uid: the track goes right after it (the end by default). No resolvable track → `400`. Duplicates are allowed |
+| POST | `/api/playlists/{uid}/reorder` | `PlaylistReorderIn {item_uids}` → `{ok}`: the named items first in that order, then the rest |
+| GET | `/api/playlists/{uid}` | → `PlaylistPageOut` (`PlaylistOut` + `tracks: NdSongOut[]` in playlist order, `nd_song_id` may be `null`); `404` unknown or not the user's |
+| POST | `/api/playlists/{uid}/remove` | `PlaylistRemoveIn {indexes}` (1–500 positions from 0; a song may be in a playlist twice) → `{ok, removed}`; `404` unknown |
+| DELETE | `/api/playlists/{uid}` | → `{ok}`; `404` unknown |
 
 ## Navidrome library (the PWA in a browser) — DEPRECATED
 Deprecated transitional proxy: kept unchanged until the PWA switches to `/api/library/*` at stage 6 and removed at
@@ -508,7 +515,7 @@ account answers `409` with a Russian message instead of proxying.
 | GET | `/api/nd/albums/{id}` | `NdAlbumOut` with `tracks: NdSongOut[]`; `404` unknown |
 | GET | `/api/nd/artists` | `NdArtistOut[]` — every artist (the alphabetical index flattened) |
 | GET | `/api/nd/artists/{id}` | `NdArtistPageOut {artist, albums}` — albums by year, newest first, those without a year last, ties by title; `404` unknown |
-| GET | `/api/nd/liked` | `NdLikedOut {songs, albums, artists}` — Navidrome stars merged with own track favorites and pending import likes. Own decisions override ND/import state; aliases deduplicate songs. Catalog-only songs have `owned=false`, nullable `nd_song_id` and remain playable by `ref`; listing never starts downloads or catalog requests. Stored subject/import/playback metadata supplies names (ref fallback when unavailable). Songs and albums newest ♥ first; unknown import dates last. Successful `/api/star` commits before publishing a `library` SSE (`starred`/`unstarred`). |
+| GET | `/api/nd/liked` | `NdLikedOut {songs, albums, artists}` built from the Hub's ♥ journal (`favorites.snapshot`) — Navidrome is not asked. Own decisions override imported; aliases deduplicate songs. Catalog-only songs have `owned=false`, nullable `nd_song_id` and remain playable by `ref`; listing never starts downloads or catalog requests. Stored subject/import/playback metadata supplies names (ref fallback when unavailable). Newest ♥ first; unknown import dates last. |
 | GET | `/api/nd/cover/{cover_id}?size=` | the Navidrome cover (`getCoverArt`, `size` 32–1500) proxied, so the page needs no Navidrome credentials; `Cache-Control: private, max-age=86400`; `404` no image, `502` no answer from Navidrome |
 
 `NdAlbumOut {id, title, artist, artist_id, year, song_count, duration_s, cover_url, starred, tracks?}`,

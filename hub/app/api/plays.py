@@ -10,7 +10,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import plays
-from app.api.schemas import DislikeIn, DislikeOut, PlayEventRejected, PlayEventsIn, PlayEventsOut
+from app.api.schemas import (
+    DislikeIn,
+    DislikeOut,
+    PlayEventRejected,
+    PlayEventsIn,
+    PlayEventsOut,
+    ScrobbleIn,
+    ScrobbleOut,
+)
 from app.auth import current_user
 from app.db import get_session
 from app.models import Dislike, User
@@ -37,6 +45,18 @@ async def events(
     return PlayEventsOut(
         accepted=r.accepted, duplicates=r.duplicates, rejected=[PlayEventRejected(**x) for x in r.rejected]
     )
+
+
+@router.post("/api/plays/scrobble", response_model=ScrobbleOut)
+async def scrobble(
+    body: ScrobbleIn, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+):
+    """A scrobble of a Hub client: a `finish` with `scrobble=true`; the Hub counts it in the listening summary."""
+    try:
+        event, duplicate = await plays.record_scrobble(s, user.id, body)
+    except ValueError as e:
+        raise HTTPException(400, "Скроббл не называет трек") from e
+    return ScrobbleOut(duplicate=duplicate, counted=not event.superseded_scrobble)
 
 
 @router.get("/api/plays/summary")
