@@ -12,6 +12,7 @@ import shutil
 import subprocess
 from datetime import date
 from pathlib import Path
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -118,7 +119,7 @@ async def env(hub_env, src_mp3):
         # the fake provider enriches every file as explicit, as before
         fake = FakeProvider("hitmoz", found, src=src, explicit={"1": True, "2": True})
         svc.providers = {"hitmoz": fake}
-        svc.deezer = FakeDeezer(duration_s=4, preview=None, cover_url="https://img.test/cover.jpg")
+        svc.deezer = cast(Any, FakeDeezer(duration_s=4, preview=None, cover_url="https://img.test/cover.jpg"))
         config.get_settings().cfg.sources.ru = ["hitmoz"]
         config.get_settings().cfg.sources.default = ["hitmoz"]
         with respx.mock(assert_all_called=False) as mock:
@@ -392,7 +393,7 @@ def explicit_catalog_with_reuploads(env, *, hitmoz_uploaded: date, reuploaded: b
     (`reuploaded` — they have the track)."""
     from app.services import svc
 
-    dz = svc.deezer
+    dz = cast(Any, svc.deezer)  # the fake installed by `env`, not a DeezerClient
     dz.track = dz.track.model_copy(update={"explicit": True})
     dz.album = dz.album.model_copy(update={"tracks": [dz.track]})
     env["fake"].cands = lambda q: [c.model_copy(update={"upload_date": hitmoz_uploaded}) for c in found(q)]

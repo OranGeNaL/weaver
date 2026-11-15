@@ -75,6 +75,7 @@ async def yandex_import() -> dict:
 
     async with session_scope() as s:
         user = (await s.execute(User.__table__.select())).first()
+        assert user is not None
         imp = Import(
             user_id=user.id,
             source="yandex",
@@ -340,6 +341,7 @@ async def test_photos_per_message_limit(env, path, count, admin):
         else:
             async with session_scope() as s:
                 task = await s.get(AssistantTask, response.json()["id"])
+                assert task is not None
                 assert task.input_ref["count"] == 15
     async with session_scope() as s:
         charged = await s.scalar(select(func.sum(AssistantDailyUsage.messages)))
@@ -389,6 +391,7 @@ async def test_message_text_limit(env, kind, size):
         else:
             async with session_scope() as s:
                 task = await s.get(AssistantTask, response.json()["id"])
+                assert task is not None
                 assert task.input_ref["url" if kind == "task-url" else "text"] == text
     async with session_scope() as s:
         charged = await s.scalar(select(func.sum(AssistantDailyUsage.messages)))

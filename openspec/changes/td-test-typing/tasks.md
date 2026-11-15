@@ -11,17 +11,17 @@
 
 ## 3. Средние файлы (54 из 200)
 
-- [ ] 3.1 `tests/test_imports.py` (18).
-- [ ] 3.2 `tests/test_flow.py` (11).
-- [ ] 3.3 `tests/test_youtube_access.py` (10) и `tests/test_ytdlp.py` (9, `reportRedeclaration` — переименовать перекрытую функцию/фикстуру).
-- [ ] 3.4 `tests/test_yandex_origin.py` (7), `tests/test_taste_consumers.py` (7), `tests/test_import_yandex.py` (7).
+- [x] 3.1 `tests/test_imports.py` (18).
+- [x] 3.2 `tests/test_flow.py` (11).
+- [x] 3.3 `tests/test_youtube_access.py` (10) и `tests/test_ytdlp.py` (9, `reportRedeclaration` — переименовать перекрытую функцию/фикстуру).
+- [x] 3.4 `tests/test_yandex_origin.py` (7), `tests/test_taste_consumers.py` (7), `tests/test_import_yandex.py` (7).
 
 ## 4. Малые файлы (33 из 200)
 
-- [ ] 4.1 `tests/test_taste_shadow.py` (5), `tests/test_smart.py` (5).
-- [ ] 4.2 `tests/test_ai_limits.py` (3), `tests/test_ai_agent.py` (3).
-- [ ] 4.3 `tests/test_deezer.py` (2), `tests/test_ai_extract.py` (2).
-- [ ] 4.4 `tests/test_mix_build.py` (1), `tests/test_hitmos_fm.py` (1).
+- [x] 4.1 `tests/test_taste_shadow.py` (5), `tests/test_smart.py` (5).
+- [x] 4.2 `tests/test_ai_limits.py` (3), `tests/test_ai_agent.py` (3).
+- [x] 4.3 `tests/test_deezer.py` (2), `tests/test_ai_extract.py` (2).
+- [x] 4.4 `tests/test_mix_build.py` (1), `tests/test_hitmos_fm.py` (1).
 
 ## 5. Снятие подавлений
 

@@ -15,13 +15,20 @@ def no_cache(monkeypatch):
     monkeypatch.setattr(yandex, "cached", passthrough)
 
 
-def fake_search(rows):
-    def search(text):
-        search.queries.append(text)
-        return rows
+class FakeSearch:
+    """A `yandex._search_tracks` fake that records the queries it got."""
 
-    search.queries = []
-    return search
+    def __init__(self, rows) -> None:
+        self.rows = rows
+        self.queries: list[str] = []
+
+    def __call__(self, text: str):
+        self.queries.append(text)
+        return self.rows
+
+
+def fake_search(rows) -> FakeSearch:
+    return FakeSearch(rows)
 
 
 def test_gost_translit_folds_to_cyrillic_form() -> None:
@@ -38,14 +45,15 @@ def test_latin_to_cyrillic() -> None:
 
 
 async def test_transliterated_title_is_searched_in_cyrillic(monkeypatch) -> None:
+    queries: list[str] = []
+
     def search(text):
-        search.queries.append(text)
+        queries.append(text)
         return [{"artist": "Oxxxymiron", "title": "Где нас нет", "duration_s": 266}] if "нас" in text else []
 
-    search.queries = []
     monkeypatch.setattr(yandex, "_search_tracks", search)
     tag_q, pq = await yandex.russian_original(TrackQuery(artist="Oxxxymiron", title="Gde nas net", duration_s=265))
-    assert search.queries == ["Oxxxymiron Gde nas net", "Oxxxymiron где нас нет"]
+    assert queries == ["Oxxxymiron Gde nas net", "Oxxxymiron где нас нет"]
     assert (pq.artist, pq.title, pq.lang, tag_q.title) == ("Oxxxymiron", "Где нас нет", "ru", "Где нас нет")
 
 

@@ -7,6 +7,7 @@ and play its end by hand.
 from __future__ import annotations
 
 import asyncio
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -93,7 +94,7 @@ async def env(hub_env, monkeypatch):
     app = create_app()
     async with app.router.lifespan_context(app):
         svc.providers = {"hitmoz": FakeProvider("hitmoz", [])}
-        svc.deezer = FakeDeezer()
+        svc.deezer = cast(Any, FakeDeezer())
         with respx.mock(assert_all_called=False) as mock:
             async with app_client(app) as client:
                 await add_library_track(GOROD, UID_A)
@@ -200,7 +201,7 @@ async def test_concurrent_import_matches_share_the_source_mapping(env, monkeypat
     # Both collections miss the cache before the catalog answers; no timing sleeps.
     both_searching = asyncio.Event()
     calls = 0
-    search = svc.deezer.search_tracks
+    search = cast(Any, svc.deezer).search_tracks
 
     async def together(*args, **kwargs):
         nonlocal calls
@@ -295,7 +296,7 @@ async def test_preview_counts_what_the_library_has(env):
     assert st["est_bytes"] == (245 + 180) * 40_000 and st["free_bytes"] > 0
     from app.services import svc
 
-    assert svc.deezer.searched == 0  # nothing is matched against the catalog before the user starts
+    assert cast(Any, svc.deezer).searched == 0  # nothing is matched against the catalog before the user starts
 
 
 async def test_economy_import_likes_and_playlists_in_order(env):
@@ -364,6 +365,7 @@ async def test_economy_import_likes_and_playlists_in_order(env):
     track_id = await add_library_track(KROVI, UID_C)
     async with session_scope() as s:
         item = await s.get(DownloadItem, dl["id"])
+        assert item is not None
         item.status, item.track_id = "done", track_id
         await imports_done(s, [item])
     await run_imports()
@@ -381,9 +383,12 @@ async def test_economy_import_likes_and_playlists_in_order(env):
 
     async with session_scope() as s:
         user = (await s.execute(select(User))).scalars().first()
+        assert user is not None
         await command(s, user, [FavoriteTarget(uid=UID_A)], liked=False, operation="app-unlike")
     async with session_scope() as s:
-        await sync_likes(s, await s.get(Import, imp["id"]))
+        imp_row = await s.get(Import, imp["id"])
+        assert imp_row is not None
+        await sync_likes(s, imp_row)
     assert UID_A not in await liked_refs()
     assert await liked_refs() == {UID_C, UID_B}
 
@@ -393,7 +398,7 @@ async def test_all_likes_are_downloaded_once(env):
     from app.imports.sources.base import SnapCollection, SnapItem, Snapshot
     from app.services import svc
 
-    svc.deezer.more = [
+    cast(Any, svc.deezer).more = [
         CatalogTrack(ref="dz:300", source="dz", id="300", title="Звезда по имени Солнце", artist="Кино", duration_s=225)
     ]
     env["state"]["snapshot"] = Snapshot(
@@ -462,7 +467,7 @@ async def test_second_import_reuses_the_matches(env):  # two whole imports: ~2x 
         imp = await prepared(c)
         await c.post(f"/api/imports/{imp['id']}/start", json={"collection_ids": [x["id"] for x in imp["collections"]]})
         await run_imports()
-        searched.append(svc.deezer.searched)
+        searched.append(cast(Any, svc.deezer).searched)
     assert searched[0] > 0 and searched[1] == searched[0]  # the next import of the same songs does not search again
     assert len((await c.get("/api/imports")).json()) == 2
 
@@ -541,10 +546,10 @@ async def test_matching_verdicts(env):
     from app.imports.resolve import CatalogDown, resolve_track
     from app.services import svc
 
-    svc.deezer.more = [
+    cast(Any, svc.deezer).more = [
         CatalogTrack(ref="dz:300", source="dz", id="300", title="Звезда по имени Солнце", artist="Кино", duration_s=225)
     ]
-    svc.providers["hitmoz"].cands = [cand("55", "https://cdn.test/x.mp3", title="Последний герой")]
+    cast(Any, svc.providers["hitmoz"]).cands = [cand("55", "https://cdn.test/x.mp3", title="Последний герой")]
     cases = {
         "exact": track("Кино", "Группа крови", 246),
         "probable": track("Кино", "Звезда по имени Солнце", 255),  # 30 s longer than the catalog's
@@ -560,7 +565,7 @@ async def test_matching_verdicts(env):
     assert (got["hitmoz"].match, got["hitmoz"].ref) == ("probable", "hm:55")
     assert got["nothing"].match == "not_found"
 
-    svc.deezer.down = True
+    cast(Any, svc.deezer).down = True
     async with session_scope() as s:
         assert (await resolve_track(s, "yandex", "exact", cases["exact"])).ref == "dz:100"  # remembered
         with pytest.raises(CatalogDown):

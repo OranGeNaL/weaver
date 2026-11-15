@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -22,7 +23,7 @@ DATA = json.loads((Path(__file__).parent / "fixtures" / "yandex_import" / "music
 def _client_base():
     from yandex_music import Client
 
-    Client._Client__notice_displayed = True
+    cast(Any, Client)._Client__notice_displayed = True  # silence the library's stdout banner
     return Client
 
 
@@ -49,18 +50,20 @@ class FakeYandex(_client_base()):
         self._check()
         return TracksList.de_json(DATA["likes"]["library"], self)
 
-    def tracks(self, ids):
+    def tracks(self, ids, *args: Any, **kwargs: Any):
         from yandex_music import Track
 
         self.fetched.append(list(ids))
         want = {str(i).split(":")[0] for i in ids}
-        return [Track.de_json(t, self) for t in DATA["tracks"] if str(t["id"]) in want]
+        found = [Track.de_json(t, self) for t in DATA["tracks"] if str(t["id"]) in want]
+        assert None not in found  # every fixture row parses into a track
+        return [t for t in found if t is not None]
 
-    def users_playlists_list(self, user_id=None):
+    def users_playlists_list(self, user_id=None, *args: Any, **kwargs: Any):
         from yandex_music import Playlist
 
         likes = {**DATA["playlists_list"][0], "kind": 3, "title": "Мне нравится"}  # listed by some accounts
-        return Playlist.de_list([likes, *DATA["playlists_list"]], self)
+        return list(Playlist.de_list([likes, *DATA["playlists_list"]], self))
 
     def users_playlists(self, kind, user_id=None):
         from yandex_music import Playlist
@@ -68,15 +71,15 @@ class FakeYandex(_client_base()):
         assert kind == DATA["playlist"]["kind"]
         return Playlist.de_json(DATA["playlist"], self)
 
-    def users_likes_albums(self, user_id=None):
+    def users_likes_albums(self, user_id=None, *args: Any, **kwargs: Any):
         from yandex_music import Like
 
-        return Like.de_list(DATA["likes_albums"], self, "album")
+        return list(Like.de_list(DATA["likes_albums"], self, "album"))
 
-    def users_likes_artists(self, user_id=None):
+    def users_likes_artists(self, user_id=None, *args: Any, **kwargs: Any):
         from yandex_music import Like
 
-        return Like.de_list(DATA["likes_artists"], self, "artist")
+        return list(Like.de_list(DATA["likes_artists"], self, "artist"))
 
     def users_dislikes_tracks(self, user_id=None):
         from yandex_music import TracksList
@@ -141,10 +144,11 @@ def test_closed_profile_says_how_to_get_in():
 def test_track_version_and_unavailable_tracks():
     from yandex_music import Track
 
-    t = Track.de_json({**DATA["tracks"][0], "version": "Live", "available": False}, None)
+    client = FakeYandex()
+    t = Track.de_json({**DATA["tracks"][0], "version": "Live", "available": False}, client)
     raw = yandex.track_raw(t)
     assert raw is not None and raw["title"] == "Falling (Live)" and raw["unavailable"] is True
-    assert yandex.track_raw(Track.de_json({**DATA["tracks"][0], "type": "podcast-episode"}, None)) is None
+    assert yandex.track_raw(Track.de_json({**DATA["tracks"][0], "type": "podcast-episode"}, client)) is None
 
 
 @pytest.mark.parametrize(
