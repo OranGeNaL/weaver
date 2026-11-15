@@ -7,7 +7,7 @@
 
 - [x] 2.1 `tests/test_tagger.py` (49): убрать `reportOptionalMemberAccess`/`reportArgumentType` сужением типов и `assert ... is not None`; без ослабления assert'ов.
 - [x] 2.2 `tests/test_wave.py` (31): то же.
-- [ ] 2.3 `tests/test_ai_links.py` (29): то же; `cast(Any, ...)` — только для фейков, не наследующих продовый класс.
+- [x] 2.3 `tests/test_ai_links.py` (29): то же; `cast(Any, ...)` — только для фейков, не наследующих продовый класс.
 
 ## 3. Средние файлы (54 из 200)
 
