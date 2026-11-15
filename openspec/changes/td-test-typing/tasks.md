@@ -33,5 +33,5 @@
 - [x] 6.1 `hub/pyrightconfig.json`: `include: ["app", "tests"]`, убрать `tests` из `exclude`.
 - [x] 6.2 Удалить временный `hub/pyright.tests.json`.
 - [x] 6.3 Прогнать `cd hub && uv run pyright` (0 ошибок), `uv run ruff check`, `uv run ruff format --check`.
-- [ ] 6.4 Прогнать полный `pytest`; число `passed`/`skipped` MUST совпасть с базовой линией (1.2), кроме тестов, добавленных этим change'ем (их нет).
-- [ ] 6.5 Проверить, что ни один assert не удалён: `git diff` по `hub/tests` не содержит удалённых строк с `assert` без замены; расхождения объяснить в отчёте.
+- [x] 6.4 Прогнать полный `pytest`; число `passed`/`skipped` MUST совпасть с базовой линией (1.2), кроме тестов, добавленных этим change'ем (их нет).
+- [x] 6.5 Проверить, что ни один assert не удалён: `git diff` по `hub/tests` не содержит удалённых строк с `assert` без замены; расхождения объяснить в отчёте.
