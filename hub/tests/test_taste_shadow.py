@@ -1,5 +1,6 @@
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from app.catalog.models import CatalogTrack
 from app.config import MixesCfg
@@ -153,7 +154,7 @@ def test_replay_selection_preserves_pool_order_and_limits_sound_to_first_300():
         raw_vectors=vectors,
         centered_vectors=vectors,
     )
-    report = {"pool_complete": True}
+    report: dict[str, Any] = {"pool_complete": True}
     replay_selection(
         report,
         candidates,
@@ -222,7 +223,7 @@ def test_replay_selection_uses_frozen_pairwise_coordinates_for_order():
         raw_vectors=vectors,
         centered_vectors=vectors,
     )
-    report = {"pool_complete": True}
+    report: dict[str, Any] = {"pool_complete": True}
     replay_selection(
         report,
         candidates,

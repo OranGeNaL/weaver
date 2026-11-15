@@ -11,7 +11,7 @@ from __future__ import annotations
 import random
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from sqlalchemy import select
@@ -47,7 +47,7 @@ async def env(hub_env, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(listen, "warm_light", lambda refs: None)
     app = create_app()
     async with app.router.lifespan_context(app):
-        svc.deezer = FakeDeezer()
+        svc.deezer = cast(Any, FakeDeezer())
         async with app_client(app) as client:
             yield {"client": client, "admin": await user_id("admin"), "prefetched": prefetched}
 
@@ -220,6 +220,7 @@ async def test_recently_heard_songs_stand_later_in_the_order(env, monkeypatch) -
 
     async with session_scope() as s:
         user = await s.get(User, me)
+    assert user is not None
 
     heard_pos, fresh_pos = [], []
     for seed in range(15):
@@ -495,14 +496,16 @@ async def test_sessions_idle_for_a_week_lose_their_state_but_keep_their_rows(env
     fake_gens(monkeypatch, [new(i) for i in range(30)])
     plan = await start(env["client"], ids)
     async with session_scope() as s:
-        (await s.get(SmartSession, plan["session_id"])).updated_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(
-            days=8
-        )
+        stale = await s.get(SmartSession, plan["session_id"])
+        assert stale is not None
+        stale.updated_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=8)
 
     assert await smart.clear_old() == 1
 
     async with session_scope() as s:
-        assert (await s.get(SmartSession, plan["session_id"])).state_json == {"cleared": True}
+        cleared = await s.get(SmartSession, plan["session_id"])
+        assert cleared is not None
+        assert cleared.state_json == {"cleared": True}
         assert len((await s.execute(select(SmartItem))).scalars().all()) == 3
     assert (await env["client"].post(f"/api/smart-shuffle/{plan['session_id']}/next", json={})).status_code == 404
 
@@ -538,7 +541,9 @@ async def test_the_v2_taste_model_learns_from_the_session_and_survives_a_restart
     weights = smart._rt[sid].state.positive_weights
     assert weights[first] == 2 and weights[plan["recs"][1]["ref"]] == 1  # played to its end, and added with «+»
     async with session_scope() as s:
-        assert (await s.get(SmartSession, sid)).state_json["wave"]["taste_model"] == "v2"
+        pinned = await s.get(SmartSession, sid)
+        assert pinned is not None
+        assert pinned.state_json["wave"]["taste_model"] == "v2"
     monkeypatch.setattr(get_settings().cfg.mixes, "taste_model", "v1")
     await smart.reset()
     again = await c.post(f"/api/smart-shuffle/{sid}/next", json={"at": plan["own"][14]})

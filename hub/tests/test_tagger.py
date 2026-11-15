@@ -79,7 +79,9 @@ def audio_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return d
 
 
-def png_bytes(size: tuple[int, int] = (64, 64), mode: str = "RGB", color: object = (200, 30, 30)) -> bytes:
+def png_bytes(
+    size: tuple[int, int] = (64, 64), mode: str = "RGB", color: int | tuple[int, ...] | str = (200, 30, 30)
+) -> bytes:
     out = BytesIO()
     Image.new(mode, size, color).save(out, format="PNG")
     return out.getvalue()
@@ -90,7 +92,7 @@ def jpeg_cover() -> bytes:
 
 
 def full_tags(**over: object) -> TagData:
-    data = dict(
+    data: dict[str, object] = dict(
         title="Группа крови",
         artist="Кино feat. Гость",
         artists=["Кино", "Гость"],
@@ -116,7 +118,7 @@ def full_tags(**over: object) -> TagData:
         cover=jpeg_cover(),
     )
     data.update(over)
-    return TagData(**data)
+    return TagData.model_validate(data)
 
 
 # --------------------------------------------------------------------------- pure
@@ -155,17 +157,21 @@ def test_prepare_cover_rejects_garbage() -> None:
         prepare_cover(b"not an image")
 
 
+# raw dicts below are intentionally wider than the field annotations: mode="before" validators coerce them
+_BASE_TAGS = {"title": "t", "artist": "a"}
+
+
 def test_tagdata_validation() -> None:
-    assert TagData(title="t", artist="a", date=1988).date == "1988"
-    assert TagData(title="t", artist="a", date=dt.date(2001, 2, 3)).date == "2001-02-03"
-    assert TagData(title="t", artist="a", release_type="Single").release_type == "single"
+    assert TagData.model_validate(_BASE_TAGS | {"date": 1988}).date == "1988"
+    assert TagData.model_validate(_BASE_TAGS | {"date": dt.date(2001, 2, 3)}).date == "2001-02-03"
+    assert TagData.model_validate(_BASE_TAGS | {"release_type": "Single"}).release_type == "single"
     assert "cover" not in repr(TagData(title="t", artist="a", cover=b"x" * 10))
     with pytest.raises(ValidationError):
         TagData(title="t", artist="a", date="5th of May")
     with pytest.raises(ValidationError):
-        TagData(title="t", artist="a", release_type="mixtape")
+        TagData.model_validate(_BASE_TAGS | {"release_type": "mixtape"})
     with pytest.raises(ValidationError):
-        TagData(title="t")  # artist is required
+        TagData.model_validate({"title": "t"})  # artist is required
 
 
 def test_canonical_roundtrip() -> None:
@@ -272,6 +278,7 @@ def test_retag_from_scratch_drops_old_fields(audio_file: Path) -> None:
     assert r["has_cover"] is False and r["artists"] == []
     # ffmpeg's own encoder tags are gone too
     f = mutagen.File(audio_file)
+    assert f is not None
     keys = {str(k).upper() for k in (f.tags.keys() if f.tags else [])}
     assert not keys & {"TSSE", "ENCODER", "©TOO"}
 
@@ -325,13 +332,14 @@ def test_mp3_is_id3v24_utf8(audio_dir: Path, tmp_path: Path) -> None:
 
 @needs_ffmpeg
 def test_m4a_atoms(audio_dir: Path, tmp_path: Path) -> None:
-    from mutagen.mp4 import MP4
+    from mutagen.mp4 import MP4, MP4Tags
 
     p = tmp_path / "a.m4a"
     shutil.copy(audio_dir / "sine.m4a", p)
     t = full_tags(explicit=False)
     write_tags(p, t)
     tags = MP4(p).tags
+    assert isinstance(tags, MP4Tags)
     assert tags["©nam"] == ["Группа крови"] and tags["aART"] == ["Кино"]
     assert tags["trkn"] == [(1, 11)] and tags["rtng"] == [2]
     assert bytes(tags["----:com.apple.iTunes:HOMEMUSIC_TRACK_ID"][0]).decode() == t.track_uid
@@ -347,6 +355,7 @@ def test_vorbis_keys(audio_dir: Path, tmp_path: Path, ext: str) -> None:
     t = full_tags()
     write_tags(p, t)
     f = mutagen.File(p)
+    assert f is not None
     assert f.tags["TITLE"] == ["Группа крови"]
     assert f.tags["ARTISTS"] == ["Кино", "Гость"]
     assert f.tags["TRACKNUMBER"] == ["1"] and f.tags["TRACKTOTAL"] == ["11"]

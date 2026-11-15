@@ -61,11 +61,12 @@ async def test_allowance_resets_at_local_midnight(users, monkeypatch, zone, befo
         await reserve(users[0])
     with pytest.raises(HTTPException) as exc:
         await reserve(users[0])
-    assert exc.value.headers["Retry-After"] == "1"
+    assert exc.value.headers is not None and exc.value.headers["Retry-After"] == "1"
     monkeypatch.setattr(limits, "utcnow", lambda: after)
     await reserve(users[0])
     async with db.session_scope() as s:
         row = await s.get(AssistantDailyUsage, (users[0].id, expected_day))
+        assert row is not None
         assert (row.day, row.messages) == (expected_day, 1)
 
 

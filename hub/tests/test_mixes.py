@@ -4,12 +4,12 @@ downloads and the Hub playlist, the reserve, the replacement with its deletion r
 The generators of the build are fakes (`fake_generators`): the songs the library has and new catalog tracks dz:5000… .
 """
 
-# pyright: reportOptionalMemberAccess=false, reportAttributeAccessIssue=false, reportArgumentType=false
 from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from sqlalchemy import func, select
@@ -31,7 +31,7 @@ async def env(hub_env, tmp_path: Path):
     get_settings.cache_clear()  # importing app.main creates the module's app and may cache defaults
     app = create_app()
     async with app.router.lifespan_context(app):
-        svc.deezer = FakeDeezer()
+        svc.deezer = cast(Any, FakeDeezer())
         async with app_client(app) as client:
             yield {"app": app, "client": client, "music": hub_env, "admin": await user_id("admin")}
 
@@ -200,6 +200,8 @@ async def test_profile_weights_and_decay(env) -> None:
         s.add(Dislike(user_id=me, ref="lib:u5", source="app", created_at=NOW))
         s.add(Import(user_id=me, source="yandex", method="token", options_json={"liked_uids": ["u6"]}))
         user = await s.get(User, me)
+        assert user is not None
+        assert user is not None
         p = await build_profile(
             s,
             user,
@@ -236,6 +238,8 @@ async def test_v1_profile_does_not_count_an_imported_like(env) -> None:
     tid = await add_track(10)
     async with session_scope() as s:
         user = await s.get(User, me)
+        assert user is not None
+        assert user is not None
         imp = Import(user_id=me, source="yandex", method="token", status="done")
         s.add(imp)
         await s.flush()
@@ -293,7 +297,10 @@ async def test_own_download_alone_weighs_nothing_but_stays_in_the_profile(env) -
             )
         )
         await s.flush()
-        p = await build_profile(s, await s.get(User, me), now=NOW)
+        user = await s.get(User, me)
+        assert user is not None
+        assert user is not None
+        p = await build_profile(s, user, now=NOW)
 
     t = p.tracks["lib:u1"]
     assert t.downloaded and t.score == 0.0
@@ -333,7 +340,10 @@ async def test_skip_after_30_s_takes_the_length_of_the_event(env) -> None:
             )
         )
         await s.flush()
-        p = await build_profile(s, await s.get(User, me), now=NOW)
+        user = await s.get(User, me)
+        assert user is not None
+        assert user is not None
+        p = await build_profile(s, user, now=NOW)
 
     assert round(p.tracks["lib:u1"].score, 3) == 0.4  # x = 50 / 100: 2 · 0.5 / (1 + 3 · 0.5)
 
@@ -349,7 +359,10 @@ async def test_cold_start_seeds_from_picked_artists(env) -> None:
             MixSettings(user_id=env["admin"], mode="normal", mix_hour=5, artists_json=[{"ref": "dz:1", "name": "Кино"}])
         )
         await s.flush()
-        p = await build_profile(s, await s.get(User, env["admin"]))
+        user = await s.get(User, env["admin"])
+        assert user is not None
+        assert user is not None
+        p = await build_profile(s, user)
 
     assert not p.empty and not p.seeds(8)
     assert [(t.artist, t.title) for t in await cold_seeds(p, 8)] == [("Кино", "Группа крови")]
@@ -400,6 +413,8 @@ async def test_build_queues_quiet_downloads_and_writes_the_playlist(env, monkeyp
 
     mix = await core.build_for(me)
 
+    assert mix is not None
+
     if shadow == "off":
         assert "taste_shadow" not in mix.stats_json
     elif shadow in ("error", "snapshot_error"):
@@ -429,6 +444,7 @@ async def test_build_queues_quiet_downloads_and_writes_the_playlist(env, monkeyp
         dls = list((await s.execute(select(DownloadItem))).scalars())
         jobs = list((await s.execute(select(Job).where(Job.kind == "download_item"))).scalars())
         settings = await s.get(MixSettings, me)
+        assert settings is not None
     # the new songs are downloaded quietly, in the background; the library's are not
     assert {d.query_json["meta"]["track_ref"] for d in dls} == {r.ref for r in active if not r.familiar}
     assert all(d.query_json["mix"]["id"] == mix.id for d in dls) and {j.priority for j in jobs} == {-10}
@@ -441,6 +457,7 @@ async def test_build_queues_quiet_downloads_and_writes_the_playlist(env, monkeyp
 
     async with session_scope() as s:
         settings = await s.get(MixSettings, me)
+        assert settings is not None and settings.playlist_uid is not None
         pl = await get_owned(s, me, settings.playlist_uid)
         rows_pl = await playlist_items(s, pl.id) if pl else []
     assert pl is not None and pl.name == "Микс дня" and pl.system
@@ -458,6 +475,7 @@ async def test_a_song_that_did_not_download_gives_its_place_to_the_reserve(env, 
     await history(me)
     fake_generators(monkeypatch, [new_track(5000 + i) for i in range(10)])
     mix = await core.build_for(me)
+    assert mix is not None
     rows = await mix_rows(mix.id)
     failed, done = [r for r in rows if r.state == "active" and r.download_item_id][:2]
 
@@ -467,6 +485,7 @@ async def test_a_song_that_did_not_download_gives_its_place_to_the_reserve(env, 
     tid = await add_track(5999, music=None)
     async with session_scope() as s:
         dl = await s.get(DownloadItem, done.download_item_id)
+        assert dl is not None
         dl.status, dl.track_id = "done", tid
     await core.sync(mix.id)
 
@@ -479,10 +498,13 @@ async def test_a_song_that_did_not_download_gives_its_place_to_the_reserve(env, 
     from app.playlists import track_uids as playlist_uids
 
     async with session_scope() as s:
-        pid = (await s.get(MixSettings, me)).playlist_uid
-        pl = await get_owned(s, me, pid)
-        want = (await s.get(Track, tid)).uid
-        assert want in await playlist_uids(s, pl.id)
+        mix_settings = await s.get(MixSettings, me)
+        assert mix_settings is not None and mix_settings.playlist_uid is not None
+        pl = await get_owned(s, me, mix_settings.playlist_uid)
+        assert pl is not None
+        want_row = await s.get(Track, tid)
+        assert want_row is not None
+        assert want_row.uid in await playlist_uids(s, pl.id)
 
 
 async def test_next_mix_keeps_the_playlist_and_closes_the_old_one(env, monkeypatch) -> None:
@@ -494,16 +516,20 @@ async def test_next_mix_keeps_the_playlist_and_closes_the_old_one(env, monkeypat
     await history(me)
     fake_generators(monkeypatch, [new_track(5000 + i) for i in range(10)])
     first = await core.build_for(me)
+    assert first is not None
     second = await core.build_for(me)
+    assert second is not None
 
     async with session_scope() as s:
         old = await s.get(Mix, first.id)
+        assert old is not None
     from app.models import MixSettings, Playlist
 
     assert old.status == "closed" and second.status == "active"
     assert second.playlist_uid == first.playlist_uid
     async with session_scope() as s:
         st = await s.get(MixSettings, me)
+        assert st is not None
         assert st.playlist_uid == first.playlist_uid
         assert (
             await s.execute(select(func.count()).select_from(Playlist).where(Playlist.owner_id == me))
@@ -556,12 +582,14 @@ async def keep_by(case: str, env, me: int, other: int, track_id: int) -> None:
 
         async with session_scope() as s:
             t = await s.get(Track, track_id)
+            assert t is not None
             await record(s, other, FavoriteTarget(uid=t.uid, ref="dz:7"), True, client="pwa")
     elif case == "in a playlist":
         from app.models import Playlist, PlaylistItem, Track
 
         async with session_scope() as s:
             t = await s.get(Track, track_id)
+            assert t is not None
             pl = Playlist(uid=f"pl-{track_id}", owner_id=other, name="Моё")
             s.add(pl)
             await s.flush()
@@ -653,16 +681,22 @@ async def test_closing_cancels_queued_downloads_and_waits_for_running_ones(env, 
     await history(me)
     fake_generators(monkeypatch, [new_track(5000 + i) for i in range(10)])
     first = await core.build_for(me)
+    assert first is not None
     running, queued = [r for r in await mix_rows(first.id) if r.download_item_id][:2]
     async with session_scope() as s:
-        (await s.get(DownloadItem, running.download_item_id)).status = "downloading"
+        running_row = await s.get(DownloadItem, running.download_item_id)
+        assert running_row is not None
+        running_row.status = "downloading"
     fake_generators(monkeypatch, [new_track(6000 + i) for i in range(10)])  # other new songs today
 
     await core.build_for(me)
 
     async with session_scope() as s:
-        assert (await s.get(DownloadItem, queued.download_item_id)).status == "cancelled"
+        queued_row = await s.get(DownloadItem, queued.download_item_id)
+        assert queued_row is not None
+        assert queued_row.status == "cancelled"
         dl = await s.get(DownloadItem, running.download_item_id)
+        assert dl is not None
         assert dl.status == "downloading"
         dl.status, dl.track_id = "done", await add_track(5998)  # it finished after the mix closed
     assert await core.pending_cleanup(me) == [first.id]
@@ -693,6 +727,7 @@ async def test_an_unheard_song_goes_to_the_trash(env) -> None:
     assert await core.remove_unheard([mix_id]) == 1
     async with session_scope() as s:
         trashed = await s.get(Track, tid)
+        assert trashed is not None
         # trash marks the row; the blob is untouched until `trash_days` elapse and GC frees it
         assert trashed is not None and trashed.deleted_at is not None
 
@@ -712,6 +747,7 @@ async def test_today_settings_and_rebuild(env, monkeypatch) -> None:
     await history(env["admin"])
     fake_generators(monkeypatch, [new_track(5000 + i) for i in range(10)])
     mix = await core.build_for(env["admin"])
+    assert mix is not None
     r = await client.get("/api/mixes/today")
     body = r.json()["mix"]
     assert body["id"] == mix.id and body["total"] == 6 and body["mode_title"] == "Обычный"
@@ -739,6 +775,7 @@ async def test_rebuild_is_for_the_admin_and_mixes_are_private(env, monkeypatch) 
     await history(other)
     fake_generators(monkeypatch, [new_track(5000 + i) for i in range(10)])
     mix = await core.build_for(other)
+    assert mix is not None
 
     async with app_client(env["app"], login=("other", "pw")) as c:
         assert (await c.post("/api/mixes/rebuild", json={})).status_code == 403
@@ -809,6 +846,7 @@ async def test_v2_shadow_does_not_repeat_build_services(env, monkeypatch, shadow
 
         monkeypatch.setattr(build, name, counted)
     mix = await core.build_for(env["admin"])
+    assert mix is not None
     assert mix is not None and calls == {"run_generators": 1, "sound": 1, "name_mix": 1}
     if shadow:
         assert mix.stats_json["taste_shadow"]["active_seed_keys"] == mix.stats_json["seed_keys"]

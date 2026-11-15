@@ -359,8 +359,10 @@ def test_listen_format_prefers_m4a_audio() -> None:
             "protocol": "m3u8_native",
         },
     ]
-    assert listen_format({"formats": fmts})["format_id"] == "140"
-    assert listen_format({"formats": fmts[:1]})["format_id"] == "251"
+    best = listen_format({"formats": fmts})
+    assert best is not None and best["format_id"] == "140"
+    only = listen_format({"formats": fmts[:1]})
+    assert only is not None and only["format_id"] == "251"
     assert listen_format({"formats": fmts[3:4]}) is None
 
 
@@ -488,6 +490,7 @@ async def test_bot_check_explains_source_failure(
     monkeypatch.setattr(ytdlp_mod.yt_dlp.YoutubeDL, "extract_info", blocked)
     p = YtdlpProvider(YtdlpCfg())
     c = entry_to_candidate(FLAT_TOPIC)
+    assert c is not None
     with pytest.raises(ProviderError, match="YouTube запросил проверку «не робот»") as error:
         if operation == "fetch":
             await p.fetch(c, tmp_path)
@@ -520,6 +523,7 @@ async def test_youtube_cookies_are_reloaded_without_rewriting_export(
     monkeypatch.setattr(ytdlp_mod.yt_dlp.YoutubeDL, "process_ie_result", process)
     p = YtdlpProvider(YtdlpCfg())
     c = entry_to_candidate(FLAT_TOPIC)
+    assert c is not None
     for value in ("first", "refreshed"):
         exported = (
             "# Netscape HTTP Cookie File\n"
@@ -551,8 +555,10 @@ async def test_unreadable_cookies_fail_without_exposing_contents(
         path.write_text(contents, encoding="utf-8")
     monkeypatch.setenv("YTDLP_COOKIES_FILE", str(path))
     p = YtdlpProvider(YtdlpCfg())
+    c = entry_to_candidate(FLAT_TOPIC)
+    assert c is not None
     with pytest.raises(ProviderError, match="Не удалось прочитать cookies YouTube") as error:
-        await p.enrich(entry_to_candidate(FLAT_TOPIC))
+        await p.enrich(c)
     assert "secret" not in str(error.value)
 
 
@@ -628,12 +634,16 @@ async def test_fetch_with_fake_ydl(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     progress: list[float] = []
     if sync_cb:
 
-        def cb(f: float) -> None:
+        def sync_callback(f: float) -> None:
             progress.append(f)
+
+        cb = sync_callback
     else:
 
-        async def cb(f: float) -> None:  # type: ignore[misc]
+        async def async_callback(f: float) -> None:
             progress.append(f)
+
+        cb = async_callback
 
     path = await p.fetch(c, tmp_path / "staging", on_progress=cb)
     await asyncio.sleep(0.05)  # let call_soon_threadsafe / coroutine callbacks run

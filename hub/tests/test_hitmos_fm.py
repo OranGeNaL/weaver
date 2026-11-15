@@ -54,7 +54,7 @@ def test_parse_search():
     )
     assert c.page_url == f"{BASE}/song/9355210"
     assert c.download_url == DL
-    assert c.cover_url.startswith("https://static-c1.hitmos.fm/")
+    assert c.cover_url is not None and c.cover_url.startswith("https://static-c1.hitmos.fm/")
     assert c.extra["file_id"] == "2312902" and c.extra["artist_id"] == "7276247"
     assert all(x.download_url and x.download_url.startswith("https://dwc1.hitmos.fm/") for x in res)
 

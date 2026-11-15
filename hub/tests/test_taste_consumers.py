@@ -23,7 +23,7 @@ def fresh_settings():
     get_settings.cache_clear()
 
 
-def vp(*tracks, maturity=1):
+def vp(*tracks, maturity: float = 1):
     base = profile(*tracks)
     return V2Profile(
         **{k: getattr(base, k) for k in Profile.__dataclass_fields__}, timezone="Europe/Moscow", maturity=maturity
@@ -46,7 +46,7 @@ def signal(eid, kind, ref="dz:1", position=None, **kw):
     )
 
 
-def seed_track(i, artist=None, score=2, age=1):
+def seed_track(i, artist=None, score: float = 2, age=1):
     track = tr(i, artist or f"A{i}")
     return TasteTrack(
         track.ref,
@@ -362,7 +362,7 @@ async def test_future_session_signal_is_not_consumed_before_its_time(monkeypatch
 
 def test_nearest_session_negative_preserves_unrelated_cluster_and_m4_weighted_center():
     st = wave.State(taste_model="v2", neg=["n1", "n2"], positive_weights={"p1": 2, "p2": 1})
-    vectors = {"n1": [1, 0], "n2": [-1, 0], "p1": [0, 1], "p2": [1, 0]}
+    vectors: dict[str, list[float]] = {"n1": [1, 0], "n2": [-1, 0], "p1": [0, 1], "p2": [1, 0]}
     c = cand(1)
     vectors[c.key] = [1, 0]
     assert wave.value(c, st, vectors, None, None) == pytest.approx(c.score - 0.5)

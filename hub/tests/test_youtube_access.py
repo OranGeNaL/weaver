@@ -147,12 +147,14 @@ def test_youtube_opts_select_mweb_and_internal_provider_without_affecting_soundc
     cfg = YtdlpCfg()
     for p in (YtdlpProvider(cfg), YtReuploadProvider(cfg)):
         with p._youtube_dl({}) as ydl:
-            assert ydl.params["extractor_args"]["youtube"]["player_client"] == ["mweb"]
-            assert ydl.params["extractor_args"]["youtubepot-bgutilhttp"]["base_url"] == ["http://youtube-pot:4416"]
-            assert ydl.params["sleep_interval_requests"] == 1
-            assert ydl.params["sleep_interval"] == 5
-            assert ydl.params["retries"] == 1
-            assert ydl.params["concurrent_fragment_downloads"] == 1
+            extractor_args = ydl.params.get("extractor_args")
+            assert extractor_args is not None
+            assert extractor_args["youtube"]["player_client"] == ["mweb"]
+            assert extractor_args["youtubepot-bgutilhttp"]["base_url"] == ["http://youtube-pot:4416"]
+            assert ydl.params.get("sleep_interval_requests") == 1
+            assert ydl.params.get("sleep_interval") == 5
+            assert ydl.params.get("retries") == 1
+            assert ydl.params.get("concurrent_fragment_downloads") == 1
     sc_opts = SoundcloudProvider(cfg)._base_opts()
     assert "extractor_args" not in sc_opts and "sleep_interval" not in sc_opts
 
@@ -198,6 +200,7 @@ async def test_metadata_cache_keeps_stream_shortcut_for_both_youtube_providers(m
     from app.providers.ytdlp import entry_to_candidate
 
     c = entry_to_candidate(await first._metadata("test"))
+    assert c is not None
     await other._metadata("test")
     assert (await other.stream(c)).url == "https://audio.test/full"
     assert (await first.stream(c)).url == "https://audio.test/full"

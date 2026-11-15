@@ -1,6 +1,7 @@
 import copy
 import json
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -29,8 +30,16 @@ from app.ai.links import (
 FIX = Path(__file__).parent / "fixtures" / "links"
 
 
-def load(name: str) -> dict | list:
-    return json.loads((FIX / name).read_text(encoding="utf-8"))
+def load(name: str) -> dict[str, Any]:
+    data = json.loads((FIX / name).read_text(encoding="utf-8"))
+    assert isinstance(data, dict), name
+    return data
+
+
+def load_list(name: str) -> list[dict[str, Any]]:
+    data = json.loads((FIX / name).read_text(encoding="utf-8"))
+    assert isinstance(data, list), name
+    return data
 
 
 @pytest.fixture(scope="module")
@@ -185,8 +194,9 @@ def test_yandex_playlist_fills_missing_tracks(ym_client) -> None:
 
 
 def test_yandex_track(ym_client) -> None:
-    tracks = Track.de_list(load("yandex_tracks.json"), ym_client)
+    tracks = Track.de_list(load_list("yandex_tracks.json"), ym_client)
     it = yandex_track_item(tracks[0])
+    assert it is not None
     assert (it.artist_raw, it.title_raw, it.album_raw, it.duration) == ("КИНО", "Группа крови", "Группа крови", "4:44")
     assert yandex_track_item(None) is None
 
@@ -217,7 +227,7 @@ class FakeYM:
         self.track_calls.append(list(ids))
         if self.removed and ids == [str(self.removed["id"])]:
             return [Track.de_json(self.removed, self.client)]
-        return Track.de_list(load("yandex_tracks.json"), self.client)
+        return Track.de_list(load_list("yandex_tracks.json"), self.client)
 
 
 def test_yandex_fetch_with_fake_client(monkeypatch: pytest.MonkeyPatch, ym_client) -> None:
@@ -259,12 +269,16 @@ def test_youtube_album_fixture() -> None:
 
 def test_youtube_entry_variants() -> None:
     topic = youtube_entry_item({"title": "Группа крови", "channel": "Кино - Topic", "duration": 284})
+    assert topic is not None
     assert (topic.artist_raw, topic.title_raw, topic.duration, topic.conf) == ("Кино", "Группа крови", "4:44", 0.9)
     tema = youtube_entry_item({"title": "Романс", "channel": "Сплин - Тема"})
+    assert tema is not None
     assert tema.artist_raw == "Сплин"
     dashed = youtube_entry_item({"title": "Кино - Группа крови (Official Audio)", "channel": "Rock Archive"})
+    assert dashed is not None
     assert (dashed.artist_raw, dashed.title_raw, dashed.conf) == ("Кино", "Группа крови", 0.8)
     meta = youtube_entry_item({"title": "x", "track": "Группа крови", "artist": "Кино", "album": "Группа крови"})
+    assert meta is not None
     assert (meta.artist_raw, meta.title_raw, meta.album_raw, meta.conf) == (
         "Кино",
         "Группа крови",

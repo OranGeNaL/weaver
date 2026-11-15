@@ -144,7 +144,8 @@ async def test_artist_page_paginates_sorts_and_maps(dz: DeezerClient, respx_mock
     assert routes["albums"].call_count == 2  # 25 + 22 items, followed `next`
     assert page.artist.name == "Три дня дождя"
     assert len(page.albums) == 47
-    dates = [a.release_date for a in page.albums]
+    dates = [a.release_date for a in page.albums if a.release_date is not None]
+    assert len(dates) == len(page.albums)  # every album of the artist has a release date
     assert dates == sorted(dates, reverse=True)
     kinds = {k: sum(a.record_type == k for a in page.albums) for k in ("album", "single", "ep")}
     assert kinds == {"album": 7, "single": 37, "ep": 3}
@@ -196,6 +197,7 @@ async def test_get_album_full_tracklist(dz: DeezerClient, respx_mock: respx.Rout
         t1.album_ref == f"dz:{ALBUM_ID}" and t1.album_title == "У ЧАСТЬ ВТОРАЯ" and t1.album_artist == "Три дня дождя"
     )
     assert t1.release_date == date(2026, 10, 9) and t1.cover_url == album.cover_url
+    assert t1.cover_small_url is not None
     assert t1.cover_small_url == album.cover_small_url and "250x250" in t1.cover_small_url  # lists load this one
     assert t1.artist_ref == f"dz:{ARTIST_ID}" and t1.preview_url
 
