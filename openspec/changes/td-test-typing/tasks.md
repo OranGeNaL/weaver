@@ -1,12 +1,12 @@
 ## 1. Базовая линия
 
-- [ ] 1.1 Зафиксировать число ошибок: временный `hub/pyright.tests.json` (`include: ["tests"]`) + `uv run pyright -p pyright.tests.json`; сохранить список файлов и количество в отчёте (на 2026-11-15 — 200 ошибок в 18 файлах).
-- [ ] 1.2 Убедиться, что до правок `pytest` зелёный; зафиксировать число `passed`/`skipped`.
+- [x] 1.1 Зафиксировать число ошибок: временный `hub/pyright.tests.json` (`include: ["tests"]`) + `uv run pyright -p pyright.tests.json`; сохранить список файлов и количество в отчёте (на 2026-11-15 — 200 ошибок в 18 файлах).
+- [x] 1.2 Убедиться, что до правок `pytest` зелёный; зафиксировать число `passed`/`skipped`.
 
 ## 2. Крупнейшие файлы (89 из 200)
 
-- [ ] 2.1 `tests/test_tagger.py` (49): убрать `reportOptionalMemberAccess`/`reportArgumentType` сужением типов и `assert ... is not None`; без ослабления assert'ов.
-- [ ] 2.2 `tests/test_wave.py` (31): то же.
+- [x] 2.1 `tests/test_tagger.py` (49): убрать `reportOptionalMemberAccess`/`reportArgumentType` сужением типов и `assert ... is not None`; без ослабления assert'ов.
+- [x] 2.2 `tests/test_wave.py` (31): то же.
 - [ ] 2.3 `tests/test_ai_links.py` (29): то же; `cast(Any, ...)` — только для фейков, не наследующих продовый класс.
 
 ## 3. Средние файлы (54 из 200)

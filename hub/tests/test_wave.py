@@ -9,9 +9,10 @@ test_mix_sources.py); the library is the Hub's own.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from sqlalchemy import select
@@ -43,7 +44,7 @@ def cand(n: int, artist: str | None = None, *, score: float = 1.0, familiar: boo
     return build.Cand(track=tr(n, artist), gens={"ytm_radio": 0}, familiar=familiar, score=score)
 
 
-def state(*cands: build.Cand, played: list[str] = ()) -> wave.State:
+def state(*cands: build.Cand, played: Sequence[str] = ()) -> wave.State:
     st = wave.State()
     st.pool = {c.track.ref: c for c in cands}
     for i, a in enumerate(played):
@@ -255,7 +256,7 @@ async def env(hub_env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(listen, "warm_light", lambda refs: warmed.append(list(refs)))
     app = create_app()
     async with app.router.lifespan_context(app):
-        svc.deezer = FakeDeezer()
+        svc.deezer = cast(Any, FakeDeezer())
         async with app_client(app) as client:
             yield {
                 "client": client,
@@ -266,7 +267,7 @@ async def env(hub_env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 def fake_sources(
-    monkeypatch: pytest.MonkeyPatch, tracks: list[CatalogTrack], radio: list[CatalogTrack] = ()
+    monkeypatch: pytest.MonkeyPatch, tracks: list[CatalogTrack], radio: Sequence[CatalogTrack] = ()
 ) -> dict[str, Any]:
     """The pool's generators give `tracks`; the radio of a liked track gives `radio`."""
     seen: dict[str, Any] = {"seed": [], "radio": []}
@@ -501,10 +502,12 @@ async def test_a_wave_by_a_hub_artist_takes_its_songs_and_its_deezer_artist(env,
         artist_uid = artist.uid
     from app.services import svc
 
+    fake_deezer = cast(Any, svc.deezer)  # the fake installed by `env`, not a DeezerClient
+
     async def search(q, kinds=("artist", "album", "track"), limit=10):
         from app.catalog.models import SearchResults
 
-        return SearchResults(artists=[svc.deezer.artist("2", "Кино-2"), svc.deezer.artist("1", "КИНО")])
+        return SearchResults(artists=[fake_deezer.artist("2", "Кино-2"), fake_deezer.artist("1", "КИНО")])
 
     monkeypatch.setattr(svc.deezer, "search", search)
     got: list[dict[str, Any]] = []
@@ -584,6 +587,7 @@ async def test_a_session_outlives_a_restart_but_not_another_user(env, monkeypatc
 
     async with session_scope() as s:
         other = await s.get(User, await add_user("other"))
+    assert other is not None
     for _ in range(2):  # from memory and from the row
         with pytest.raises(wave.WaveError):
             await wave.next_batch(other, sid, [], [])
@@ -600,7 +604,9 @@ async def test_an_idle_session_is_over(env, monkeypatch) -> None:
     sid = (await c.post("/api/wave/start", json={})).json()["session_id"]
     await wave.reset()
     async with session_scope() as s:
-        (await s.get(WaveSession, sid)).updated_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=2)
+        idle = await s.get(WaveSession, sid)
+        assert idle is not None
+        idle.updated_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=2)
 
     assert (await c.post(f"/api/wave/{sid}/next", json={})).status_code == 404
 
@@ -649,7 +655,9 @@ async def test_v2_wave_refreshes_profile_pins_model_and_does_not_relearn_after_r
     assert result.status_code == 200, result.text
     await wave.settle(sid)
     async with session_scope() as s:
-        saved = (await s.get(WaveSession, sid)).state_json
+        saved_row = await s.get(WaveSession, sid)
+        assert saved_row is not None
+        saved = saved_row.state_json
     assert saved["taste_model"] == "v2" and saved["positive_weights"] == {first: 2}
     old_profile = wave._rt[sid].profile
     # A separate menu action, not submitted through wave.next, must affect its old queued pool.
@@ -666,7 +674,9 @@ async def test_v2_wave_refreshes_profile_pins_model_and_does_not_relearn_after_r
     assert replay.json()["recorded"]["duplicates"] == 1
     await wave.settle(sid)
     async with session_scope() as s:
-        restored = (await s.get(WaveSession, sid)).state_json
+        restored_row = await s.get(WaveSession, sid)
+        assert restored_row is not None
+        restored = restored_row.state_json
     assert restored["taste_model"] == "v2" and restored["positive_weights"] == saved["positive_weights"]
 
 
@@ -703,6 +713,7 @@ async def test_legacy_state_bootstraps_seen_journal_without_replaying_old_skip(e
     before = dict(wave._rt[sid].state.skips)
     async with session_scope() as s:
         row = await s.get(WaveSession, sid)
+        assert row is not None
         row.state_json = {k: v for k, v in row.state_json.items() if k not in ("seen", "version", "taste_model")}
     await wave.reset()
     again = await c.post(f"/api/wave/{sid}/next", json={"played": [e]})
@@ -718,7 +729,9 @@ async def wave_row(sid: str):
     from app.models import WaveSession
 
     async with session_scope() as s:
-        return await s.get(WaveSession, sid)
+        row = await s.get(WaveSession, sid)
+    assert row is not None
+    return row
 
 
 async def wave_items(sid: str) -> list:
@@ -775,6 +788,7 @@ async def test_an_old_session_is_cleared_to_a_summary_not_deleted(env, monkeypat
     fresh = (await c.post("/api/wave/start", json={})).json()["session_id"]
     async with session_scope() as s:
         row = await s.get(WaveSession, old)
+        assert row is not None
         row.updated_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=8)
         row.state_json = {**row.state_json, "started": 3, "skips": {"a": 1}}
 
