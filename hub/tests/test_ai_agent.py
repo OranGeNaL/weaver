@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import uuid
 
-import httpx
+import httpx2
 import pytest
 from sqlalchemy import select
 
@@ -50,11 +50,11 @@ async def env(hub_env, monkeypatch):
     config.get_settings.cache_clear()
     state: dict = {"script": [], "llm_requests": []}
 
-    def llm_handler(request: httpx.Request) -> httpx.Response:
+    def llm_handler(request: httpx2.Request) -> httpx2.Response:
         state["llm_requests"].append(json.loads(request.content))
         if not state["script"]:  # the model stopped answering (400: the client does not retry)
-            return httpx.Response(400, json={"error": {"message": "no more"}})
-        return httpx.Response(200, json=state["script"].pop(0))
+            return httpx2.Response(400, json={"error": {"message": "no more"}})
+        return httpx2.Response(200, json=state["script"].pop(0))
 
     app = create_app()
     with mock_llm_http() as llm:
@@ -558,3 +558,22 @@ async def test_saved_chat_remembers_screenshots_and_the_answer_to_a_proposal(env
     r = await c.post(f"/api/assistant/chat/{out['task_id']}/confirm", json={"confirm_token": out["confirm_token"]})
     assert r.status_code == 409, r.text  # a dismissed proposal can no longer delete anything
     assert await local_playlist("pl1") != {}
+
+
+async def test_chat_client_is_the_httpx2_client_the_hub_builds(hub_env, monkeypatch):
+    from app import config
+    from app.ai.agent import make_client
+
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_BASE_URL", LLM)
+    config.get_settings.cache_clear()
+    with mock_llm_http() as llm:
+        llm.answer = httpx2.Response(200, json=completion("Привет"))
+        client = make_client()
+        try:
+            assert isinstance(client._client, httpx2.AsyncClient)
+            resp = await client.chat.completions.create(model="m", messages=[{"role": "user", "content": "hi"}])
+        finally:
+            await client.close()
+    assert resp.choices[0].message.content == "Привет"
+    assert [str(r.url) for r in llm.requests] == [f"{LLM}/chat/completions"]
