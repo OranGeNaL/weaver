@@ -16,8 +16,8 @@
 - Не переводить статус-поля (`jobs.status`, `download_items.status`, `imports.status`, `assistant_tasks.status`,
   `uploads.status`) — это state machines, наборы меняются чаще; отдельный шаг.
 - Не вводить нативные PG-enum типы и не менять типы колонок.
-- Не ограничивать касты "БД → Literal" вне первого набора: `favorite_subjects.target_type` и
-  `favorite_events.target_type` (`app/favorites.py`) остаются на соглашении — отдельный `td-*` change.
+- Не ограничивать касты "БД → Literal" вне первого набора: `favorite_subjects.target_type`
+  (`app/favorites.py`) остаётся на соглашении — отдельный `td-*` change.
 - Не добавлять валидацию в API поверх существующих Pydantic-схем.
 - Не менять поведение валидных путей записи.
 
@@ -33,10 +33,12 @@ create_constraint=True)` дал бы то же, но тянет пересозд
 
 ### 2. Первый набор — только поля, на которые опираются касты
 
-`imports.source/method/mode`, `import_collections.kind`, `import_items.kind`, `albums.release_type`,
+`imports.source/method/mode`, `import_collections.kind`, `albums.release_type`,
 `mix_settings.mode`, `mixes.mode`, `wave_sessions.mode`. Наборы берутся из `app/api/schemas.py`
-(`ImportSource`, `ImportMethod`, `ImportMode`, `CollectionKind`, `ItemKind`, `MixMode`) и
-`app/library/tagger.py` (`ReleaseType`). Nullable-поля (`albums.release_type`) допускают `NULL`.
+(`ImportSource`, `ImportMethod`, `ImportMode`, `CollectionKind`, `MixMode`) и
+`app/library/tagger.py` (`ReleaseType`). `ItemKind` не имеет своей колонки: `ImportItemOut.kind`
+вычисляется из `import_collections.kind` через `ITEM_KIND`, поэтому ограничивается она.
+Nullable-поля (`albums.release_type`) допускают `NULL`.
 
 ### 3. Ограничения дублируются в моделях
 

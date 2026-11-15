@@ -1,7 +1,7 @@
 ## Why
 
 Ряд перечислимых полей Hub объявлен в БД обычным текстом (`String(16/32)`): `imports.source/method/mode`,
-`import_collections.kind`, `import_items.kind`, `albums.release_type`, `mix_settings.mode`, `mixes.mode`,
+`import_collections.kind`, `albums.release_type`, `mix_settings.mode`, `mixes.mode`,
 `wave_sessions.mode`. Допустимые значения сейчас держатся только соглашением и `Literal`-типами
 Pydantic на границе API, поэтому `cast(ImportSource, imp.source)` — обещание, а не проверка: невалидное
 значение из старой строки или бага попадёт в БД и всплывёт позже `ResponseValidationError` на чтении
@@ -31,8 +31,8 @@ Pydantic на границе API, поэтому `cast(ImportSource, imp.source)
 ## Impact
 
 - БД: новая Alembic-миграция; ограничения на 8 колонок первого набора.
-- Вне scope: `favorite_subjects.target_type` и `favorite_events.target_type` — тот же класс каста
-  "БД → Literal", но вне первого набора; выносятся отдельным `td-*` change.
+- Вне scope: `favorite_subjects.target_type` — тот же класс каста "БД → Literal", но вне первого
+  набора; выносится отдельным `td-*` change.
 - Код: `hub/app/models.py` (`CheckConstraint` в `__table_args__`), миграция, тесты.
 - Поведение: невалидная запись теперь завершается ошибкой БД — это объявленное изменение контракта хранения.
 - API, клиенты, фоновые задачи: без изменений.
