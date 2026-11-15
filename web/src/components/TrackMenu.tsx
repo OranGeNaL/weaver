@@ -16,17 +16,13 @@ export interface MenuTrack {
   title: string;
   artist: string;
   ref?: string | null;
-  /** the Hub track uid: a library song goes into a playlist by it (stage 5+) */
+  /** the Hub track uid: a library song goes into a playlist by it */
   uid?: string | null;
-  nd_song_id?: string | null;
   artist_ref?: string | null;
   album_ref?: string | null;
   /** the Hub album and artist uids of a library song (the library pages of a browser) */
   album_uid?: string | null;
   artist_uid?: string | null;
-  /** deprecated aliases: the song's Navidrome album and artist, until stage 7 */
-  nd_album_id?: string | null;
-  nd_artist_id?: string | null;
   /** the track for the page player's queue («Играть следующим», «В очередь»); none — not offered */
   listen?: ListenTrack;
 }
@@ -55,14 +51,14 @@ export function TrackMenuButton({ track, extra, className, inPlayer }: { track: 
 }
 
 /** Library songs go into the playlist at once; a catalog track is downloaded into it (it appears once imported).
- * A library song is named by its Hub `uid` (the deprecated `nd_song_id` only when there is none). */
+ * A library song is named by its Hub `uid`. */
 async function addToPlaylist(track: MenuTrack, pick: PlaylistPick): Promise<boolean> {
   const name = pick.kind === 'existing' ? pick.playlist.name : pick.name;
   const uid = track.uid ?? track.listen?.uid ?? null;
-  if (uid || track.nd_song_id) {
+  if (uid) {
     const r = await attempt(async () => {
       const id = pick.kind === 'existing' ? pick.playlist.id : (await api.createPlaylist(pick.name)).id;
-      return api.addToPlaylist(id, uid ? { uids: [uid] } : { song_ids: [track.nd_song_id as string] });
+      return api.addToPlaylist(id, { uids: [uid] });
     }, `Добавлено в «${name}»`);
     return !!r;
   }
@@ -85,7 +81,8 @@ function TrackMenu({ track, extra, inPlayer, onClose }: { track: MenuTrack; extr
   const [busy, setBusy] = useState(false);
   const trackWave = trackSeed(track);
   const artistWave = artistSeed(track);
-  const target: DislikeTarget = { ref: track.ref, nd_song_id: track.nd_song_id, artist: track.artist, title: track.title };
+  const uid = track.uid ?? track.listen?.uid ?? null;
+  const target: DislikeTarget = { ref: track.ref, uid, artist: track.artist, title: track.title };
   const artist: DislikeTarget | null = track.artist_ref ? { artist_ref: track.artist_ref, artist: track.artist } : null;
   const disliked = useDisliked(target);
   const artistDisliked = useDisliked(artist ?? { artist_ref: '\u0000' });
@@ -93,10 +90,8 @@ function TrackMenu({ track, extra, inPlayer, onClose }: { track: MenuTrack; extr
   const hasQueue = useListen((s) => !!s.track);
   // the page's own player plays here (a browser, an app without `playQueue`)
   const queueable = !!track.listen && !canPlayAll() && !playing;
-  const libraryAlbum = track.album_uid ?? track.nd_album_id;
-  const libraryArtist = track.artist_uid ?? track.nd_artist_id;
-  const albumTo = track.album_ref ? `/album/${enc(track.album_ref)}` : STANDALONE && libraryAlbum ? `/lib/album/${enc(libraryAlbum)}` : null;
-  const artistTo = track.artist_ref ? `/artist/${enc(track.artist_ref)}` : STANDALONE && libraryArtist ? `/lib/artist/${enc(libraryArtist)}` : null;
+  const albumTo = track.album_ref ? `/album/${enc(track.album_ref)}` : STANDALONE && track.album_uid ? `/lib/album/${enc(track.album_uid)}` : null;
+  const artistTo = track.artist_ref ? `/artist/${enc(track.artist_ref)}` : STANDALONE && track.artist_uid ? `/lib/artist/${enc(track.artist_uid)}` : null;
   const go = (to: string) => {
     onClose();
     navigate(to);
@@ -148,11 +143,11 @@ function TrackMenu({ track, extra, inPlayer, onClose }: { track: MenuTrack; extr
             />
           </>
         )}
-        {(track.uid || track.nd_song_id || track.ref) && (
+        {(uid || track.ref) && (
           <MenuItem
             icon="playlist"
             label="Добавить в плейлист"
-            hint={track.uid || track.nd_song_id ? undefined : 'Трек скачается в библиотеку'}
+            hint={uid ? undefined : 'Трек скачается в библиотеку'}
             onClick={() => setPicking(true)}
           />
         )}

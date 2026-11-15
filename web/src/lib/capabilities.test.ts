@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { hubLibrarySupported, resetCapabilities, typedFavoritesSupported } from './capabilities';
+import { resetCapabilities, typedFavoritesSupported } from './capabilities';
 
-/** `/healthz` decides the catalog branch (task 4.4): the capability picks `/api/library/*`; no capability, a timeout
- * or an unreachable Hub all keep the deprecated `/api/nd/*` branch, so the PWA never guesses. */
+/** `/healthz` answers the capability questions of a session; a Hub without `typed_favorites_v1`, a timeout or an
+ * unreachable Hub all mean the older ♥ protocol, so the PWA never guesses. */
 
 const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
 
@@ -16,20 +16,18 @@ afterEach(() => {
   resetCapabilities();
 });
 
-describe('hubLibrarySupported', () => {
-  it('is on when /healthz lists hub_library_v1', async () => {
-    const fetchMock = vi.fn(async () => json({ capabilities: ['typed_favorites_v1', 'hub_library_v1'] }));
+describe('typedFavoritesSupported', () => {
+  it('is on when /healthz lists typed_favorites_v1, one answer per session', async () => {
+    const fetchMock = vi.fn(async () => json({ capabilities: ['typed_favorites_v1', 'listening_checkpoints_v1'] }));
     vi.stubGlobal('fetch', fetchMock);
-    expect(await hubLibrarySupported()).toBe(true);
     expect(await typedFavoritesSupported()).toBe(true);
-    // one /healthz answers the whole session
+    expect(await typedFavoritesSupported()).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('is off when the Hub does not know it', async () => {
-    vi.stubGlobal('fetch', async () => json({ capabilities: ['typed_favorites_v1'] }));
-    expect(await hubLibrarySupported()).toBe(false);
-    expect(await typedFavoritesSupported()).toBe(true);
+    vi.stubGlobal('fetch', async () => json({ capabilities: ['listening_checkpoints_v1'] }));
+    expect(await typedFavoritesSupported()).toBe(false);
   });
 
   it('is off when /healthz times out or is unreachable', async () => {
@@ -39,22 +37,21 @@ describe('hubLibrarySupported', () => {
         throw new DOMException('The operation was aborted', 'AbortError');
       },
     );
-    expect(await hubLibrarySupported()).toBe(false);
     expect(await typedFavoritesSupported()).toBe(false);
   });
 
-  it('caches the negative answer, so a timed-out Hub is not asked on every catalog call', async () => {
+  it('caches the negative answer, so a timed-out Hub is not asked on every call', async () => {
     const fetchMock = vi.fn(async () => {
       throw new DOMException('The operation was aborted', 'AbortError');
     });
     vi.stubGlobal('fetch', fetchMock);
-    expect(await hubLibrarySupported()).toBe(false);
-    expect(await hubLibrarySupported()).toBe(false);
+    expect(await typedFavoritesSupported()).toBe(false);
+    expect(await typedFavoritesSupported()).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('is off on a non-200 /healthz', async () => {
     vi.stubGlobal('fetch', async () => new Response('nope', { status: 503 }));
-    expect(await hubLibrarySupported()).toBe(false);
+    expect(await typedFavoritesSupported()).toBe(false);
   });
 });

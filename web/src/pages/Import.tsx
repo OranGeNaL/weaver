@@ -10,7 +10,7 @@ import { fmtDuration, fmtSize, fmtWhen, plural, tracksWord } from '../lib/format
 import { useAsync, useInterval } from '../lib/hooks';
 import { listen, type ListenTrack } from '../lib/listen';
 import { TrackMenuButton } from '../components/TrackMenu';
-import { canPlay, canPlayAll, playList, playMixed } from '../lib/player';
+import { canPlayAll, playHubItems, type HubItem } from '../lib/player';
 import { Link, navigate } from '../lib/router';
 import { copyText } from '../lib/share';
 import { attempt, confirmDialog, toast } from '../lib/ui';
@@ -487,21 +487,12 @@ export function ImportItemsPage({ id, collectionId, match, status }: { id: numbe
   const title = coll?.title ?? (match === 'not_found' ? 'Не найдено' : match === 'probable' ? 'Вероятно' : status === 'failed' ? 'Не скачалось' : 'Точно');
   const items = res.data?.items ?? [];
   const tracks = items.filter((x) => x.kind === 'track' && x.status !== 'skipped');
-  const playable = tracks.filter((x) => x.nd_song_id || x.ref);
+  const playable = tracks.filter((x) => x.uid || x.ref);
   const [busyId, setBusyId] = useState<number | null>(null);
 
   const play = (from: ImportItemOut) => {
-    if (canPlayAll()) {
-      playMixed(
-        playable.map((x) => (x.nd_song_id ? { song_id: x.nd_song_id } : { ref: x.ref as string, title: x.title, artist: x.artist, album: x.album, cover_url: x.cover_url, duration_s: x.duration_s })),
-        Math.max(0, playable.indexOf(from)),
-      );
-    } else if (canPlay() && from.nd_song_id) {
-      playList(playable, (x) => x.nd_song_id, from);
-    } else if (from.ref) {
-      const queue = playable.filter((x) => !x.nd_song_id && x.ref).map(listenItem);
-      listen(listenItem(from), queue);
-    }
+    if (canPlayAll()) playHubItems(playable.map(hubItemOf), Math.max(0, playable.indexOf(from)));
+    else listen(listenItem(from), playable.map(listenItem));
   };
   const pick = async (it: ImportItemOut) => {
     setBusyId(it.id);
@@ -531,7 +522,7 @@ export function ImportItemsPage({ id, collectionId, match, status }: { id: numbe
       ) : (
         <ul className="divide-y divide-line/60">
           {items.map((it, i) => (
-            <ItemRow key={it.id} n={i + 1} it={it} review={collectionId == null} busy={busyId === it.id} onPlay={it.kind === 'track' && (it.nd_song_id || it.ref) ? () => play(it) : undefined} onPick={() => pick(it)} />
+            <ItemRow key={it.id} n={i + 1} it={it} review={collectionId == null} busy={busyId === it.id} onPlay={it.kind === 'track' && (it.uid || it.ref) ? () => play(it) : undefined} onPick={() => pick(it)} />
           ))}
         </ul>
       )}
@@ -546,7 +537,24 @@ export function ImportItemsPage({ id, collectionId, match, status }: { id: numbe
   );
 }
 
-const listenItem = (x: ImportItemOut): ListenTrack => ({ ref: x.ref as string, title: x.title, artist: x.artist, cover_url: x.cover_url, duration_s: x.duration_s });
+/** A row of an import as the players take it: a library song by `lib:<uid>`, the rest by its catalog ref. */
+const listenItem = (x: ImportItemOut): ListenTrack => ({
+  ref: x.uid ? `lib:${x.uid}` : (x.ref as string),
+  uid: x.uid ?? null,
+  title: x.title,
+  artist: x.artist,
+  cover_url: x.cover_url,
+  duration_s: x.duration_s,
+});
+
+const hubItemOf = (x: ImportItemOut): HubItem => ({
+  ref: x.uid ? `lib:${x.uid}` : (x.ref as string),
+  title: x.title,
+  artist: x.artist,
+  album: x.album,
+  cover_url: x.cover_url,
+  duration_s: x.duration_s,
+});
 
 /** `review`: a part of the report — a probable match offers to pick the file (in a collection it plays). */
 function ItemRow({ n, it, review, busy, onPlay, onPick }: { n: number; it: ImportItemOut; review: boolean; busy: boolean; onPlay?: () => void; onPick: () => void }) {
@@ -577,15 +585,15 @@ function ItemRow({ n, it, review, busy, onPlay, onPick }: { n: number; it: Impor
       ) : (
         <div className="flex min-w-0 flex-1 items-center gap-3">{inner}</div>
       )}
-      {it.kind === 'track' && (it.ref?.startsWith('dz:') || it.nd_song_id) && <TrackMenuButton track={{ title: it.title, artist: it.artist, ref: it.ref, nd_song_id: it.nd_song_id }} />}
+      {it.kind === 'track' && (it.ref?.startsWith('dz:') || it.uid) && <TrackMenuButton track={{ title: it.title, artist: it.artist, ref: it.ref, uid: it.uid }} />}
       {needsPick ? (
         <Button small busy={busy} onClick={onPick}>
           Выбрать файл
         </Button>
       ) : onPlay ? (
-        !canPlay() && !it.nd_song_id && it.ref ? (
+        !it.uid && it.ref ? (
           <ListenButton track={{ ref: it.ref, title: it.title }} onListen={onPlay} />
-        ) : canPlay() ? (
+        ) : canPlayAll() ? (
           <IconButton icon="play" label={`Слушать «${it.title}»`} onClick={onPlay} className="!text-accent" />
         ) : null
       ) : null}

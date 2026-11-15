@@ -9,10 +9,8 @@ import { toast, toastError } from './ui';
 
 export interface LikeTarget {
   targetType?: FavoriteType;
-  /** the Hub uid of the target: the primary alias since stage 5 */
+  /** the Hub uid of the target: the primary alias */
   uid?: string | null;
-  songId?: string | null;
-  ndId?: string | null;
   ref?: string | null;
   data?: Record<string, unknown>;
 }
@@ -23,7 +21,7 @@ let own = new Map<string, boolean>();
 let linkedAliases = new Map<string, string[]>();
 const local = new Map<string, Decision>();
 const pendingRefs = new Set<string>();
-const refSongs = new Map<string, string>();
+const refUids = new Map<string, string>();
 const busy = new Set<string>();
 // A failed/ambiguous delivery retries the exact same operation, never a new journal decision.
 const retries = new Map<string, { eventId: string; ts: string; liked: boolean }>();
@@ -39,8 +37,8 @@ const REFRESH_MS = 30_000;
 const typeOf = (t: LikeTarget) => t.targetType ?? 'track';
 const typedKey = (type: FavoriteType, alias: string) => `${type}:${alias}`;
 function aliases(t: LikeTarget): string[] {
-  const id = t.ndId ?? t.songId ?? (typeOf(t) === 'track' && t.ref ? refSongs.get(t.ref) : undefined);
-  const direct = [t.ref ? `ref:${t.ref}` : '', id ? `nd:${id}` : ''].filter(Boolean).map((a) => typedKey(typeOf(t), a));
+  const uid = t.uid ?? (typeOf(t) === 'track' && t.ref ? refUids.get(t.ref) : undefined);
+  const direct = [t.ref ? `ref:${t.ref}` : '', uid ? `uid:${uid}` : ''].filter(Boolean).map((a) => typedKey(typeOf(t), a));
   return [...new Set(direct.flatMap((key) => [key, ...(linkedAliases.get(key) ?? [])]))];
 }
 function emit() {
@@ -52,11 +50,11 @@ function subscribe(fn: () => void) {
   return () => { subscribers.delete(fn); };
 }
 function subjectAliases(s: FavoriteSubject): string[] {
-  return [...new Set([...(s.aliases ?? []), ...(s.ref ? [`ref:${s.ref}`] : []), ...(s.nd_id ? [`nd:${s.nd_id}`] : [])])]
+  return [...new Set([...(s.aliases ?? []), ...(s.ref ? [`ref:${s.ref}`] : []), ...(s.uid ? [`uid:${s.uid}`] : [])])]
     .map((a) => typedKey(s.target_type, a));
 }
 
-/** Own decisions (including unlike) override delayed Navidrome/import snapshots. */
+/** Own decisions (including unlike) override delayed import snapshots. */
 export function refreshStars(force = false): Promise<void> {
   if (loading) { if (force) refreshAgain = true; return loading; }
   if (!force && Date.now() - loadedAt < REFRESH_MS) return Promise.resolve();
@@ -65,9 +63,7 @@ export function refreshStars(force = false): Promise<void> {
   loading = api.starred(AbortSignal.timeout(10_000)).then((r) => {
     if (generation !== epoch) return;
     const next = new Map<string, boolean>();
-    for (const [type, ids] of [['track', r.song_ids], ['album', r.album_ids], ['artist', r.artist_ids ?? []]] as const) {
-      for (const id of ids) next.set(typedKey(type, `nd:${id}`), true);
-    }
+    for (const uid of r.track_uids) next.set(typedKey('track', `uid:${uid}`), true);
     for (const ref of r.refs ?? []) next.set(typedKey('track', `ref:${ref}`), true);
     const decisions = new Map<string, boolean>();
     const links = new Map<string, string[]>();
@@ -109,12 +105,8 @@ export function useLiked(t: LikeTarget): boolean {
 }
 
 function apiTarget(t: LikeTarget): FavoriteTarget {
-  const type = typeOf(t);
-  const id = t.ndId ?? t.songId ?? (type === 'track' && t.ref ? refSongs.get(t.ref) : undefined);
-  return {
-    target_type: type, ref: t.ref, uid: t.uid ?? null, target_data: t.data,
-    ...(id ? { [type === 'track' ? 'nd_song_id' : type === 'album' ? 'nd_album_id' : 'nd_artist_id']: id } : {}),
-  };
+  const uid = t.uid ?? (typeOf(t) === 'track' && t.ref ? refUids.get(t.ref) : undefined);
+  return { target_type: typeOf(t), ref: t.ref, uid: uid ?? null, target_data: t.data };
 }
 
 /** Track ♥ may download one song; album/artist ♥ only records the typed favorite. */
@@ -147,7 +139,7 @@ export async function toggleLike(t: LikeTarget): Promise<void> {
       // Same journal id and target: the wave/batch delivery is a duplicate, not another like.
       if (typeOf(t) === 'track') playEvent(liked ? 'like' : 'unlike', target, { event_id: result.event_ids[0], ts: operation.ts, context });
     } else {
-      if (target.nd_song_id) await api.star({ song_ids: [target.nd_song_id], unstar: !liked }, signal);
+      if (target.uid) await api.star({ uids: [target.uid], unstar: !liked }, signal);
       else if (!liked && t.ref) await api.star({ refs: [t.ref], unstar: true }, signal);
       else if (t.ref) await api.download({ track_refs: [t.ref], star: true }, signal);
       if (generation !== epoch) return;
@@ -188,7 +180,7 @@ window.addEventListener('hm:hub-favorite', (e) => {
 hubEvents.on('download', (d) => {
   const ref = d.track_ref;
   if (!ref) return;
-  if (d.status === 'done' && d.nd_song_id) refSongs.set(ref, d.nd_song_id);
+  if (d.status === 'done' && d.uid) refUids.set(ref, d.uid);
   if (['done', 'failed', 'cancelled', 'needs_review'].includes(d.status)) {
     pendingRefs.delete(ref);
     // Terminal failures are rolled back by the server; never retain a phantom local like.
@@ -212,7 +204,7 @@ export function resetStars() {
   snapshot = new Map();
   own = new Map();
   linkedAliases.clear();
-  local.clear(); pendingRefs.clear(); refSongs.clear(); busy.clear(); retries.clear();
+  local.clear(); pendingRefs.clear(); refUids.clear(); busy.clear(); retries.clear();
   loadedAt = 0;
   emit();
 }

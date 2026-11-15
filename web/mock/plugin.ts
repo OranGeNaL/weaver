@@ -97,8 +97,8 @@ function trackOut(albumIdx: number, n: number) {
     cover_url: a.cover_url,
     cover_small_url: a.cover_small_url,
     owned,
-    library_track_id: owned ? 5000 + n : null,
-    nd_song_id: owned ? `nd${5000 + n}` : null,
+    library_track_id: owned ? 11 + ((n - 1) % 3) : null,
+    uid: owned ? `t${11 + ((n - 1) % 3)}` : null,
     downloading: downloadingRefs.has(ref),
     star_pending: starRefs.has(ref),
   };
@@ -137,9 +137,8 @@ function libTrackOut(t: (typeof libTracks)[number]) {
   return {
     uid: `t${t.id}`,
     album_uid: a?.uid ?? null,
-    artist_uid: null,
+    artist_uid: a ? `ar-${a.id}` : null,
     id: t.id,
-    nd_song_id: `nd${t.id}`,
     album_id: t.album_id,
     artist: t.artist,
     title: t.title,
@@ -161,59 +160,60 @@ function libTrackOut(t: (typeof libTracks)[number]) {
 
 function libAlbumOut(a: (typeof libAlbums)[number], withTracks = false) {
   const tracks = libTracks.filter((t) => t.album_id === a.id);
-  return { ...a, artist_uid: null, track_count: tracks.length, nd_album_id: `ndal${a.id}`, tracks: withTracks ? tracks.map(libTrackOut) : null };
+  return { ...a, artist_uid: `ar-${a.id}`, track_count: tracks.length, tracks: withTracks ? tracks.map(libTrackOut) : null };
 }
 
-// --- the Navidrome library (/api/nd: the PWA in a plain browser) ---------------------------------------
+/** The library's artists: one per album artist of the albums above. */
+function libArtists() {
+  const names = [...new Set([...libAlbums.map((a) => a.album_artist), ...WAVE_ARTISTS])];
+  return names.map((name) => {
+    const album = libAlbums.find((a) => a.album_artist === name);
+    return {
+      uid: album ? `ar-${album.id}` : `ar-${name}`,
+      name,
+      sort_name: name,
+      album_count: libAlbums.filter((a) => a.album_artist === name).length,
+      has_cover: !!album?.has_cover,
+    };
+  });
+}
 
-// Navidrome ids are plain tokens: one per artist name, numbered in the order of the artists list (stable between runs).
-const ndArtistIds = new Map<string, string>();
-const ndArtistId = (name: string) => {
-  if (!ndArtistIds.size) for (const n of [...libAlbums.map((a) => a.album_artist), ...WAVE_ARTISTS]) if (!ndArtistIds.has(n)) ndArtistIds.set(n, `ndar${ndArtistIds.size + 1}`);
-  let id = ndArtistIds.get(name);
-  if (!id) {
-    id = `ndar${ndArtistIds.size + 1}`;
-    ndArtistIds.set(name, id);
-  }
-  return id;
-};
+/** An artist of the library as the pages link it: `uid` is its own row's. */
+function libArtist(uid: string) {
+  return libArtists().find((a) => a.uid === uid) ?? null;
+}
 
-function ndSongOut(t: (typeof libTracks)[number]) {
+// --- the library's rows as the pages play them ---------------------------------------------------------
+
+/** A library track as a row plays it: `lib:<uid>`, an owned catalog-like track (the Hub's own shapes). */
+function libRowOut(t: (typeof libTracks)[number]) {
   const a = libAlbums.find((x) => x.id === t.album_id);
   const lt = libTrackOut(t);
   return {
-    ref: `nd:nd${t.id}`, source: 'nd', id: `nd${t.id}`, title: t.title, artist: t.artist, artists: [t.artist],
-    album_title: a?.title ?? null, duration_s: lt.duration_s, track_no: t.track_no, explicit: t.explicit,
+    ref: `lib:t${t.id}`, source: 'lib', id: `t${t.id}`, uid: `t${t.id}`, title: t.title, artist: t.artist, artists: [t.artist],
+    album_title: a?.title ?? null, album_uid: a?.uid ?? null, artist_uid: a ? `ar-${a.id}` : null,
+    duration_s: lt.duration_s, track_no: t.track_no, explicit: t.explicit,
     cover_url: a?.has_cover ? cover(`lib${t.album_id}`) : null, cover_small_url: a?.has_cover ? cover(`lib${t.album_id}`, 300) : null,
-    uid: `t${t.id}`, owned: true, library_track_id: t.id, nd_song_id: `nd${t.id}`, downloading: false,
-    nd_album_id: `ndal${t.album_id}`, nd_artist_id: ndArtistId(a?.album_artist ?? t.artist),
+    owned: true, library_track_id: t.id, downloading: false,
   };
 }
 
-function ndAlbumOut(a: (typeof libAlbums)[number], withTracks = false) {
-  const tracks = libTracks.filter((t) => t.album_id === a.id);
-  return {
-    id: `ndal${a.id}`, title: a.title, artist: a.album_artist, artist_id: ndArtistId(a.album_artist), year: a.year,
-    song_count: tracks.length, duration_s: tracks.reduce((n, t) => n + libTrackOut(t).duration_s, 0),
-    cover_url: a.has_cover ? cover(`lib${a.id}`, 300) : null, starred: a.id === 2,
-    tracks: withTracks ? tracks.map(ndSongOut) : null,
-  };
+const libTrackByUid = (uid: string) => libTracks.find((t) => `t${t.id}` === uid);
+
+/** The library's ♥: own decisions first, then the songs the mock started with. */
+function libLikedTracks(): (typeof libTracks)[number][] {
+  const subjects = [...favoriteSubjects.values()].filter((s) => s.target_type === 'track');
+  return libTracks.filter((t) => {
+    const own = subjects.find((s) => s.uid === `t${t.id}`);
+    return own ? own.liked : likedSongs.has(`t${t.id}`);
+  });
 }
 
-function ndArtists() {
-  const names = [...new Set([...libAlbums.map((a) => a.album_artist), ...WAVE_ARTISTS])];
-  return names.map((name) => ({
-    id: ndArtistId(name), name, album_count: libAlbums.filter((a) => a.album_artist === name).length,
-    cover_url: cover(`artist-${name}`, 300), starred: name === 'Кино' || name === 'Земфира',
-  }));
-}
-
-const likedSongs = new Set(['nd11', 'nd21', 'nd31', 'nd13']);
+const likedSongs = new Set(['t11', 't21', 't31', 't13']);
 const playlistSongs = new Map<string, string[]>([
-  ['pl1', ['nd11', 'nd12', 'nd21', 'nd22', 'nd31', 'nd32', 'nd41']],
-  ['pl2', ['nd13', 'nd21', 'nd11']],
+  ['pl1', ['t11', 't12', 't21', 't22', 't31', 't32', 't41']],
+  ['pl2', ['t13', 't21', 't11']],
 ]);
-const ndSong = (id: string) => libTracks.find((t) => `nd${t.id}` === id);
 
 // --- downloads ----------------------------------------------------------------------------------
 
@@ -278,7 +278,7 @@ let downloads: DL[] = [
   { id: 201, batch_id: 31, status: 'downloading', progress: 0.42, artist: 'Кино', title: 'Звезда по имени Солнце', album: 'Звезда по имени Солнце', provider: 'hitmoz', warnings: [], chosen: hitmozCand('Кино', 'Звезда по имени Солнце', 0) },
   { id: 202, batch_id: 31, status: 'queued', progress: 0, artist: 'Кино', title: 'Пачка сигарет', album: 'Звезда по имени Солнце', provider: null, warnings: [] },
   { id: 203, batch_id: 30, status: 'needs_review', progress: 0, artist: 'Скриптонит', title: 'Положение', album: 'Уроборос', provider: null, error: 'Подходящий файл не найден ни в одном источнике', warnings: [], candidates: [0, 1, 2].map((i) => hitmozCand('Скриптонит', 'Положение', i)) },
-  { id: 204, batch_id: 29, status: 'done', progress: 1, artist: 'Три дня дождя', title: 'Где ты', album: 'Магнит', provider: 'hitmoz', warnings: ['possibly_censored'], track_id: 12, chosen: hitmozCand('Три дня дождя', 'Где ты', 0) },
+  { id: 204, batch_id: 29, status: 'done', progress: 1, artist: 'Три дня дождя', title: 'Где ты', album: 'Магнит', provider: 'hitmoz', warnings: ['possibly_censored'], track_id: 12, uid: 't12', chosen: hitmozCand('Три дня дождя', 'Где ты', 0) },
   { id: 205, batch_id: 28, status: 'failed', progress: 0, artist: 'Земфира', title: 'Хочешь?', album: 'Прости меня моя любовь', provider: 'ytdlp', error: 'Длительность файла не совпадает с каталогом (±3 с)', warnings: [] },
   { id: 206, batch_id: 27, status: 'cancelled', progress: 0, artist: 'Мона', title: 'Нету интереса', album: null, provider: null, warnings: [] },
 ].map((d) => ({ ...d, created_at: now(), updated_at: new Date(Date.now() - d.id * 1000).toISOString() }));
@@ -367,6 +367,20 @@ function setDl(d: DL, patch: Json) {
   emit('download', dlOut(d));
 }
 
+/** A song that became a library track (a finished download, a mix's picked song): its own row, as the Hub's import
+ * does. The same song stays one row. */
+const libraryUids = new Map<string, string>();
+let libTrackSeq = 100;
+function libraryUidOf(key: string, title: string, artist: string): string {
+  const known = libraryUids.get(key);
+  if (known) return known;
+  const t = { id: ++libTrackSeq, album_id: 1, title, artist, track_no: libTracks.length + 1, explicit: false, warnings: [] as unknown[] };
+  libTracks.push(t);
+  const uid = `t${t.id}`;
+  libraryUids.set(key, uid);
+  return uid;
+}
+
 function simulate(d: DL) {
   const steps: Array<[number, Json]> = [
     [800, { status: 'searching' }],
@@ -379,14 +393,15 @@ function simulate(d: DL) {
     t += delay;
     setTimeout(() => {
       if (d.status === 'cancelled') return;
-      // a done download has a Navidrome song; downloads queued with ♥ are starred
-      const song = patch.status === 'done' ? { nd_song_id: `nd${d.id}` } : {};
-      if (patch.status === 'done' && d.star) starred.add(`nd${d.id}`);
+      // a done download is a library track; downloads queued with ♥ are starred
+      const uid = patch.status === 'done' ? libraryUidOf(`download:${d.id}`, d.title, d.artist) : null;
+      const song = uid ? { uid } : {};
+      if (uid && d.star) starred.add(uid);
       if (d.star && d.ref && (patch.status === 'done' || patch.status === 'failed')) {
         const subject = [...favoriteSubjects.values()].find((s) => s.target_type === 'track' && s.ref === d.ref && s.liked);
-        if (subject && patch.status === 'done') {
-          subject.nd_id = `nd${d.id}`;
-          subject.aliases = [...new Set([...subject.aliases, `nd:nd${d.id}`])];
+        if (subject && uid) {
+          subject.uid = uid;
+          subject.aliases = [...new Set([...subject.aliases, `uid:${uid}`])];
         } else if (subject) mockFavorite({ target_type: 'track', ref: d.ref }, false, `rollback:${d.id}`, now());
       }
       setDl(d, patch.status === 'failed' ? { ...patch, error: 'Файл не прошёл проверку ffprobe' } : { ...patch, ...song });
@@ -394,7 +409,7 @@ function simulate(d: DL) {
         downloadingRefs.delete(d.ref);
         starRefs.delete(d.ref);
       }
-      if (patch.status === 'done') emit('library', { kind: 'imported', album_id: 1, track_id: 11 });
+      if (patch.status === 'done') emit('library', { kind: 'imported', album_id: 1 });
     }, t);
   }
 }
@@ -433,7 +448,7 @@ function enqueue(items: Array<{ artist: string; title: string; album?: string | 
 // --- imports (Перенести музыку) ----------------------------------------------------------------------
 // Sign-in by code takes 8 s, reading the collection 3 s, matching 6 s; «Скачать всё» downloads over 20 s.
 
-type ImpItem = { id: number; collection_id: number; position: number; kind: 'track' | 'album' | 'artist'; artist: string; title: string; album: string | null; duration_s: number | null; cover_url: string | null; ref: string | null; match: string; nd: string | null; picked?: number; skipped?: boolean };
+type ImpItem = { id: number; collection_id: number; position: number; kind: 'track' | 'album' | 'artist'; artist: string; title: string; album: string | null; duration_s: number | null; cover_url: string | null; ref: string | null; match: string; uid: string | null; picked?: number; skipped?: boolean };
 type ImpColl = { id: number; kind: string; title: string; selected: boolean };
 type Imp = { id: number; method: string; account: string | null; mode: string; keep_token: boolean; download_albums: boolean; has_token: boolean; created: number; started: number | null; cancelled: boolean; colls: ImpColl[]; items: ImpItem[] };
 let impSeq = 0;
@@ -469,8 +484,8 @@ function newImport(method: string, account: string | null): Imp {
       const k = (i * 7 + c.id) % IMP_NAMES.length;
       const artist = IMP_ARTISTS[(i + c.id) % IMP_ARTISTS.length];
       const match = importMatch(c.kind, i, k);
-      const base = { id: ++impItemSeq, collection_id: c.id, position: i, artist, nd: match === 'owned' ? `nd${5001 + (i % 3)}` : null };
-      if (c.kind === 'albums') items.push({ ...base, kind: 'album', title: RELEASES[i].title, album: null, duration_s: null, cover_url: cover(RELEASES[i].title), ref: `dz:${100 + i}`, match: i === 2 ? 'owned' : 'exact', nd: null });
+      const base = { id: ++impItemSeq, collection_id: c.id, position: i, artist, uid: match === 'owned' ? `t${11 + (i % 3)}` : null };
+      if (c.kind === 'albums') items.push({ ...base, kind: 'album', title: RELEASES[i].title, album: null, duration_s: null, cover_url: cover(RELEASES[i].title), ref: `dz:${100 + i}`, match: i === 2 ? 'owned' : 'exact', uid: null });
       else if (c.kind === 'artists') items.push({ ...base, kind: 'artist', artist: '', title: ARTISTS[i].name, album: null, duration_s: null, cover_url: ARTISTS[i].picture_url, ref: match === 'exact' ? ARTISTS[i].ref : null, match });
       else items.push({ ...base, kind: 'track', title: IMP_NAMES[k], album: `Альбом ${artist}`, duration_s: 160 + ((i * 29) % 140), cover_url: cover(IMP_NAMES[k]), ref: match === 'not_found' ? null : `dz:${1000 + (i % 8) * 100 + 1 + (i % 5)}`, match });
     }
@@ -506,13 +521,13 @@ function impItemState(m: Imp, it: ImpItem): Json {
   if (it.match === 'owned') return { status: 'done' };
   if (it.kind !== 'track') return { status: it.kind === 'album' ? 'waiting' : 'done' };
   if (m.mode === 'economy') return { status: 'waiting' };
-  return s - 6000 > (20000 * (i + 1)) / sel.length ? { status: 'done', nd: `nd${7000 + it.id}` } : { status: 'queued', download_status: 'queued' };
+  return s - 6000 > (20000 * (i + 1)) / sel.length ? { status: 'done', uid: `t${7000 + it.id}` } : { status: 'queued', download_status: 'queued' };
 }
 
 function impItemOut(m: Imp, it: ImpItem): Json {
   const st = impItemState(m, it);
-  const { nd, picked: _p, skipped: _s, ...rest } = it;
-  return { ...rest, match: 'match' in st ? st.match : it.match, score: it.match === 'probable' ? 0.82 : 1, nd_song_id: (st.nd as string) ?? nd, download_item_id: null, download_status: null, error: null, ...st };
+  const { uid, picked: _p, skipped: _s, ...rest } = it;
+  return { ...rest, match: 'match' in st ? st.match : it.match, score: it.match === 'probable' ? 0.82 : 1, uid: (st.uid as string) ?? uid, download_item_id: null, download_status: null, error: null, ...st };
 }
 
 function impOut(m: Imp) {
@@ -538,7 +553,7 @@ function impOut(m: Imp) {
       id: c.id, kind: c.kind, title: c.title, selected: c.selected,
       count: m.items.filter((x) => x.collection_id === c.id).length,
       owned: m.items.filter((x) => x.collection_id === c.id && x.match === 'owned' && x.kind === 'track').length,
-      cover_url: null, nd_playlist_id: c.kind === 'playlist' && m.started ? `pl${c.id}` : null,
+      cover_url: null, playlist_uid: c.kind === 'playlist' && m.started ? `pl${c.id}` : null,
     })),
     created_at: new Date(m.created).toISOString(), started_at: m.started ? new Date(m.started).toISOString() : null,
     finished_at: status === 'done' ? now() : null,
@@ -584,22 +599,22 @@ function wav(seconds: number, seed: string): Buffer {
 const listenPicks = new Map<string, Promise<Json | null>>();
 /** Files the provider search showed, by their ref "file:<provider>:<id>" (the Hub remembers them the same way). */
 const shownFiles = new Map<string, Json>();
-/** Navidrome stars of the mock user (♥). */
-const starred = new Set<string>(['nd5001', ...likedSongs]);
+/** The ♥ tracks of the mock user, by their Hub uid. */
+const starred = new Set<string>(['t5001', ...likedSongs]);
 const favoriteSubjects = new Map<string, FavoriteSubject>();
 const favoriteCommands: Json[] = [];
 const favoriteEventIds = new Set<string>();
 const favoriteControls = { typed: true, failNext: false, holdPending: true };
 
 function mockFavorite(target: FavoriteTarget, liked: boolean, eventId: string, ts: string): FavoriteSubject {
-  const id = target.nd_song_id ?? target.nd_album_id ?? target.nd_artist_id;
-  const aliases = [...(target.ref ? [`ref:${target.ref}`] : []), ...(id ? [`nd:${id}`] : [])];
+  const id = target.uid;
+  const aliases = [...(target.ref ? [`ref:${target.ref}`] : []), ...(id ? [`uid:${id}`] : [])];
   const previous = [...favoriteSubjects.values()].find((s) => s.target_type === target.target_type && s.aliases.some((a) => aliases.includes(a)));
   const key = previous?.key ?? `${target.target_type}:${aliases[0]}`;
   let likedSince: string | null = null;
   if (liked) likedSince = previous?.liked ? (previous.liked_since ?? ts) : ts;
   const subject: FavoriteSubject = {
-    target_type: target.target_type, key, ref: target.ref ?? previous?.ref, nd_id: id ?? previous?.nd_id,
+    target_type: target.target_type, key, ref: target.ref ?? previous?.ref, uid: id ?? previous?.uid,
     aliases: [...new Set([...(previous?.aliases ?? []), ...aliases])], liked, event_id: eventId,
     liked_since: likedSince,
     provenance: 'own', target_data: target.target_data,
@@ -638,8 +653,8 @@ function waveTrack(ref: string) {
   if (file) return { ...file, ref, source: 'file', id: String(file.provider_id), title: String(file.title),
     artist: String(file.artist), artists: [String(file.artist)], owned: false,
     generator: 'seed', generator_title: 'С чего началась волна', familiar: false, sim: null };
-  const library = libTracks.find((t) => `nd:nd${t.id}` === ref);
-  if (library) return { ...ndSongOut(library), generator: 'seed', generator_title: 'С чего началась волна', familiar: true, sim: null };
+  const library = ref.startsWith('lib:') ? libTrackByUid(ref.slice(4)) : undefined;
+  if (library) return { ...libRowOut(library), generator: 'seed', generator_title: 'С чего началась волна', familiar: true, sim: null };
   const t = trackByRef(ref);
   const artist = WAVE_ARTISTS[Number(ref.slice(3)) % WAVE_ARTISTS.length];
   return { ...t, artist, artists: [artist], artist_ref: `dz:9${WAVE_ARTISTS.indexOf(artist)}`, generator: 'ytm_radio', generator_title: 'Похожее: радио YouTube Music', familiar: t.owned, sim: null };
@@ -708,7 +723,7 @@ function listenPick(ref: string): Promise<Json | null> {
             provider: c.provider,
             bitrate_kbps: c.bitrate_kbps ?? null,
             page_url: c.page_url,
-            nd_song_id: null,
+            uid: null,
             stream_url: `/api/listen/stream?ref=${encodeURIComponent(ref)}`,
           }
         : null,
@@ -740,7 +755,7 @@ function listenPick(ref: string): Promise<Json | null> {
         provider,
         bitrate_kbps: bitrate,
         page_url: null,
-        nd_song_id: t.owned ? t.nd_song_id : null,
+        uid: t.owned ? t.uid : null,
         stream_url: `/api/listen/stream?ref=${encodeURIComponent(ref)}`,
       };
     });
@@ -827,7 +842,7 @@ let invites = [
 function adminUser(over: Json) {
   return {
     id: null, username: '', name: '', is_admin: false, in_hub: true, created_at: ago(30 * 86400), last_seen_at: null,
-    player_seen_at: null, google_email: null, invite_note: null, ai_cost_usd: 0, ai_cost_30d_usd: 0, ai_requests: 0,
+    google_email: null, invite_note: null, ai_cost_usd: 0, ai_cost_30d_usd: 0, ai_requests: 0,
     ai_last_at: null, downloads_done: 0, downloads_failed: 0, downloads_active: 0, tracks_added: 0, uploads: 0,
     starred_songs: 0, playlists: 0, ...over,
   };
@@ -835,13 +850,13 @@ function adminUser(over: Json) {
 
 function adminUsers() {
   const users = [
-    adminUser({ id: 1, username: 'owner', name: 'Владелец', is_admin: true, last_seen_at: ago(20), player_seen_at: ago(3600),
+    adminUser({ id: 1, username: 'owner', name: 'Владелец', is_admin: true, last_seen_at: ago(20),
       ai_cost_usd: 0.4123, ai_cost_30d_usd: 0.0871, ai_requests: 57, ai_last_at: ago(300), downloads_done: 412,
       downloads_failed: 3, tracks_added: 398, uploads: 5, starred_songs: 120, playlists: 7 }),
-    adminUser({ id: 2, username: 'anna', name: 'Анна', last_seen_at: ago(3 * 3600), player_seen_at: ago(600),
+    adminUser({ id: 2, username: 'anna', name: 'Анна', last_seen_at: ago(3 * 3600),
       google_email: 'anna@gmail.com', invite_note: 'Анна', ai_cost_usd: 0.0042, ai_cost_30d_usd: 0.0042, ai_requests: 2,
       ai_last_at: ago(86400), downloads_done: 23, downloads_active: 1, tracks_added: 21, starred_songs: 31, playlists: 1 }),
-    adminUser({ id: 3, username: 'boris', name: 'Борис', in_hub: false, player_seen_at: ago(5 * 86400), starred_songs: null, playlists: null }),
+    adminUser({ id: 3, username: 'boris', name: 'Борис', in_hub: false, last_seen_at: ago(5 * 86400), starred_songs: null, playlists: null }),
   ];
   return { users, ai_cost_usd: 0.4165, ai_cost_30d_usd: 0.0913, library_tracks: 1532 };
 }
@@ -885,13 +900,14 @@ function makeMix() {
   const catalog = searchTracks()
     .filter((t) => !seen.has(t.ref) && !!seen.add(t.ref))
     .slice(0, 44);
-  // songs only the library has: `source: "nd"`
+  // songs only the library has: `source: "lib"`, the Hub uid
   const own = libTracks.slice(0, 6).map((t) => {
     const lt = libTrackOut(t);
     return {
-      ref: `nd:${lt.nd_song_id}`,
-      source: 'nd',
-      id: lt.nd_song_id,
+      ref: `lib:${lt.uid}`,
+      source: 'lib',
+      id: lt.uid,
+      uid: lt.uid,
       title: lt.title,
       artist: lt.artist,
       artists: [lt.artist],
@@ -903,7 +919,6 @@ function makeMix() {
       cover_small_url: cover(lt.album ?? lt.title, 250),
       owned: true,
       library_track_id: lt.id,
-      nd_song_id: lt.nd_song_id,
       downloading: false,
     };
   });
@@ -922,7 +937,7 @@ function mixSettingsOut() {
   const next = new Date();
   next.setHours(mixSettings.mix_hour, 0, 0, 0);
   if (next <= new Date()) next.setDate(next.getDate() + 1);
-  return { ...mixSettings, timezone: 'Europe/Moscow', next_build_at: next.toISOString(), nd_playlist_id: curMix ? 'pl-mix' : null };
+  return { ...mixSettings, timezone: 'Europe/Moscow', next_build_at: next.toISOString(), playlist_uid: curMix ? 'pl-mix' : null };
 }
 
 function mixOut(mix = curMix) {
@@ -932,7 +947,8 @@ function mixOut(mix = curMix) {
   const tracks = mix.tracks.map((t) => {
     if (t.owned) return t;
     const ready = elapsed > ++waiting * 3000;
-    return { ...t, owned: ready, downloading: !ready, nd_song_id: ready ? `ndm${t.id}` : null, library_track_id: ready ? 9000 + Number(t.id) : null };
+    const uid = ready ? libraryUidOf(`mix:${String(t.ref)}`, String(t.title), String(t.artist)) : null;
+    return { ...t, owned: ready, downloading: !ready, uid, library_track_id: uid ? (libTrackByUid(uid)?.id ?? null) : null };
   });
   const mode = mix.mode;
   const top = [...new Set(tracks.map((t) => String(t.artist)))].slice(0, 3);
@@ -943,7 +959,7 @@ function mixOut(mix = curMix) {
     mode,
     mode_title: MIX_MODES[mode],
     created_at: mix.created_at,
-    nd_playlist_id: 'pl-mix',
+    playlist_uid: 'pl-mix',
     ready: tracks.filter((t) => t.owned).length,
     total: tracks.length,
     tracks,
@@ -971,7 +987,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
     send(res, 200, coverSvg(p.slice(12).replace(/\.svg$/, '')), 'image/svg+xml');
     return true;
   }
-  if (p === '/healthz') return send(res, 200, { ok: true, navidrome: true, providers: {}, capabilities: favoriteControls.typed ? ['typed_favorites_v1'] : [] }), true;
+  if (p === '/healthz') return send(res, 200, { ok: true, providers: {}, capabilities: favoriteControls.typed ? ['typed_favorites_v1'] : [] }), true;
   if (!p.startsWith('/api/')) return false;
 
   await delay(150 + Math.random() * 250);
@@ -980,7 +996,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
     const b = await readJson(req);
     if (!b.username || b.password !== 'test') return send(res, 401, { detail: 'Неверный логин или пароль' }), true;
     res.setHeader('Set-Cookie', 'hm_session=mock; Path=/; HttpOnly; SameSite=Lax');
-    return send(res, 200, { id: 1, username: String(b.username), is_admin: true, public_music_url: 'https://navidrome.example.net' }), true;
+    return send(res, 200, { id: 1, username: String(b.username), is_admin: true, public_hub_url: 'https://hub.example.net' }), true;
   }
   if (p === '/api/auth/options') return send(res, 200, { invites: true, email_signup: true, google_client_id: null }), true;
   // email registration: the letter's code is always 123456
@@ -994,7 +1010,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
     if (String(b.code ?? '').replace(/\D/g, '') !== '123456') return send(res, 400, { detail: 'Неверный код: осталось попыток — 4' }), true;
     if (String(b.password ?? '').length < 6) return send(res, 400, { detail: 'Пароль — не короче 6 символов' }), true;
     res.setHeader('Set-Cookie', 'hm_session=mock; Path=/; HttpOnly; SameSite=Lax');
-    return send(res, 200, { id: 6, username: String(b.username), is_admin: false, email: String(b.email).trim().toLowerCase(), public_music_url: 'https://navidrome.example.net' }), true;
+    return send(res, 200, { id: 6, username: String(b.username), is_admin: false, email: String(b.email).trim().toLowerCase(), public_hub_url: 'https://hub.example.net' }), true;
   }
   if (p === '/api/auth/register' && m === 'POST') {
     const b = await readJson(req);
@@ -1004,7 +1020,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
     if (String(b.password ?? '').length < 6) return send(res, 400, { detail: 'Пароль — не короче 6 символов' }), true;
     Object.assign(inv, { status: 'used', used_at: now().slice(0, 19), used_by: String(b.username) });
     res.setHeader('Set-Cookie', 'hm_session=mock; Path=/; HttpOnly; SameSite=Lax');
-    return send(res, 200, { id: 5, username: String(b.username), is_admin: false, public_music_url: 'https://navidrome.example.net' }), true;
+    return send(res, 200, { id: 5, username: String(b.username), is_admin: false, public_hub_url: 'https://hub.example.net' }), true;
   }
   if (!authed) return send(res, 401, { detail: 'Требуется вход' }), true;
 
@@ -1067,7 +1083,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
     return send(res, 200, { ok: true }), true;
   }
 
-  if (p === '/api/auth/me') return send(res, 200, { id: 1, username: 'owner', is_admin: true, public_music_url: 'https://navidrome.example.net', public_hub_url: 'https://hub.example.net' }), true;
+  if (p === '/api/auth/me') return send(res, 200, { id: 1, username: 'owner', is_admin: true, public_hub_url: 'https://hub.example.net' }), true;
   if (p === '/api/auth/logout') {
     res.setHeader('Set-Cookie', 'hm_session=; Path=/; Max-Age=0');
     return send(res, 200, { ok: true }), true;
@@ -1207,22 +1223,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
   if (p === '/api/listen' || p === '/api/listen/stream') {
     const ref = url.searchParams.get('ref') ?? '';
     if (ref.startsWith('lib:')) {
-      // a Hub library track by its uid (the primary form of stage 6): its own file
-      const t = libTracks.find((x) => `t${x.id}` === ref.slice(4));
+      // a Hub library track by its uid: its own file
+      const t = libTrackByUid(ref.slice(4));
       if (!t) return send(res, 404, { detail: 'Песни нет в библиотеке' }), true;
       const out = libTrackOut(t);
-      const pick = { ref, kind: 'library', artist: out.artist, title: out.title, duration_s: out.duration_s, provider: null, bitrate_kbps: null, page_url: null, uid: out.uid, nd_song_id: out.nd_song_id, stream_url: `/api/listen/stream?ref=${encodeURIComponent(ref)}` };
+      const pick = { ref, kind: 'library', artist: out.artist, title: out.title, duration_s: out.duration_s, provider: null, bitrate_kbps: null, page_url: null, uid: out.uid, stream_url: `/api/listen/stream?ref=${encodeURIComponent(ref)}` };
       if (p === '/api/listen') return send(res, 200, pick), true;
       return sendRange(req, res, wav(Number(out.duration_s) || 30, String(out.title)), 'audio/wav'), true;
-    }
-    if (ref.startsWith('nd:')) {
-      // a mix's song only the library has, or a song of the library pages: its file
-      const lib = ndSong(ref.slice(3));
-      const t = curMix?.tracks.find((x) => x.ref === ref) ?? (lib ? ndSongOut(lib) : undefined);
-      if (!t) return send(res, 404, { detail: 'Песни нет в библиотеке' }), true;
-      const pick = { ref, kind: 'library', artist: t.artist, title: t.title, duration_s: t.duration_s, provider: null, bitrate_kbps: null, page_url: null, nd_song_id: t.nd_song_id, stream_url: `/api/listen/stream?ref=${encodeURIComponent(ref)}` };
-      if (p === '/api/listen') return send(res, 200, pick), true;
-      return sendRange(req, res, wav(Number(t.duration_s) || 30, String(t.title)), 'audio/wav'), true;
     }
     if (!/^dz:\d+$/.test(ref) && !ref.startsWith('file:')) return send(res, 400, { detail: 'Неверная ссылка на трек' }), true;
     const pick = await listenPick(ref);
@@ -1360,7 +1367,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
       emit('library', { kind: b.unstar ? 'unstarred' : 'starred' });
       return send(res, 200, { ok: true, event_ids: eventIds }), true;
     }
-    for (const id of (b.song_ids as string[] | undefined) ?? []) {
+    for (const id of (b.uids as string[] | undefined) ?? []) {
       if (b.unstar) starred.delete(id);
       else starred.add(id);
     }
@@ -1375,7 +1382,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
       favoriteEventIds.add(String(e.event_id));
       playEvents.push(e);
     }
-    console.log('[mock] play events:', events.map((e) => `${e.kind} ${e.ref ?? e.nd_song_id} ${e.position_s ?? ''}/${e.duration_s ?? ''} ${e.context ?? ''} ${e.launch_origin ?? ''}`).join(' | '));
+    console.log('[mock] play events:', events.map((e) => `${e.kind} ${e.ref ?? e.uid} ${e.position_s ?? ''}/${e.duration_s ?? ''} ${e.context ?? ''} ${e.launch_origin ?? ''}`).join(' | '));
     return send(res, 200, { accepted: events.length - duplicates, duplicates, rejected: [] }), true;
   }
   // «Моя волна»: 5 tracks at a time from a pool of catalog tracks by many artists; an early skip drops the artist,
@@ -1387,25 +1394,25 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
     await delay(1200);
     const id = `w${waves.size + 1}`;
     const w = { played: [] as string[], skipped: new Set<string>(), title: 'Моя волна', seed: null as Json | null };
-    const ndId = String(seed?.nd_song_id ?? (String(seed?.ref ?? '').startsWith('nd:') ? String(seed?.ref).slice(3) : ''));
-    const library = libTracks.find((t) => `nd${t.id}` === ndId);
-    const catalog = searchTracks().find((t) => t.ref === seed?.ref || (ndId && t.nd_song_id === ndId));
+    const uid = String(seed?.song_uid ?? (String(seed?.ref ?? '').startsWith('lib:') ? String(seed?.ref).slice(4) : ''));
+    const library = uid ? libTrackByUid(uid) : undefined;
+    const catalog = searchTracks().find((t) => t.ref === seed?.ref || (uid && t.uid === uid));
     const file = shownFiles.has(String(seed?.ref ?? '')) ? waveTrack(String(seed?.ref)) : null;
-    const track = library ? ndSongOut(library) : file ?? catalog;
-    if (seed && (seed.ref || seed.nd_song_id) && !track) return send(res, 404, { detail: 'Трек не найден' }), true;
+    const track = library ? libRowOut(library) : file ?? catalog;
+    if (seed && (seed.ref || seed.song_uid) && !track) return send(res, 404, { detail: 'Трек не найден' }), true;
     if (seed?.by_artist && file) return send(res, 404, { detail: 'Исполнитель трека не найден' }), true;
     if (seed?.by_artist && track) {
       w.title = `Волна: ${track.artist}`;
-      w.seed = library ? { nd_artist_id: ndArtistId(library.artist), artist: track.artist } : { artist_ref: catalog?.artist_ref, artist: track.artist };
+      w.seed = library ? { artist_uid: `ar-${library.album_id}`, artist: track.artist } : { artist_ref: catalog?.artist_ref, artist: track.artist };
     } else if (track) {
       w.title = `Волна по треку «${track.title}»`;
       w.seed = { ref: track.ref, artist: track.artist, title: track.title };
-    } else if (seed?.artist_ref || seed?.nd_artist_id) {
+    } else if (seed?.artist_ref || seed?.artist_uid) {
       const artist = ARTISTS.find((a) => a.ref === seed.artist_ref);
       if (seed.artist_ref && !artist) return send(res, 404, { detail: 'Исполнитель не найден' }), true;
-      const name = artist?.name ?? String(seed.nd_artist_id);
+      const name = artist?.name ?? libArtist(String(seed.artist_uid))?.name ?? String(seed.artist_uid);
       w.title = `Волна: ${name}`;
-      w.seed = seed.artist_ref ? { artist_ref: seed.artist_ref, artist: name } : { nd_artist_id: seed.nd_artist_id, artist: name };
+      w.seed = seed.artist_ref ? { artist_ref: seed.artist_ref, artist: name } : { artist_uid: seed.artist_uid, artist: name };
     } else if (seed) return send(res, 404, { detail: 'Трек не найден' }), true;
     waves.set(id, w);
     const first = track && !seed?.by_artist ? [{ ...track, generator: 'seed', generator_title: 'С чего началась волна' }] : [];
@@ -1436,7 +1443,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
     await delay(900);
     const artistOf = new Map<string, string>();
     for (const id of songs) {
-      const lib = libTracks.find((x) => `nd${x.id}` === id);
+      const lib = libTrackByUid(id);
       artistOf.set(id, lib ? lib.artist : String(trackByRef(id)?.artist ?? ''));
     }
     const rest = songs.filter((x) => x !== b.current);
@@ -1476,10 +1483,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
     console.log('[mock] smart add:', s.context, ref);
     if (s.context === 'liked') return send(res, 200, { ok: true, status: 'liked', playlist_id: null }), true;
     const playlistId = s.context.slice('playlist:'.length);
-    const owned = libTracks.find((x) => `nd${x.id}` === String(b.nd_song_id ?? ''));
+    const owned = libTrackByUid(String(b.track_uid ?? ''));
     if (owned) {
       const songs = playlistSongs.get(playlistId) ?? [];
-      songs.push(`nd${owned.id}`);
+      songs.push(`t${owned.id}`);
       playlistSongs.set(playlistId, songs);
       const pl = playlists.find((x) => x.id === playlistId);
       if (pl) pl.song_count = songs.length;
@@ -1489,7 +1496,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
   if (p === '/api/dislikes' && m === 'GET') return send(res, 200, dislikes), true;
   if (p === '/api/dislikes' && m === 'POST') {
     const b = await readJson(req);
-    const row = { id: dislikes.length + 1, ref: b.ref ?? null, nd_song_id: b.nd_song_id ?? null, artist_ref: b.artist_ref ?? null, artist: b.artist ?? null, title: b.title ?? null, source: 'pwa', created_at: new Date().toISOString() };
+    const row = { id: dislikes.length + 1, ref: b.ref ?? null, artist_ref: b.artist_ref ?? null, artist: b.artist ?? null, title: b.title ?? null, source: 'pwa', created_at: new Date().toISOString() };
     dislikes = [row, ...dislikes];
     return send(res, 200, row), true;
   }
@@ -1497,7 +1504,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
     const q = url.searchParams;
     const before = dislikes.length;
     dislikes = dislikes.filter((d) =>
-      q.get('artist_ref') ? d.artist_ref !== q.get('artist_ref') : !((q.get('ref') && d.ref === q.get('ref')) || (q.get('nd_song_id') && d.nd_song_id === q.get('nd_song_id'))),
+      q.get('artist_ref') ? d.artist_ref !== q.get('artist_ref') : !(q.get('ref') && d.ref === q.get('ref')),
     );
     return send(res, 200, { removed: before - dislikes.length }), true;
   }
@@ -1508,7 +1515,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
         .filter((x) => imp.colls.find((c) => c.id === x.collection_id)?.kind === 'likes' && impItemState(imp, x).status === 'waiting' && x.ref)
         .map((x) => x.ref as string),
     );
-    return send(res, 200, { song_ids: [...starred], album_ids: [], artist_ids: [], refs: [...new Set([...refs, ...starRefs])],
+    return send(res, 200, { track_uids: [...starred], refs: [...new Set([...refs, ...starRefs])],
       ...(favoriteControls.typed ? { subjects: [...favoriteSubjects.values()] } : {}) }), true;
   }
 
@@ -1604,43 +1611,28 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
     return send(res, 200, { ok: true }), true;
   }
 
-  // the Navidrome library
-  if (p === '/api/nd/home') {
+  // the library catalog pages
+  if (p === '/api/library/home') {
     await delay(300);
-    const all = libAlbums.map((a) => ndAlbumOut(a));
-    const artists = ndArtists().sort((a, b) => Number(b.starred) - Number(a.starred) || b.album_count - a.album_count);
-    return send(res, 200, { recent: [...all].reverse(), frequent: all.slice(0, 3), newest: all, starred: all.filter((a) => a.starred), radio: artists }), true;
+    const all = libAlbums.map((a) => libAlbumOut(a));
+    const artists = libArtists().sort((a, b) => b.album_count - a.album_count);
+    return send(res, 200, { recent: [...all].reverse(), frequent: all.slice(0, 3), newest: all, starred: all.filter((a) => a.id === 2), artists }), true;
   }
-  if (p === '/api/nd/liked') {
+  if (p === '/api/library/liked') {
     await delay(300);
-    const subjects = [...favoriteSubjects.values()].filter((s) => s.target_type === 'track');
-    const songs: Json[] = libTracks.filter((t) => {
-      const own = subjects.find((s) => s.nd_id === `nd${t.id}`);
-      return own ? own.liked : likedSongs.has(`nd${t.id}`) || starred.has(`nd${t.id}`);
-    }).map(ndSongOut);
-    for (const s of subjects) {
-      if (!s.liked || !s.ref || songs.some((t) => t.ref === s.ref || (s.nd_id && t.nd_song_id === s.nd_id))) continue;
-      const t = trackByRef(s.ref);
-      songs.unshift({ ...t, ...s.target_data, artists: [String(s.target_data?.artist ?? t.artist)],
-        ref: s.ref, owned: !!s.nd_id, nd_song_id: s.nd_id ?? null });
-    }
-    return send(res, 200, { songs, albums: libAlbums.filter((a) => a.id === 2).map((a) => ndAlbumOut(a)), artists: ndArtists().filter((a) => a.starred) }), true;
+    const tracks = libLikedTracks();
+    return send(res, 200, {
+      tracks: tracks.map(libTrackOut),
+      albums: libAlbums.filter((a) => a.id === 2).map((a) => libAlbumOut(a)),
+      artists: libArtists().filter((a) => a.name === 'Кино' || a.name === 'Земфира'),
+    }), true;
   }
-  if (p === '/api/nd/artists') return send(res, 200, ndArtists()), true;
-  mm = p.match(/^\/api\/nd\/artists\/([^/]+)$/);
+  if (p === '/api/library/artists') return send(res, 200, libArtists()), true;
+  mm = p.match(/^\/api\/library\/artists\/([^/]+)$/);
   if (mm) {
-    const artist = ndArtists().find((a) => a.id === decodeURIComponent(mm![1]));
+    const artist = libArtist(decodeURIComponent(mm![1]));
     if (!artist) return send(res, 404, { detail: 'Исполнитель не найден' }), true;
-    return send(res, 200, { artist, albums: libAlbums.filter((a) => a.album_artist === artist.name).map((a) => ndAlbumOut(a)) }), true;
-  }
-  if (p === '/api/nd/albums') {
-    const offset = Number(url.searchParams.get('offset') ?? 0);
-    return send(res, 200, offset ? [] : libAlbums.map((a) => ndAlbumOut(a)).sort((a, b) => a.title.localeCompare(b.title))), true;
-  }
-  mm = p.match(/^\/api\/nd\/albums\/([^/]+)$/);
-  if (mm) {
-    const a = libAlbums.find((x) => `ndal${x.id}` === decodeURIComponent(mm![1]));
-    return a ? (send(res, 200, ndAlbumOut(a, true)), true) : (send(res, 404, { detail: 'Альбом не найден' }), true);
+    return send(res, 200, { artist, albums: libAlbums.filter((a) => a.album_artist === artist.name).map((a) => libAlbumOut(a)) }), true;
   }
 
   // playlists
@@ -1656,7 +1648,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
     const id = decodeURIComponent(mm[1]);
     const b = await readJson(req);
     const songs = playlistSongs.get(id) ?? [];
-    if (mm[2] === 'add') songs.push(...((b.song_ids as string[]) ?? []));
+    if (mm[2] === 'add') songs.push(...((b.uids as string[]) ?? []));
     else for (const i of [...((b.indexes as number[]) ?? [])].sort((x, y) => y - x)) songs.splice(i, 1);
     playlistSongs.set(id, songs);
     const pl = playlists.find((x) => x.id === id);
@@ -1672,7 +1664,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
       playlists = playlists.filter((x) => x.id !== id);
       return send(res, 200, { ok: true }), true;
     }
-    const tracks = (playlistSongs.get(id) ?? []).map(ndSong).filter((t) => !!t).map((t) => ndSongOut(t));
+    const tracks = (playlistSongs.get(id) ?? []).map(libTrackByUid).filter((t) => !!t).map((t) => libRowOut(t));
     return send(res, 200, { ...pl, song_count: tracks.length, tracks }), true;
   }
 

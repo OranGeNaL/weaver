@@ -93,7 +93,6 @@ function OverviewTab({ u }: { u: AdminUserDetailOut }) {
         {u.email && <Row k="Почта" v={u.email} />}
         <Row k="Аккаунт в Хабе с" v={fmtDate(u.created_at)} />
         <Row k="Последний раз в Хабе" v={fmtWhen(u.last_seen_at) || '—'} />
-        <Row k="Последний раз в плеере" v={fmtWhen(u.player_seen_at) || '—'} />
         <Row k="Google" v={u.google_email || 'не привязан'} />
         <Row k="Последний запрос к ИИ" v={fmtWhen(u.ai_last_at) || '—'} />
       </dl>

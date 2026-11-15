@@ -7,7 +7,7 @@ import { Button, Cover, ErrorState, IconButton, PageHeader, ProgressBar, Segment
 import { fmtLength, plural } from '../lib/format';
 import { useAsync, useDebounced, useInterval } from '../lib/hooks';
 import { listen } from '../lib/listen';
-import { canPlay, canPlayAll, playList, playTracks } from '../lib/player';
+import { canPlayAll, playTracks } from '../lib/player';
 import { Link, goBack, navigate } from '../lib/router';
 import { useSession } from '../lib/session';
 import { attempt, toast } from '../lib/ui';
@@ -147,24 +147,12 @@ export function MixPage({ id }: { id: number }) {
   const tracks = mix.tracks;
   const length = tracks.reduce((s, t) => s + (t.duration_s ?? 0), 0);
   const context = mixContext(mix.id);
-  // Older apps: the library songs of the mix play in the app's player, in mix order.
-  const oldApp = canPlay() && !canPlayAll();
-  const playOld = (from?: MixTrackOut) =>
-    playList(
-      tracks.filter((t) => t.owned),
-      (t) => t.nd_song_id,
-      from,
-    );
   const playAll =
     tracks.length === 0
       ? null
       : canPlayAll()
         ? () => playTracks(tracks, undefined, context, 'mix_page')
-        : oldApp
-          ? tracks.some((t) => t.owned && t.nd_song_id)
-            ? () => playOld()
-            : null
-          : () => listen(listenTrack(tracks[0]), tracks.map(listenTrack), context, 'mix_page');
+        : () => listen(listenTrack(tracks[0]), tracks.map(listenTrack), context, 'mix_page');
 
   const setMode = async (mode: MixMode) => {
     if (mode === settings.mode) return;
@@ -219,7 +207,7 @@ export function MixPage({ id }: { id: number }) {
 
       <section aria-label="Песни микса" className="pt-2">
         {tracks.map((t) => (
-          <TrackRow key={`${t.position}:${t.ref}`} track={t} link={false} onPlay={oldApp ? () => playOld(t) : undefined} queue={tracks} />
+          <TrackRow key={`${t.position}:${t.ref}`} track={t} link={false} queue={tracks} />
         ))}
         {!tracks.length && <p className="px-4 py-6 text-center text-muted">В миксе пока нет песен</p>}
       </section>

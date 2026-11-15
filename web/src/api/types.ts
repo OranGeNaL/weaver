@@ -15,7 +15,6 @@ export interface MeOut {
   id: number;
   username: string;
   is_admin: boolean;
-  public_music_url: string;
   public_hub_url?: string;
   google_email?: string | null;
   email?: string | null;
@@ -58,7 +57,6 @@ export interface AuthOptionsOut {
   invites: boolean;
   email_signup?: boolean;
   google_client_id: string | null;
-  music_url?: string;
   oidc_providers?: OidcProviderOut[];
 }
 
@@ -96,7 +94,6 @@ export interface AdminUserOut {
   in_hub: boolean;
   created_at: string | null;
   last_seen_at: string | null;
-  player_seen_at: string | null;
   google_email: string | null;
   email?: string | null;
   invite_note: string | null;
@@ -153,8 +150,8 @@ export interface Candidate {
 
 // --- catalog ----------------------------------------------------------------------------------
 
-/** `nd`: a library-only song; `file`: an exact search file used as a wave seed. */
-export type CatalogSource = 'dz' | 'hm' | 'mb' | 'nd' | 'file';
+/** `lib`: a library-only song; `file`: an exact search file used as a wave seed. */
+export type CatalogSource = 'dz' | 'hm' | 'mb' | 'lib' | 'file';
 export type RecordType = 'album' | 'single' | 'ep' | 'compile';
 export type OwnedStatus = 'full' | 'partial' | 'none';
 
@@ -214,10 +211,8 @@ export interface CatalogAlbum {
 export interface TrackOut extends CatalogTrack {
   owned: boolean;
   library_track_id?: number | null;
-  /** the Hub track uid: library tracks play as `lib:<uid>` (stage 6+) */
+  /** the Hub track uid: library tracks play as `lib:<uid>` */
   uid?: string | null;
-  /** deprecated alias of `uid` until stage 7 */
-  nd_song_id?: string | null;
   /** a download of it is under way (not counting ones queued only for ♥) */
   downloading: boolean;
   /** the user ♥ it and a download that stars it is under way: the ♥ shows filled */
@@ -249,7 +244,6 @@ export interface LibTrackOut {
   artist_uid?: string | null;
   /** deprecated legacy int (until stage 7) */
   id: number;
-  nd_song_id: string | null;
   album_id: number | null;
   artist: string;
   title: string;
@@ -281,7 +275,6 @@ export interface LibAlbumOut {
   deezer_album_id: string | null;
   track_count: number;
   has_cover: boolean;
-  nd_album_id?: string | null;
   tracks?: LibTrackOut[] | null;
 }
 
@@ -298,11 +291,18 @@ export interface LibArtistPageOut {
   albums: LibAlbumOut[];
 }
 
-/** Everything the user ♥: GET /api/library/liked (the normalized shape of both branches). */
+/** Everything the user ♥: GET /api/library/liked. */
 export interface LibLikedOut {
   tracks: LibTrackOut[];
   albums: LibAlbumOut[];
   artists: LibArtistOut[];
+}
+
+/** A `LibTrackOut` as a row of the pages plays it: an owned catalog-like track playing `lib:<uid>`; `album_uid` and
+ * `artist_uid` build the `/lib/album/<uid>` and `/lib/artist/<uid>` links. */
+export interface LibSongOut extends TrackOut {
+  album_uid: string | null;
+  artist_uid: string | null;
 }
 
 export interface LibHomeOut {
@@ -348,13 +348,12 @@ export interface TrackPatchIn {
   explicit?: boolean | null;
 }
 
-/** GET /api/starred: own typed decisions plus Navidrome/import snapshot fallbacks. */
+/** GET /api/starred: own typed decisions plus the imported likes not in the library yet. */
 export interface StarredOut {
-  song_ids: string[];
-  album_ids: string[];
+  /** the Hub uids of the ♥ tracks */
+  track_uids: string[];
   /** Own and imported pending track refs. Own subjects override this snapshot. */
   refs?: string[];
-  artist_ids?: string[];
   subjects?: FavoriteSubject[];
 }
 
@@ -363,11 +362,8 @@ export type FavoriteType = 'track' | 'album' | 'artist';
 export interface FavoriteTarget {
   target_type: FavoriteType;
   ref?: string | null;
-  /** the Hub uid of the target (track/album/artist): the primary alias since stage 5 */
+  /** the Hub uid of the target (track/album/artist) */
   uid?: string | null;
-  nd_song_id?: string | null;
-  nd_album_id?: string | null;
-  nd_artist_id?: string | null;
   target_data?: Record<string, unknown> | null;
 }
 
@@ -375,7 +371,7 @@ export interface FavoriteSubject {
   target_type: FavoriteType;
   key: string;
   ref?: string | null;
-  nd_id?: string | null;
+  uid?: string | null;
   liked: boolean;
   liked_since?: ISODate | null;
   event_id?: string | null;
@@ -394,9 +390,8 @@ export interface StarIn {
   ts?: ISODate;
   client?: string;
   context?: string;
-  song_ids?: string[];
-  album_ids?: string[];
-  artist_ids?: string[];
+  /** the Hub uids of the tracks/albums/artists */
+  uids?: string[];
   catalog_album_ref?: string | null;
   /** tracks of `StarredOut.refs`: only with `unstar` */
   refs?: string[];
@@ -463,7 +458,7 @@ export interface DownloadIn {
   playlist_id?: string | null;
   new_playlist_name?: string | null;
   force?: boolean;
-  /** ♥ before download: the Hub stars the songs in Navidrome once they are imported */
+  /** ♥ before download: the Hub ♥ the songs once they are imported */
   star?: boolean;
 }
 
@@ -480,8 +475,6 @@ export interface ListenOut {
   page_url?: string | null;
   /** library: the Hub track uid (`lib:<uid>` in the queue) */
   uid?: string | null;
-  /** deprecated alias of `uid`: the Navidrome song, until stage 7 */
-  nd_song_id?: string | null;
   /** audio with Range support (same session cookie) */
   stream_url: string;
 }
@@ -507,8 +500,8 @@ export interface DownloadItemOut {
   error?: string | null;
   warnings: unknown[];
   track_id?: number | null;
-  /** Navidrome song once imported and scanned */
-  nd_song_id?: string | null;
+  /** the Hub track uid once imported */
+  uid?: string | null;
   /** target playlist of the batch */
   playlist_id?: string | null;
   /** catalog track the item came from */
@@ -604,79 +597,21 @@ export interface PlaylistOut {
 }
 
 export interface PlaylistPageOut extends PlaylistOut {
-  tracks: NdSongOut[];
+  tracks: PlaylistTrackOut[];
 }
 
-// --- the Navidrome library (the PWA in a browser: /api/nd) ------------------------------------
-
-/** A library song or a catalog-only favorite (/nd/liked, without nd_song_id until downloaded). */
-export interface NdSongOut extends TrackOut {
-  nd_album_id?: string | null;
-  nd_artist_id?: string | null;
+/** A library track of a playlist page: `ref` is `lib:<uid>`, or its Deezer record when the Hub knows one. */
+export interface PlaylistTrackOut extends TrackOut {
+  uid: string | null;
 }
-
-export interface NdAlbumOut {
-  /** the album `uid`: the Hub catalog and the ND transition both put it here (stage 6) */
-  uid?: string;
-  /** the Hub album uid: set only when `/api/library/*` answered; `id` is then the same value */
-  lib_uid?: string | null;
-  /** the Deezer album of a library album: the catalog ♥ prefers this ref, as the library album page does */
-  deezer_album_id?: string | null;
-  id: string;
-  title: string;
-  artist: string;
-  artist_id?: string | null;
-  year?: number | null;
-  song_count: number;
-  duration_s: number;
-  cover_url?: string | null;
-  starred: boolean;
-  tracks?: NdSongOut[] | null;
-}
-
-export interface NdArtistOut {
-  uid?: string;
-  /** the Hub artist uid: `/api/library/artists` answered (absent on the deprecated `/api/nd` branch, whose `id` is an
-   * ND artist id) */
-  lib_uid?: string | null;
-  id: string;
-  name: string;
-  album_count: number;
-  cover_url?: string | null;
-  starred: boolean;
-}
-
-export interface NdArtistPageOut {
-  artist: NdArtistOut;
-  albums: NdAlbumOut[];
-}
-
-export interface NdLikedOut {
-  songs: NdSongOut[];
-  albums: NdAlbumOut[];
-  artists: NdArtistOut[];
-}
-
-export interface NdHomeOut {
-  recent: NdAlbumOut[];
-  frequent: NdAlbumOut[];
-  newest: NdAlbumOut[];
-  starred: NdAlbumOut[];
-  /** «Радиостанции»: liked artists first */
-  radio: NdArtistOut[];
-}
-
-export type NdAlbumList = 'recent' | 'frequent' | 'newest' | 'starred' | 'alphabeticalByName' | 'alphabeticalByArtist' | 'random';
 
 export interface PlaylistCreateIn {
   name: string;
 }
 
 export interface PlaylistAddIn {
-  /** Hub track uids (the primary identifier since stage 5) */
+  /** Hub track uids */
   uids?: string[];
-  /** deprecated: Navidrome song ids */
-  song_ids?: string[];
   library_track_ids?: number[];
 }
 
@@ -867,7 +802,7 @@ export interface ImportCollectionOut {
   count: number;
   owned: number;
   cover_url?: string | null;
-  nd_playlist_id?: string | null;
+  playlist_uid?: string | null;
 }
 
 export interface ImportOut {
@@ -914,7 +849,8 @@ export interface ImportItemOut {
   match?: ImportMatch | null;
   score?: number | null;
   status: ImportItemStatus | string;
-  nd_song_id?: string | null;
+  /** in the library: the Hub track uid */
+  uid?: string | null;
   download_item_id?: number | null;
   download_status?: string | null;
   error?: string | null;
@@ -941,8 +877,6 @@ export interface LibraryEvent {
   kind: 'imported' | 'changed' | 'starred' | 'unstarred';
   album_id?: number | null;
   track_id?: number | null;
-  /** starred / unstarred: songs the Hub (an import, a download queued with ♥, the assistant) starred or unstarred */
-  song_ids?: string[];
 }
 
 export interface BatchEvent {
@@ -973,7 +907,6 @@ export interface SoulseekStatusOut {
 export interface HealthOut {
   capabilities?: string[];
   ok: boolean;
-  navidrome: boolean;
   providers: Record<string, unknown>;
   version: string;
   today?: ISODate | null;
@@ -985,8 +918,6 @@ export type PlayKind = 'start' | 'progress' | 'interrupted' | 'error' | 'skip' |
 
 export interface PlayEventIn {
   target_type?: FavoriteType;
-  nd_album_id?: string | null;
-  nd_artist_id?: string | null;
   target_data?: Record<string, unknown> | null;
   reverts_event_id?: string | null;
   event_id: string;
@@ -995,7 +926,6 @@ export interface PlayEventIn {
   kind: PlayKind;
   ref?: string | null;
   uid?: string | null;
-  nd_song_id?: string | null;
   playback_id?: string | null;
   device_id?: string | null;
   listened_ms?: number | null;
@@ -1022,7 +952,6 @@ export interface PlayEventsOut {
 
 export interface DislikeIn {
   ref?: string | null;
-  nd_song_id?: string | null;
   artist_ref?: string | null;
   artist?: string | null;
   title?: string | null;
@@ -1033,7 +962,6 @@ export interface DislikeIn {
 export interface DislikeOut {
   id: number;
   ref: string | null;
-  nd_song_id: string | null;
   artist_ref: string | null;
   artist: string | null;
   title: string | null;
@@ -1065,7 +993,8 @@ export interface MixOut {
   mode: MixMode;
   mode_title: string;
   created_at: ISODateTime;
-  nd_playlist_id?: string | null;
+  /** the Hub playlist «Микс дня» (the same uid every day) */
+  playlist_uid?: string | null;
   /** songs in the library already; the rest download quietly */
   ready: number;
   total: number;
@@ -1079,7 +1008,7 @@ export interface MixSettingsOut {
   timezone: string;
   /** local time */
   next_build_at: ISODateTime;
-  nd_playlist_id?: string | null;
+  playlist_uid?: string | null;
   artists: Array<{ ref: string; name: string }>;
 }
 
@@ -1110,11 +1039,9 @@ export interface WaveSeedIn {
   ref?: string | null;
   /** the Hub track uid of a library track (the seed plays as `lib:<uid>`) */
   song_uid?: string | null;
-  /** the Hub artist uid of a library artist («Радиостанции», «Радио по исполнителю» in the library branch) */
+  /** the Hub artist uid of a library artist («Радиостанции», «Радио по исполнителю») */
   artist_uid?: string | null;
-  nd_song_id?: string | null;
   artist_ref?: string | null;
-  nd_artist_id?: string | null;
   by_artist?: boolean;
 }
 
@@ -1148,10 +1075,10 @@ export interface WaveTrackOut extends TrackOut {
 // «Умное перемешивание» (MIXES.md 8, hub/API.md «Умное перемешивание»)
 
 export interface SmartStartIn {
-  /** `liked` or `playlist:<Navidrome id>` */
+  /** `liked` or `playlist:<uid>` */
   context: string;
-  /** the context's songs in its order (a playlist: new ones at the end; «Понравившиеся»: the newest first): a Navidrome
-   * song id, or a catalog ref for a ♥ not downloaded yet */
+  /** the context's songs in its order (a playlist: new ones at the end; «Понравившиеся»: the newest first): a
+   * library track uid, or a catalog ref for a ♥ not downloaded yet */
   songs: string[];
   /** the song tapped or playing now: it plays first */
   current?: string | null;
@@ -1195,7 +1122,7 @@ export interface WaveOut {
   session_id: string;
   title: string;
   mode: MixMode;
-  seed?: { ref?: string; artist_ref?: string; nd_artist_id?: string; artist?: string; title?: string } | null;
+  seed?: { ref?: string; artist_ref?: string; artist_uid?: string; artist?: string; title?: string } | null;
   /** up to 5: they replace `queued` */
   tracks: WaveTrackOut[];
   /** sources still answer: an empty `tracks` — ask again in a few seconds */

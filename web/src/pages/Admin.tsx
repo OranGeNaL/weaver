@@ -3,7 +3,7 @@ import { api } from '../api/client';
 import type { AdminUserOut, InviteOut } from '../api/types';
 import { Icon } from '../components/Icon';
 import { Button, Empty, ErrorState, Field, IconButton, PageHeader, SectionTitle, Segmented, Sheet, SkeletonRows, cx } from '../components/ui';
-import { fmtDate, fmtUsd, fmtWhen, parseTime, plural } from '../lib/format';
+import { fmtDate, fmtUsd, fmtWhen, plural } from '../lib/format';
 import { useAsync } from '../lib/hooks';
 import { Link } from '../lib/router';
 import { useSession } from '../lib/session';
@@ -159,11 +159,9 @@ function Tile({ label, value }: { label: string; value: string }) {
   );
 }
 
-/** The latest of the Hub's and the player's last activity. */
+/** The last activity of an account in the Hub. */
 export function lastActivity(u: AdminUserOut): string | null {
-  const times = [u.last_seen_at, u.player_seen_at].filter((t): t is string => !!t);
-  if (!times.length) return null;
-  return times.reduce((a, b) => (parseTime(a) > parseTime(b) ? a : b));
+  return u.last_seen_at;
 }
 
 export function UserBadges({ u }: { u: AdminUserOut }) {

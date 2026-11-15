@@ -6,11 +6,11 @@ import { toast, toastError } from './ui';
 
 /** «Не нравится» (MIXES.md 3.2): tracks and artists the user doesn't want in mixes and «Моя волна» — set here, in the
  * app, or moved over with the dislikes of a Yandex import (`GET /api/dislikes`). A track is known by its catalog
- * ref and/or its Navidrome song; the Hub fills in the other id where it can. Marking shows a toast with «Отменить». */
+ * ref and/or its Hub `uid`; the Hub fills in the other one where it can. Marking shows a toast with «Отменить». */
 
 export interface DislikeTarget {
   ref?: string | null;
-  nd_song_id?: string | null;
+  uid?: string | null;
   artist_ref?: string | null;
   artist?: string | null;
   title?: string | null;
@@ -57,7 +57,7 @@ export function refreshDislikes(force = false): Promise<void> {
 }
 
 const matches = (d: DislikeOut, t: DislikeTarget) =>
-  t.artist_ref ? d.artist_ref === t.artist_ref : (!!t.ref && d.ref === t.ref) || (!!t.nd_song_id && d.nd_song_id === t.nd_song_id);
+  t.artist_ref ? d.artist_ref === t.artist_ref : !!t.ref && d.ref === t.ref;
 
 export function isDisliked(t: DislikeTarget): boolean {
   return rows.some((d) => matches(d, t));
@@ -75,14 +75,15 @@ export function useDisliked(t: DislikeTarget): boolean {
 /** Marks or unmarks «Не нравится»; the toast after marking undoes it. */
 export async function setDisliked(t: DislikeTarget, on: boolean, quiet = false): Promise<boolean> {
   const before = rows;
-  const what = t.artist_ref ? { artist_ref: t.artist_ref } : { ref: t.ref, nd_song_id: t.nd_song_id };
+  // the row itself is named by `ref` (a library track: `lib:<uid>`); the Hub completes the uid it can find
+  const label = t.artist_ref ? { artist_ref: t.artist_ref } : { ref: t.ref };
   rows = on
-    ? [{ id: 0, ref: t.ref ?? null, nd_song_id: t.nd_song_id ?? null, artist_ref: t.artist_ref ?? null, artist: t.artist ?? null, title: t.title ?? null, source: 'pwa', created_at: new Date().toISOString() }, ...rows]
+    ? [{ id: 0, ref: t.ref ?? null, artist_ref: t.artist_ref ?? null, artist: t.artist ?? null, title: t.title ?? null, source: 'pwa', created_at: new Date().toISOString() }, ...rows]
     : rows.filter((d) => !matches(d, t));
   emit();
   try {
     if (on) {
-      const row = await api.dislike({ ...what, artist: t.artist, title: t.title, context: routeContext(), client: 'pwa' });
+      const row = await api.dislike({ ...label, artist: t.artist, title: t.title, context: routeContext(), client: 'pwa' });
       rows = [row, ...rows.filter((d) => d.id !== 0 && d.id !== row.id)];
       emit();
       if (!quiet)
@@ -91,7 +92,7 @@ export async function setDisliked(t: DislikeTarget, on: boolean, quiet = false):
           run: () => void setDisliked(t, false, true),
         });
     } else {
-      await api.undislike(what);
+      await api.undislike(t.artist_ref ? { artist_ref: t.artist_ref } : { ref: t.ref, uid: t.uid });
       if (!quiet) toast('Отметка «Не нравится» снята', 'success');
     }
     return true;

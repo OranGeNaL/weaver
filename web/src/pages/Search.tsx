@@ -13,7 +13,7 @@ import { useHubEvent } from '../lib/events';
 import { fmtDuration } from '../lib/format';
 import { useAsync, useDebounced, useRememberScrollX, type AsyncState } from '../lib/hooks';
 import { extendQueue, markQueued, useListen } from '../lib/listen';
-import { canPlay, canPlayAll, playList } from '../lib/player';
+import { canPlayAll } from '../lib/player';
 import { Link, navigate } from '../lib/router';
 import { MixCard } from './Mix';
 
@@ -304,8 +304,8 @@ function CatalogResults({ q }: { q: string }) {
       {data.library.length > 0 && (
         <section aria-label="В библиотеке">
           <SectionTitle>В библиотеке</SectionTitle>
-          {data.library.slice(0, 5).map((t, _, shown) => (
-            <LibraryTrackRow key={t.id} t={t} onPlay={canPlay() && t.nd_song_id ? () => playList(shown, (x) => x.nd_song_id, t) : undefined} />
+          {data.library.slice(0, 5).map((t) => (
+            <LibraryTrackRow key={t.id} t={t} />
           ))}
         </section>
       )}
@@ -362,7 +362,7 @@ function CatalogResults({ q }: { q: string }) {
   );
 }
 
-function LibraryTrackRow({ t, onPlay }: { t: LibTrackOut; onPlay?: () => void }) {
+function LibraryTrackRow({ t }: { t: LibTrackOut }) {
   const inner = (
     <>
       <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-accent/10 text-accent">
@@ -385,9 +385,8 @@ function LibraryTrackRow({ t, onPlay }: { t: LibTrackOut; onPlay?: () => void })
   return (
     <div className="flex items-center pr-1">
       {row}
-      {t.nd_song_id && <TrackMenuButton track={{ title: t.title, artist: t.artist, nd_song_id: t.nd_song_id }} />}
-      <LikeButton songId={t.nd_song_id} title={t.title} className={cx('w-10', !onPlay && 'mr-1')} />
-      {onPlay && <IconButton icon="play" label={`Слушать «${t.title}»`} onClick={onPlay} className="!text-accent" />}
+      <TrackMenuButton track={{ title: t.title, artist: t.artist, uid: t.uid, ref: `lib:${t.uid}`, album_uid: t.album_uid, artist_uid: t.artist_uid }} />
+      <LikeButton uid={t.uid} title={t.title} className={cx('w-10', 'mr-1')} />
     </div>
   );
 }

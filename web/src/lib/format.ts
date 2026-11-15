@@ -275,7 +275,7 @@ const codeLabel = (map: Record<string, string>, fallback?: string) => (code?: st
 export const sourceLabel = codeLabel({
   mix: 'Микс дня', wave: 'Моя волна', smart: 'Умное перемешивание', playlist: 'Плейлист', album: 'Альбом', artist: 'Исполнитель', liked: 'Понравившиеся',
   search: 'Поиск', queue: 'Очередь', continuous: 'Продолжение похожими', library: 'Библиотека', other: 'Другое',
-  unknown: 'Без контекста', scrobble: 'История Navidrome',
+  unknown: 'Без контекста', scrobble: 'История прослушиваний',
 }, 'Без контекста');
 
 /** Where a wave was started (`origin`); `null`/`not_recorded` — an old client. */

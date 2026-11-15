@@ -30,7 +30,7 @@ const WORDS = ['Дорога', 'Свет', 'Ночь', 'Вокзал', 'Снег
 interface Tr {
   key: string;
   ref: string | null;
-  nd_song_id: string | null;
+  uid: string | null;
   artist: string;
   title: string;
   owned: boolean;
@@ -49,9 +49,9 @@ const TRACKS: Tr[] = (() => {
     const cx = [-1.2, 1.1, 0.1][Math.max(0, facet)];
     const cy = [0.6, 0.5, -1.1][Math.max(0, facet)];
     out.push({
-      key: owned ? `nd:mk${1000 + i}` : `dz:${700000 + i}`,
+      key: owned ? `lib:mk${1000 + i}` : `dz:${700000 + i}`,
       ref: owned ? null : `dz:${700000 + i}`,
-      nd_song_id: owned ? `mk${1000 + i}` : null,
+      uid: owned ? `mk${1000 + i}` : null,
       artist: ARTISTS[(i * 7) % ARTISTS.length],
       title: `${WORDS[i % WORDS.length]} ${['', 'II', 'на двоих', '(акустика)', 'до утра'][i % 5]}`.trim(),
       owned,
@@ -64,7 +64,7 @@ const TRACKS: Tr[] = (() => {
   return out;
 })();
 
-const name = (t: Tr) => ({ key: t.key, ref: t.ref, nd_song_id: t.nd_song_id, artist: t.artist, title: t.title, owned: t.owned });
+const name = (t: Tr) => ({ key: t.key, ref: t.ref, uid: t.uid, artist: t.artist, title: t.title, owned: t.owned });
 
 const FACETS = [
   { id: 'f1', weight: 0.46, artists: ['Северный Ветер', 'Тихий Порт'] },
@@ -256,7 +256,7 @@ function track(uid: number, url: URL): Json | null {
   }
   if (w.n > 0) contributions.splice(1, 0, { kind: 'skip', ts: ago(2 * DAY), event_id: 'en', side: 'N', base: -1, age: 2, w: 0.88, value: w.n, context: 'mix:3', client: 'app/1.14.0', position_s: 12, duration_s: 200, note: null });
   contributions.push({ kind: 'start', ts: ago(40 * DAY), event_id: 'es', side: '0', base: 0, age: 40, w: 0.4, value: 0, context: 'album', client: 'pwa', position_s: 0, duration_s: null, note: 'start — вес 0' });
-  contributions.push({ kind: 'finish', ts: ago(1200 * DAY), event_id: 'eo', side: '0', base: 2, age: 900, w: 0, value: 0, context: null, client: 'navidrome', position_s: null, duration_s: null, note: 'старше 3 лет' });
+  contributions.push({ kind: 'finish', ts: ago(1200 * DAY), event_id: 'eo', side: '0', base: 2, age: 900, w: 0, value: 0, context: null, client: 'pwa', position_s: null, duration_s: null, note: 'старше 3 лет' });
   const { artist: _artistName, ...rest } = row(w);
   return {
     ...rest, model: url.searchParams.get('model') === 'v1' ? 'v1' : 'v2', now: ago(60), starts: w.plays + w.early + 1, finishes: Math.max(0, w.plays - 1), late_skips: 1, contributions,
@@ -401,7 +401,7 @@ function mixDetail(id: number): Json | null {
     };
   });
   return {
-    ...base, description: 'Знакомое и новое по вашему вкусу', nd_playlist_id: 'pl-mock',
+    ...base, description: 'Знакомое и новое по вашему вкусу', playlist_uid: 'pl-mock',
     funnel: {
       generators: [
         ...GEN.map((g, i): Json => ({ ...g, tracks: 50 - i * 8, used: 18 - i * 5, seconds: 1.2 + i * 0.4, error: null, off: false })),
@@ -415,7 +415,7 @@ function mixDetail(id: number): Json | null {
     items,
     launch_list: old ? [] : [
       { id: 'l1', started_at: ago(20 * 3600), attribution: 'context', origin: 'mix_page', client: 'pwa', started: 12, heard: 9, finished: 7, early_skips: 3, likes: 1, dislikes: 0 },
-      { id: 'l2', started_at: ago(10 * 3600), attribution: 'playlist_id', origin: 'nd_playlist', client: 'app/1.14.0', started: 15, heard: 10, finished: 8, early_skips: 4, likes: 1, dislikes: 0 },
+      { id: 'l2', started_at: ago(10 * 3600), attribution: 'playlist_id', origin: 'playlist', client: 'app/1.14.0', started: 15, heard: 10, finished: 8, early_skips: 4, likes: 1, dislikes: 0 },
       { id: 'l3', started_at: ago(5 * 3600), attribution: 'inferred_playlist', origin: null, client: 'app/1.12.0', started: 4, heard: 3, finished: 2, early_skips: 2, likes: 0, dislikes: 0 },
     ],
     artists: 31,
@@ -424,9 +424,9 @@ function mixDetail(id: number): Json | null {
 
 const WAVES = [
   { session_id: 'mockw1', created_at: ago(1 * DAY), origin: 'home_card', client: 'app/1.14.0', restart_of: null, restart: false, seed_kind: 'own', seed: null, reconstructed: false },
-  { session_id: 'mockw2', created_at: ago(2 * DAY), origin: 'track_menu', client: 'app/1.14.0', restart_of: null, restart: false, seed_kind: 'track', seed: { title: 'Вокзал', artist: 'Тихий Порт', ref: 'dz:700003', nd_song_id: null, artist_ref: null, nd_artist_id: null }, reconstructed: false },
-  { session_id: 'mockw3', created_at: ago(2 * DAY - 1800), origin: 'restart', client: 'app/1.14.0', restart_of: 'mockw2', restart: true, seed_kind: 'track', seed: { title: 'Вокзал', artist: 'Тихий Порт', ref: 'dz:700003', nd_song_id: null, artist_ref: null, nd_artist_id: null }, reconstructed: false },
-  { session_id: 'mockw4', created_at: ago(4 * DAY), origin: 'radio', client: 'app/1.14.0', restart_of: null, restart: false, seed_kind: 'library_artist', seed: { title: null, artist: 'Кварц', ref: null, nd_song_id: null, artist_ref: null, nd_artist_id: 'ar-mock' }, reconstructed: false },
+  { session_id: 'mockw2', created_at: ago(2 * DAY), origin: 'track_menu', client: 'app/1.14.0', restart_of: null, restart: false, seed_kind: 'track', seed: { title: 'Вокзал', artist: 'Тихий Порт', ref: 'dz:700003', uid: null, artist_ref: null, artist_uid: null }, reconstructed: false },
+  { session_id: 'mockw3', created_at: ago(2 * DAY - 1800), origin: 'restart', client: 'app/1.14.0', restart_of: 'mockw2', restart: true, seed_kind: 'track', seed: { title: 'Вокзал', artist: 'Тихий Порт', ref: 'dz:700003', uid: null, artist_ref: null, artist_uid: null }, reconstructed: false },
+  { session_id: 'mockw4', created_at: ago(4 * DAY), origin: 'radio', client: 'app/1.14.0', restart_of: null, restart: false, seed_kind: 'library_artist', seed: { title: null, artist: 'Кварц', ref: null, uid: null, artist_ref: null, artist_uid: 'ar-mock' }, reconstructed: false },
   { session_id: 'mockw5', created_at: ago(9 * DAY), origin: null, client: 'app/1.11.0', restart_of: null, restart: false, seed_kind: 'unknown', seed: null, reconstructed: true },
 ];
 
@@ -460,7 +460,7 @@ function waveDetail(sid: string): Json | null {
   return {
     ...w,
     gens: w.reconstructed ? {} : { favorites: { tracks: 20, seconds: 0.2, title: 'Любимое' }, ytm_radio: { tracks: 35, seconds: 2.1, title: 'Похожее: радио YouTube Music' }, lastfm_similar: { tracks: 0, seconds: 8, error: 'timeout', title: 'Похожее: Last.fm' } },
-    seeds_used: w.reconstructed ? null : ['nd:mk1000'],
+    seeds_used: w.reconstructed ? null : ['lib:mk1000'],
     items,
     events: TRACKS.slice(2, 8).map((t, j) => ({ ts: ago(Date.now() / 1000 - Date.parse(w.created_at + 'Z') / 1000 - j * 220), kind: ['start', 'finish', 'start', 'skip', 'like', 'start'][j], track: name(t), position_s: j === 3 ? 12 : j === 1 ? 214 : 0, client: w.client })),
   };

@@ -6,7 +6,6 @@ import { LikeButton } from '../components/LikeButton';
 import { Button, Cover, ErrorState, IconButton, Loading, SectionTitle } from '../components/ui';
 import { startDownload } from '../lib/actions';
 import { useAsync } from '../lib/hooks';
-import { playList } from '../lib/player';
 import { goBack } from '../lib/router';
 import { plural } from '../lib/format';
 import { confirmDialog } from '../lib/ui';
@@ -99,7 +98,7 @@ export function ArtistPage({ refId }: { refId: string }) {
         <section aria-label="Популярные треки">
           <SectionTitle>Популярные треки</SectionTitle>
           {top.map((t, i) => (
-            <TrackRow key={t.ref} track={t} number={i + 1} showAlbum onPlay={() => playList(top_tracks.filter((x) => x.owned), (x) => x.nd_song_id, t)} queue={top_tracks} />
+            <TrackRow key={t.ref} track={t} number={i + 1} showAlbum queue={top_tracks} />
           ))}
           {top_tracks.length > 5 && (
             <div className="px-4 pt-1">

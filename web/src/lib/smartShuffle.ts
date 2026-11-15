@@ -66,7 +66,7 @@ export function useSmartEnabled(): boolean {
 // --- the screen's context ------------------------------------------------------------------------------------------
 
 interface Page {
-  context: string; // "liked" or "playlist:<Navidrome id>"
+  context: string; // "liked" or "playlist:<uid>"
   title: string | null;
 }
 
@@ -120,8 +120,7 @@ export const labelOf = (context: string, title: string | null) =>
 
 const asTrack = (r: SmartRecOut, s: Session): ListenTrack => ({
   ref: r.uid ? `lib:${r.uid}` : r.ref,
-  uid: r.owned ? (r.uid ?? null) : null,
-  nd_song_id: r.owned ? r.nd_song_id : null,
+  uid: r.uid ?? null,
   rec: { label: s.label, session: s.id },
   title: r.title,
   artist: r.artists?.length ? r.artists.join(', ') : r.artist,
@@ -266,11 +265,11 @@ export async function addRec(track: ListenTrack): Promise<void> {
   if (!rec) return;
   try {
     if (s?.context === 'liked' || (!s && getListenState().context === 'liked')) {
-      await toggleLike({ targetType: 'track', songId: track.nd_song_id, ref: track.ref, data: { ...track } });
-      await api.smartAdd(rec.session, { ref: track.ref, track_uid: track.uid, nd_song_id: track.nd_song_id });
+      await toggleLike({ targetType: 'track', uid: track.uid, ref: track.ref, data: { ...track } });
+      await api.smartAdd(rec.session, { ref: track.ref, track_uid: track.uid });
       toast(`«${track.title}» в понравившихся`, 'success');
     } else {
-      const r = await api.smartAdd(rec.session, { ref: track.ref, track_uid: track.uid, nd_song_id: track.nd_song_id });
+      const r = await api.smartAdd(rec.session, { ref: track.ref, track_uid: track.uid });
       toast(r.status === 'downloading' ? `«${track.title}» скачивается и появится в плейлисте` : `«${track.title}» добавлен в плейлист`, 'success');
     }
     markOwn(track.ref);
@@ -292,7 +291,7 @@ export async function hideRec(track: ListenTrack): Promise<void> {
   const gone = getListenState().queue.findIndex((t) => t.ref === track.ref);
   if (gone >= 0 && gone !== getListenState().index) removeFromQueue(gone);
   try {
-    await api.smartHide(rec.session, { ref: track.ref, track_uid: track.uid, nd_song_id: track.nd_song_id });
+    await api.smartHide(rec.session, { ref: track.ref, track_uid: track.uid });
     toast(`«${track.title}» больше не рекомендуется здесь`, 'info');
   } catch (e) {
     toastError(e);

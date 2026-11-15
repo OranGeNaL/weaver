@@ -60,7 +60,7 @@ export function LibraryPage({ initialQuery }: { initialQuery: string }) {
       </header>
 
       {STANDALONE && !dq && (
-        // a browser has no app around it: the Navidrome library a player shows, then the files the Hub keeps
+        // a browser has no app around it: the library the Hub serves, then the files it keeps
         <>
           <ul className="mx-4 mb-2 overflow-hidden rounded-xl bg-surface">
             <LibraryLink to="/liked" icon="heart" title="Понравившиеся" />

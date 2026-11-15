@@ -7,7 +7,7 @@ export type TasteModel = 'v1' | 'v2';
 export interface InsightsName {
   key: string | null;
   ref: string | null;
-  nd_song_id: string | null;
+  uid: string | null;
   artist: string;
   title: string;
   owned: boolean;
@@ -385,7 +385,7 @@ export interface MixItem extends InsightsName, OutcomeFields {
 
 export interface MixOut extends MixRow {
   description: string;
-  nd_playlist_id: string | null;
+  playlist_uid: string | null;
   funnel: {
     generators: Array<{ generator: string; title: string; tracks: number | null; used: number | null; seconds: number | null; error: string | null; off: boolean }> | null;
     candidates: number | null;
@@ -425,7 +425,7 @@ export interface WaveRow {
   restart_of: string | null;
   restart: boolean;
   seed_kind: string;
-  seed: { title: string | null; artist: string | null; ref: string | null; nd_song_id: string | null; artist_ref: string | null; nd_artist_id: string | null } | null;
+  seed: { title: string | null; artist: string | null; ref: string | null; uid: string | null; artist_ref: string | null; artist_uid: string | null } | null;
   mode: string | null;
   taste_model: string | null;
   next_calls: number | null;

@@ -7,7 +7,7 @@ import { Button, ErrorState, Field, Loading, Notice, PageHeader, ProgressBar, Se
 import { useHubEvent } from '../lib/events';
 import { DOWNLOAD_ACTIVE, fmtWhen, providerLabel, warningText } from '../lib/format';
 import { useAsync } from '../lib/hooks';
-import { canPlay, playSongs } from '../lib/player';
+import { canPlayAll, playHubItems } from '../lib/player';
 import { Link } from '../lib/router';
 import { attempt } from '../lib/ui';
 
@@ -95,8 +95,8 @@ export function DownloadDetailPage({ id }: { id: number }) {
                 </Button>
               )
             )}
-            {item.status === 'done' && item.nd_song_id && canPlay() && (
-              <Button small variant="primary" icon="play" onClick={() => playSongs([item.nd_song_id as string])}>
+            {item.status === 'done' && item.uid && canPlayAll() && (
+              <Button small variant="primary" icon="play" onClick={() => playHubItems([{ ref: `lib:${item.uid}`, title: item.title, artist: item.artist, album: item.album, cover_url: item.chosen?.cover_url, duration_s: null }], 0)}>
                 Слушать
               </Button>
             )}

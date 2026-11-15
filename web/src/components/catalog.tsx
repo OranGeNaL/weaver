@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { AlbumOut, CatalogArtist, TrackOut } from '../api/types';
 import { fmtDuration, recordTypeLabel, yearOf } from '../lib/format';
 import { downloadRef, listen, listenAll, shuffled, touchTrack, useListen, watchOnScreen, type ListenTrack } from '../lib/listen';
-import { canPlay, canPlayAll, playSongs, playTracks } from '../lib/player';
+import { canPlayAll, playTracks } from '../lib/player';
 import { STANDALONE } from '../lib/embedded';
 import { Link, enc } from '../lib/router';
 import { Icon } from './Icon';
@@ -48,7 +48,6 @@ export function listenTrack(t: TrackOut): ListenTrack {
   return {
     ref: t.uid ? `lib:${t.uid}` : t.ref,
     uid: t.uid ?? null,
-    nd_song_id: t.nd_song_id,
     title: t.title,
     artist: t.artists?.length ? t.artists.join(', ') : t.artist,
     cover_url: t.cover_url,
@@ -99,17 +98,14 @@ export function TrackRow({
   showCover = true,
   showAlbum = false,
   link = true,
-  onPlay,
   queue,
   menuExtra,
 }: {
-  track: TrackOut & { nd_album_id?: string | null; nd_artist_id?: string | null };
+  track: TrackOut & { album_uid?: string | null; artist_uid?: string | null };
   number?: number;
   showCover?: boolean;
   showAlbum?: boolean;
   link?: boolean;
-  /** Plays with context in the app's player (the rest of the album or list); by default the track alone. */
-  onPlay?: () => void;
   /** The list this row is in: the page player plays on through it. */
   queue?: readonly TrackOut[];
   /** More actions of the row's ⋯ menu (a playlist's «Убрать из плейлиста»). */
@@ -129,14 +125,12 @@ export function TrackRow({
     await downloadRef(track.ref);
     setBusy(false);
   };
-  const all = canPlayAll();
-  const listenHere = all
+  // the app's player takes the whole list; in a browser the page plays the files itself
+  const play = canPlayAll()
     ? () => playTracks(queue?.includes(track) ? queue : [track], track)
     : () => listen(listenTrack(track), queue?.map(listenTrack));
-  const songId = track.owned && canPlay() ? track.nd_song_id : null;
-  // owned: the app's player; in a browser there is none, so the page plays the library file
-  const play = all ? listenHere : songId ? (onPlay ?? (() => playSongs([songId]))) : track.owned && !canPlay() ? listenHere : undefined;
-  const rowPlays = STANDALONE && (!track.owned || (!(link && track.album_ref) && !!play));
+  // a tap on the row plays (a browser; in the app its own player has the list)
+  const rowPlays = STANDALONE && (!track.owned || !(link && track.album_ref));
   const playLabel = playing ? `Пауза «${track.title}»` : `Слушать «${track.title}»`;
   const sub = [track.artists?.length ? track.artists.join(', ') : track.artist, showAlbum ? track.album_title : null].filter(Boolean).join(' · ');
   const body = (
@@ -171,28 +165,26 @@ export function TrackRow({
   return (
     <div ref={rowRef} className={cx('flex min-h-16 items-center gap-3 pl-4 pr-1', rowPlays && 'group/track transition-colors hover:bg-fg/5 focus-within:bg-fg/5')}>
       {!track.owned ? (
-        <button type="button" onClick={listenHere} onPointerDown={() => touchTrack(track.ref)} className={rowClass} aria-label={rowPlays ? playLabel : `Послушать «${track.title}»`}>
+        <button type="button" onClick={play} onPointerDown={() => touchTrack(track.ref)} className={rowClass} aria-label={rowPlays ? playLabel : `Послушать «${track.title}»`}>
           {body}
         </button>
       ) : link && track.album_ref ? (
         <Link to={`/album/${enc(track.album_ref)}`} className={rowClass}>
           {body}
         </Link>
-      ) : play ? (
+      ) : (
         <button type="button" onClick={play} className={rowClass} aria-label={rowPlays ? playLabel : `Слушать «${track.title}»`}>
           {body}
         </button>
-      ) : (
-        <div className={rowClass}>{body}</div>
       )}
       <div className="-ml-2 flex shrink-0 items-center">
-        <LikeButton songId={track.owned ? track.nd_song_id : null} refId={track.ref} pending={track.star_pending} title={track.title} data={{ ...track }} className="w-10" />
+        <LikeButton uid={track.owned ? track.uid ?? null : null} refId={track.ref} pending={track.star_pending} title={track.title} data={{ ...track }} className="w-10" />
         {track.owned ? (
           // a plain browser: the row itself plays it, a second ▷ would only take the title's room
-          STANDALONE && !(link && track.album_ref) && play ? null : <TrackStatus owned downloading={false} onDownload={download} onPlay={play} />
+          STANDALONE && !(link && track.album_ref) ? null : <TrackStatus owned downloading={false} onDownload={download} onPlay={play} />
         ) : (
           <>
-            <ListenButton track={track} onListen={listenHere} />
+            <ListenButton track={track} onListen={play} />
             <TrackStatus owned={dl === 'done'} downloading={track.downloading || dl === 'queued'} onDownload={download} busy={busy} />
           </>
         )}
@@ -202,11 +194,10 @@ export function TrackRow({
             artist: track.artists?.length ? track.artists.join(', ') : track.artist,
             ref: track.ref,
             uid: track.uid ?? null,
-            nd_song_id: track.nd_song_id,
             artist_ref: track.artist_ref,
             album_ref: track.album_ref,
-            nd_album_id: track.nd_album_id,
-            nd_artist_id: track.nd_artist_id,
+            album_uid: track.album_uid ?? null,
+            artist_uid: track.artist_uid ?? null,
             listen: listenTrack(track),
           }}
           extra={menuExtra}

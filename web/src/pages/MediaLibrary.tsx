@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
-import { libAlbum, libAlbums, libArtist, libArtists, libLiked } from '../api/library';
-import type { NdAlbumOut, NdArtistOut, NdSongOut } from '../api/types';
+import { libAlbum, libAlbums, libArtist, libArtists, libCover, libLiked, libSong } from '../api/library';
+import type { LibAlbumOut, LibArtistOut, TrackOut } from '../api/types';
 import { playAll, TrackRow } from '../components/catalog';
 import { Icon } from '../components/Icon';
 import { LikeButton } from '../components/LikeButton';
@@ -15,24 +15,26 @@ import { useSmartForPage, useSmartPage } from '../lib/smartShuffle';
 import { artistRadioSeed, canWave, seedKey, startWave, useWave } from '../lib/wave';
 
 /** The Hub catalog as a player shows it, for the PWA in a plain browser (`STANDALONE`): inside the app these are
- * its native screens. The data comes from `/api/library/*` (`api/library.ts`), or from the deprecated `/api/nd/*`
- * when the Hub lacks `hub_library_v1`; both branches arrive here in the ND shape with `uid` = `id`. Songs are
- * `NdSongOut` (owned catalog-like tracks playing `lib:<uid>`), so `TrackRow` plays them. */
+ * its native screens. The data comes from `/api/library/*` (`api/library.ts`) with the Hub's own uids: songs arrive
+ * as owned catalog-like tracks playing `lib:<uid>`, so `TrackRow` plays them. */
+
+/** A row of a list page: a catalog track or a library song (its `album_uid`/`artist_uid` build the library links). */
+type RowTrack = TrackOut & { album_uid?: string | null; artist_uid?: string | null };
 
 // --- pieces ------------------------------------------------------------------------------------------------
 
-export function NdAlbumCard({ album, showArtist = true }: { album: NdAlbumOut; showArtist?: boolean }) {
+export function LibAlbumCard({ album, showArtist = true }: { album: LibAlbumOut; showArtist?: boolean }) {
   return (
-    <Link to={`/lib/album/${enc(album.id)}`} className="block min-w-0">
-      <Cover src={album.cover_url} alt={album.title} icon="disc" className="aspect-square w-full" />
+    <Link to={`/lib/album/${enc(album.uid)}`} className="block min-w-0">
+      <Cover src={libCover(album)} alt={album.title} icon="disc" className="aspect-square w-full" />
       <div className="mt-2 line-clamp-2 text-sm font-medium leading-tight">{album.title}</div>
-      <div className="mt-0.5 truncate text-xs text-muted">{[showArtist ? album.artist : null, album.year].filter(Boolean).join(' · ')}</div>
+      <div className="mt-0.5 truncate text-xs text-muted">{[showArtist ? album.album_artist : null, album.year].filter(Boolean).join(' · ')}</div>
     </Link>
   );
 }
 
 /** A horizontal row of album cards that remembers its scroll. */
-export function AlbumRow({ title, albums, rowKey, more }: { title: string; albums: NdAlbumOut[]; rowKey: string; more?: string }) {
+export function AlbumRow({ title, albums, rowKey, more }: { title: string; albums: LibAlbumOut[]; rowKey: string; more?: string }) {
   const row = useRememberScrollX(rowKey);
   if (!albums.length) return null;
   return (
@@ -40,8 +42,8 @@ export function AlbumRow({ title, albums, rowKey, more }: { title: string; album
       <SectionTitle right={more ? <Link to={more} className="text-sm text-muted hover:text-fg">Все</Link> : undefined}>{title}</SectionTitle>
       <div ref={row} className="no-scrollbar flex gap-4 overflow-x-auto px-4 pb-1">
         {albums.map((a) => (
-          <div key={a.uid ?? a.id} className="w-36 shrink-0">
-            <NdAlbumCard album={a} />
+          <div key={a.uid} className="w-36 shrink-0">
+            <LibAlbumCard album={a} />
           </div>
         ))}
       </div>
@@ -50,12 +52,12 @@ export function AlbumRow({ title, albums, rowKey, more }: { title: string; album
 }
 
 /** An artist of the library: a tap opens it; `radio` — a tap starts the wave by the artist («Радиостанции»). */
-export function NdArtistBubble({ artist, radio = false }: { artist: NdArtistOut; radio?: boolean }) {
+export function LibArtistBubble({ artist, radio = false }: { artist: LibArtistOut; radio?: boolean }) {
   const { starting } = useWave();
   const body = (
     <>
       <span className="relative">
-        <Cover src={artist.cover_url} size={104} round icon="user" alt={artist.name} />
+        <Cover src={libCover(artist, 104)} size={104} round icon="user" alt={artist.name} />
         {radio && (
           <span className="absolute bottom-1 right-1 flex h-8 w-8 items-center justify-center rounded-full bg-accent text-on-accent shadow">
             {starting === seedKey(artistRadioSeed(artist)) ? <Spinner size={16} /> : <Icon name="wave" size={18} />}
@@ -73,19 +75,18 @@ export function NdArtistBubble({ artist, radio = false }: { artist: NdArtistOut;
       </button>
     );
   return (
-    <Link to={`/lib/artist/${enc(artist.id)}`} className={cls}>
+    <Link to={`/lib/artist/${enc(artist.uid)}`} className={cls}>
       {body}
     </Link>
   );
 }
 
 /** The ♥ target of an album, the same on every screen of the library branch: its catalog ref when the Hub knows one
- * (`dz:…`), else its Hub `uid` as a bare ref (the Hub resolves it). The deprecated branch keeps the ND album id. */
-const albumLikeRef = (a: NdAlbumOut) =>
-  a.deezer_album_id ? `dz:${a.deezer_album_id}` : (a.lib_uid ?? null);
+ * (`dz:…`), else its Hub `uid` as a bare ref (the Hub resolves it). */
+const albumLikeRef = (a: LibAlbumOut) => (a.deezer_album_id ? `dz:${a.deezer_album_id}` : a.uid);
 
 /** «Слушать» and «Перемешать» for a whole list. */
-export function ListActions({ tracks, context, children }: { tracks: readonly NdSongOut[]; context?: string; children?: ReactNode }) {
+export function ListActions({ tracks, context, children }: { tracks: readonly RowTrack[]; context?: string; children?: ReactNode }) {
   const smart = useSmartForPage() && (context === 'playlist' || context === 'liked'); // «Перемешать» is the smart shuffle
   if (!tracks.length && !children) return null;
   return (
@@ -105,7 +106,7 @@ export function ListActions({ tracks, context, children }: { tracks: readonly Nd
   );
 }
 
-function SongList({ tracks, extra }: { tracks: readonly NdSongOut[]; extra?: (t: NdSongOut, i: number) => Parameters<typeof TrackRow>[0]['menuExtra'] }) {
+function SongList({ tracks, extra }: { tracks: readonly RowTrack[]; extra?: (t: RowTrack, i: number) => Parameters<typeof TrackRow>[0]['menuExtra'] }) {
   return (
     <ul>
       {tracks.map((t, i) => (
@@ -189,12 +190,12 @@ export function LikedPage() {
   );
 }
 
-export function ArtistRow({ artists, rowKey, radio }: { artists: NdArtistOut[]; rowKey: string; radio?: boolean }) {
+export function ArtistRow({ artists, rowKey, radio }: { artists: LibArtistOut[]; rowKey: string; radio?: boolean }) {
   const row = useRememberScrollX(rowKey);
   return (
     <div ref={row} className="no-scrollbar flex gap-3 overflow-x-auto px-4 pb-1">
       {artists.map((a) => (
-        <NdArtistBubble key={a.uid ?? a.id} artist={a} radio={radio} />
+        <LibArtistBubble key={a.uid} artist={a} radio={radio} />
       ))}
     </div>
   );
@@ -205,7 +206,7 @@ export function PlaylistPage({ id }: { id: string }) {
   const p = res.data;
   useSmartPage(`playlist:${id}`, p?.name ?? null);
 
-  const remove = async (i: number, t: NdSongOut) => {
+  const remove = async (i: number, t: RowTrack) => {
     if (await attempt(() => api.removeFromPlaylist(id, [i]), `«${t.title}» убран из плейлиста`))
       res.setData((prev) => (prev ? { ...prev, song_count: prev.song_count - 1, duration_s: Math.max(0, prev.duration_s - (t.duration_s ?? 0)), tracks: prev.tracks.filter((_, j) => j !== i) } : prev));
   };
@@ -256,14 +257,13 @@ export function ArtistsPage() {
       ) : (
         <ul>
           {shown.map((a) => (
-            <li key={a.uid ?? a.id}>
-              <Link to={`/lib/artist/${enc(a.id)}`} className="flex min-h-16 items-center gap-3 px-4 py-2 hover:bg-fg/5">
-                <Cover src={a.cover_url} size={48} round icon="user" alt="" />
+            <li key={a.uid}>
+              <Link to={`/lib/artist/${enc(a.uid)}`} className="flex min-h-16 items-center gap-3 px-4 py-2 hover:bg-fg/5">
+                <Cover src={libCover(a, 48)} size={48} round icon="user" alt="" />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate">{a.name}</span>
                   <span className="block text-xs text-muted">{albumsWord(a.album_count)}</span>
                 </span>
-                {a.starred && <Icon name="heart" filled size={16} className="text-accent" />}
               </Link>
             </li>
           ))}
@@ -279,7 +279,7 @@ const albumsWord = (n: number) => {
   return `${n} ${w}`;
 };
 
-export function NdArtistPage({ id }: { id: string }) {
+export function LibArtistPage({ id }: { id: string }) {
   const res = useAsync((s) => libArtist(id, s), [id]);
   const { starting } = useWave();
   if (res.loading) return (<><PageHeader title="Исполнитель" back="/artists" /><SkeletonRows /></>);
@@ -290,10 +290,10 @@ export function NdArtistPage({ id }: { id: string }) {
       <PageHeader
         title={artist.name}
         back="/artists"
-        right={<LikeButton targetType="artist" refId={artist.lib_uid ?? null} ndId={artist.lib_uid ? null : artist.id} title={artist.name} data={{ name: artist.name }} />}
+        right={<LikeButton targetType="artist" refId={artist.uid} title={artist.name} data={{ name: artist.name }} />}
       />
       <Hero
-        cover={artist.cover_url ?? albums[0]?.cover_url}
+        cover={libCover(artist) ?? (albums[0] ? libCover(albums[0]) : null)}
         round
         title={artist.name}
         sub={albumsWord(albums.length)}
@@ -312,40 +312,40 @@ export function NdArtistPage({ id }: { id: string }) {
       />
       <div className="grid grid-cols-2 gap-4 px-4 pb-4 sm:grid-cols-3">
         {albums.map((a) => (
-          <NdAlbumCard key={a.uid ?? a.id} album={a} showArtist={false} />
+          <LibAlbumCard key={a.uid} album={a} showArtist={false} />
         ))}
       </div>
     </div>
   );
 }
 
-export function NdAlbumPage({ id }: { id: string }) {
+export function LibAlbumPage({ id }: { id: string }) {
   const res = useAsync((s) => libAlbum(id, s), [id]);
   if (res.loading) return (<><PageHeader title="Альбом" back="/library" /><SkeletonRows /></>);
   if (!res.data) return (<><PageHeader title="Альбом" back="/library" /><ErrorState text={res.error ?? 'Альбом не найден'} onRetry={() => res.reload()} /></>);
   const a = res.data;
-  const tracks = a.tracks ?? [];
+  const tracks = (a.tracks ?? []).map(libSong);
   return (
     <div>
       <PageHeader
         title={a.title}
-        sub={a.artist}
+        sub={a.album_artist}
         back="/library"
-        right={<LikeButton targetType="album" refId={albumLikeRef(a)} ndId={a.lib_uid || a.deezer_album_id ? null : a.id} title={a.title} data={{ name: a.title, artist: a.artist }} />}
+        right={<LikeButton targetType="album" refId={albumLikeRef(a)} title={a.title} data={{ name: a.title, artist: a.album_artist }} />}
       />
       <Hero
-        cover={a.cover_url?.replace(/size=\d+/, 'size=600')}
+        cover={libCover(a, 600)}
         title={a.title}
         sub={
           <>
-            {a.artist_id ? (
-              <Link to={`/lib/artist/${enc(a.artist_id)}`} className="font-medium text-fg hover:underline">
-                {a.artist}
+            {a.artist_uid ? (
+              <Link to={`/lib/artist/${enc(a.artist_uid)}`} className="font-medium text-fg hover:underline">
+                {a.album_artist}
               </Link>
             ) : (
-              a.artist
+              a.album_artist
             )}
-            {[a.year, tracksWord(a.song_count), a.duration_s ? fmtLength(a.duration_s) : null].filter(Boolean).map((x) => ` · ${x}`)}
+            {[a.year, tracksWord(a.track_count)].filter(Boolean).map((x) => ` · ${x}`)}
           </>
         }
       />
@@ -362,8 +362,8 @@ export function NdAlbumPage({ id }: { id: string }) {
 }
 
 /** «Все альбомы» of the library, by name, a page at a time. */
-export function NdAlbumsPage() {
-  const [pages, setPages] = useState<NdAlbumOut[][]>([]);
+export function LibAlbumsPage() {
+  const [pages, setPages] = useState<LibAlbumOut[][]>([]);
   const first = useAsync((s) => libAlbums('alphabeticalByName', 0, 60, undefined, s), []);
   const [busy, setBusy] = useState(false);
   const all = [...(first.data ?? []), ...pages.flat()];
@@ -385,7 +385,7 @@ export function NdAlbumsPage() {
         <>
           <div className="grid grid-cols-2 gap-4 px-4 pb-4 sm:grid-cols-3">
             {all.map((a) => (
-              <NdAlbumCard key={a.uid ?? a.id} album={a} />
+              <LibAlbumCard key={a.uid} album={a} />
             ))}
           </div>
           {!done && (

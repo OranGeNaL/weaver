@@ -125,8 +125,8 @@ export function MiniPlayer() {
                 onChange={(e) => setVolume(Number(e.target.value) / 100)} />
             </div>
           )}
-          <TrackMenuButton track={{ ...track, uid: track.uid ?? info?.uid ?? null, nd_song_id: info?.nd_song_id }} className="w-9" inPlayer />
-          <LikeButton songId={info?.nd_song_id} uid={info?.uid ?? track.uid ?? null} refId={track.ref} title={track.title} data={{ ...track }} className="-mr-1" />
+          <TrackMenuButton track={{ ...track, uid: track.uid ?? info?.uid ?? null }} className="w-9" inPlayer />
+          <LikeButton uid={info?.uid ?? track.uid ?? null} refId={track.ref} title={track.title} data={{ ...track }} className="-mr-1" />
           <button
             type="button"
             onClick={toggle}

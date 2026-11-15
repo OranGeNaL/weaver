@@ -31,7 +31,7 @@ import { ImportItemsPage, ImportPage, ImportsPage } from './pages/Import';
 import { LibraryPage } from './pages/Library';
 import { LibraryAlbumPage } from './pages/LibraryAlbum';
 import { LoginPage } from './pages/Login';
-import { ArtistsPage, LikedPage, NdAlbumPage, NdAlbumsPage, NdArtistPage, PlaylistPage } from './pages/MediaLibrary';
+import { ArtistsPage, LibAlbumPage, LibAlbumsPage, LibArtistPage, LikedPage, PlaylistPage } from './pages/MediaLibrary';
 import { MixPage, TastePage } from './pages/Mix';
 import { MorePage, PasswordPage } from './pages/More';
 import { PlayerPage } from './pages/Player';
@@ -50,9 +50,9 @@ const STANDALONE_ROUTES: RouteDef[] = [
   ['/liked', 'library', () => <LikedPage />],
   ['/artists', 'library', () => <ArtistsPage />],
   ['/playlist/:id', 'library', (p) => <PlaylistPage key={p.id} id={p.id} />],
-  ['/lib/albums', 'library', () => <NdAlbumsPage />],
-  ['/lib/album/:id', 'library', (p) => <NdAlbumPage key={p.id} id={p.id} />],
-  ['/lib/artist/:id', 'library', (p) => <NdArtistPage key={p.id} id={p.id} />],
+  ['/lib/albums', 'library', () => <LibAlbumsPage />],
+  ['/lib/album/:id', 'library', (p) => <LibAlbumPage key={p.id} id={p.id} />],
+  ['/lib/artist/:id', 'library', (p) => <LibArtistPage key={p.id} id={p.id} />],
 ];
 
 /** Where an unknown or empty route goes. */

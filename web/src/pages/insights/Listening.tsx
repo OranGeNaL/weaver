@@ -193,7 +193,7 @@ function Listening({ d, userId }: { d: ListeningOut; userId: number }) {
           <ul className="divide-y divide-line/50 text-sm">
             <Line title="События без контекста" value={fmtNum(q.events_without_context)} />
             <Line title="События без id попытки (старые клиенты)" value={fmtNum(q.events_without_playback)} />
-            <Line title="Из истории Navidrome" value={fmtNum(q.scrobbles)} />
+            <Line title="Из истории прослушиваний" value={fmtNum(q.scrobbles)} />
             <Line title="Старые «дослушал» без замера" value={fmtNum(q.legacy_finishes)} />
             <Line title="Первое событие" value={fmtStamp(q.first_event_at)} />
           </ul>

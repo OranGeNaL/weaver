@@ -6,7 +6,6 @@ import { IconButton, cx } from './ui';
 /** Typed favorite toggle. A catalog track may download after ♥; album/artist favorites never download it.
  * `pending` is a legacy hint; an explicit own unlike always overrides it. */
 export function LikeButton({
-  songId,
   uid,
   refId,
   pending,
@@ -14,11 +13,9 @@ export function LikeButton({
   size = 20,
   className,
   targetType = 'track',
-  ndId,
   data,
 }: {
-  songId?: string | null;
-  /** the Hub track uid (the primary alias since stage 5) */
+  /** the Hub uid of the target (a track, album or artist) */
   uid?: string | null;
   refId?: string | null;
   pending?: boolean;
@@ -26,16 +23,15 @@ export function LikeButton({
   size?: number;
   className?: string;
   targetType?: FavoriteType;
-  ndId?: string | null;
   data?: Record<string, unknown>;
 }) {
   const [busy, setBusy] = useState(false);
   useEffect(() => {
-    if (targetType === 'track' && pending && refId && !songId) markLikePending(refId);
-  }, [pending, refId, songId, targetType]);
-  const target = { targetType, ndId, uid, songId, ref: refId, data };
+    if (targetType === 'track' && pending && refId && !uid) markLikePending(refId);
+  }, [pending, refId, uid, targetType]);
+  const target = { targetType, uid, ref: refId, data };
   const liked = useLiked(target);
-  if (!songId && !ndId && !refId && !uid) return null;
+  if (!refId && !uid) return null;
   return (
     <IconButton
       icon="heart"

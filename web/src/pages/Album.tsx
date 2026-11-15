@@ -10,7 +10,7 @@ import { useHubEvent } from '../lib/events';
 import { listen } from '../lib/listen';
 import { fmtLength, recordTypeLabel, tracksWord, yearOf } from '../lib/format';
 import { useAsync } from '../lib/hooks';
-import { canPlay, canPlayAll, playList, playTracks } from '../lib/player';
+import { canPlayAll, playTracks } from '../lib/player';
 import { Link, enc, goBack } from '../lib/router';
 import { attempt, toast } from '../lib/ui';
 
@@ -62,18 +62,13 @@ export function AlbumPage({ refId }: { refId: string }) {
   const total = tracks.reduce((s, t) => s + (t.duration_s ?? 0), 0);
   const missing = tracks.filter((t) => !t.owned);
   const owned = tracks.filter((t) => t.owned);
-  // Older apps: owned tracks Navidrome has scanned play in the app's player, in album order.
-  const playable = canPlay() && !canPlayAll() ? owned.filter((t) => t.nd_song_id) : [];
-  const play = (from?: TrackOut) => playList(playable, (t) => t.nd_song_id, from);
-  // The whole album (own files and the rest from sources): in the app's player (1.2.0+), in a browser in the page.
+  // The whole album (own files and the rest from sources): in the app's player, in a browser in the page.
   const listenAll =
     tracks.length === 0
       ? null
       : canPlayAll()
         ? () => playTracks(tracks)
-        : !canPlay()
-          ? () => listen(listenTrack(tracks[0]), tracks.map(listenTrack))
-          : null;
+        : () => listen(listenTrack(tracks[0]), tracks.map(listenTrack));
 
   const markDownloading = (refs: Set<string>) =>
     res.setData((prev) => (prev ? { ...prev, tracks: (prev.tracks ?? []).map((t) => (refs.has(t.ref) ? { ...t, downloading: true } : t)) } : prev));
@@ -104,10 +99,10 @@ export function AlbumPage({ refId }: { refId: string }) {
         playlistId = p.id;
       }
       if (owned.length) {
-        const song_ids = owned.map((t) => t.nd_song_id).filter((x): x is string => !!x);
-        const library_track_ids = owned.filter((t) => !t.nd_song_id && t.library_track_id).map((t) => t.library_track_id as number);
+        const uids = owned.map((t) => t.uid).filter((x): x is string => !!x);
+        const legacy_track_ids = owned.filter((t) => !t.uid && t.library_track_id).map((t) => t.library_track_id as number);
         const pid = playlistId;
-        const ok = await attempt(() => api.addToPlaylist(pid, { song_ids, library_track_ids }));
+        const ok = await attempt(() => api.addToPlaylist(pid, { uids, library_track_ids: legacy_track_ids }));
         if (!ok) return;
       }
       setPickerOpen(false);
@@ -159,18 +154,13 @@ export function AlbumPage({ refId }: { refId: string }) {
       </div>
 
       <div className="grid grid-cols-2 gap-2 px-4 pb-2">
-        {playable.length > 0 && (
-          <Button variant="primary" icon="play" className="col-span-2" onClick={() => play()}>
-            {playable.length === tracks.length ? 'Слушать' : `Слушать ${playable.length} из ${tracks.length}`}
-          </Button>
-        )}
         {listenAll && (
           <Button variant="primary" icon="play" className="col-span-2" onClick={listenAll}>
             Слушать
           </Button>
         )}
-        {!(playable.length > 0 && missing.length === 0) && (
-          <Button variant={playable.length > 0 || listenAll ? 'secondary' : 'primary'} icon="download" className="col-span-2" busy={dlBusy} disabled={missing.length === 0} onClick={downloadAlbum}>
+        {!(listenAll && missing.length === 0) && (
+          <Button variant={listenAll ? 'secondary' : 'primary'} icon="download" className="col-span-2" busy={dlBusy} disabled={missing.length === 0} onClick={downloadAlbum}>
             {missing.length === 0 ? 'Всё скачано' : owned.length ? `Скачать недостающие ${missing.length} из ${tracks.length}` : 'Скачать альбом'}
           </Button>
         )}
@@ -187,7 +177,7 @@ export function AlbumPage({ refId }: { refId: string }) {
           <div key={disc}>
             {discs.length > 1 && <div className="px-4 pb-1 pt-3 text-sm font-semibold text-muted">Диск {disc}</div>}
             {list.map((t, i) => (
-              <TrackRow key={t.ref} track={t} number={t.track_no ?? i + 1} link={false} onPlay={() => play(t)} queue={tracks} />
+              <TrackRow key={t.ref} track={t} number={t.track_no ?? i + 1} link={false} queue={tracks} />
             ))}
           </div>
         ))}

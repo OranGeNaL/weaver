@@ -13,8 +13,7 @@ import { MixCard } from './Mix';
 
 /** «Главная» of the PWA in a plain browser (`STANDALONE`), like the app's: «Микс дня», «Моя волна», shortcuts to
  * the library, «Радиостанции» (a wave by a library artist, liked ones first) and rows of albums of the Hub catalog
- * (`/api/library/home`; the deprecated `/api/nd/home` answers when the Hub lacks `hub_library_v1`). Inside the app
- * this is its native home screen. */
+ * (`/api/library/home`). Inside the app this is its native home screen. */
 export function HomePage() {
   const { me } = useSession();
   const res = useAsync((s) => libHome(s), []);
@@ -53,10 +52,10 @@ export function HomePage() {
         <ErrorState text={res.error} onRetry={() => res.reload()} />
       ) : d ? (
         <>
-          {d.radio.length > 0 && (
+          {d.artists.length > 0 && (
             <section aria-label="Радиостанции">
               <SectionTitle right={<Link to="/artists" className="text-sm text-muted hover:text-fg">Все</Link>}>Радиостанции</SectionTitle>
-              <ArtistRow artists={d.radio} rowKey="home:radio" radio />
+              <ArtistRow artists={d.artists} rowKey="home:radio" radio />
             </section>
           )}
           <AlbumRow title="Недавно слушали" albums={d.recent} rowKey="home:recent" />

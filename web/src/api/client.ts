@@ -40,12 +40,6 @@ import type {
   PlaylistAddIn,
   PlaylistOut,
   PlaylistPageOut,
-  NdAlbumList,
-  NdAlbumOut,
-  NdArtistOut,
-  NdArtistPageOut,
-  NdHomeOut,
-  NdLikedOut,
   ProviderSearchOut,
   RegisterIn,
   PasswordIn,
@@ -342,7 +336,7 @@ export const api = {
   playEvents: (events: PlayEventIn[], expectedUserId?: number) => request<PlayEventsOut>('POST', '/api/plays/events', { json: { events, expected_user_id: expectedUserId } }),
   dislikes: (signal?: AbortSignal) => request<DislikeOut[]>('GET', '/api/dislikes', { signal }),
   dislike: (body: DislikeIn) => request<DislikeOut>('POST', '/api/dislikes', { json: body }),
-  undislike: (q: { ref?: string | null; nd_song_id?: string | null; artist_ref?: string | null }) =>
+  undislike: (q: { ref?: string | null; uid?: string | null; artist_ref?: string | null }) =>
     request<{ removed: number }>('DELETE', withQuery('/api/dislikes', q)),
 
   // «Микс дня» and the taste onboarding
@@ -357,9 +351,9 @@ export const api = {
   // «Моя волна»
   smartStart: (body: SmartStartIn) => request<SmartOut>('POST', '/api/smart-shuffle/start', { json: body }),
   smartNext: (id: string, body: SmartNextIn) => request<SmartOut>('POST', `/api/smart-shuffle/${encodeURIComponent(id)}/next`, { json: body }),
-  smartHide: (id: string, body: { ref?: string | null; track_uid?: string | null; nd_song_id?: string | null }) =>
+  smartHide: (id: string, body: { ref?: string | null; track_uid?: string | null }) =>
     request<{ ok: boolean }>('POST', `/api/smart-shuffle/${encodeURIComponent(id)}/hide`, { json: body }),
-  smartAdd: (id: string, body: { ref?: string | null; track_uid?: string | null; nd_song_id?: string | null }) =>
+  smartAdd: (id: string, body: { ref?: string | null; track_uid?: string | null }) =>
     request<SmartAddOut>('POST', `/api/smart-shuffle/${encodeURIComponent(id)}/add`, { json: body }),
   waveStart: (body: WaveStartIn) => request<WaveOut>('POST', '/api/wave/start', { json: body }),
   waveNext: (id: string, body: WaveNextIn) => request<WaveOut>('POST', `/api/wave/${encodeURIComponent(id)}/next`, { json: body }),
@@ -390,14 +384,6 @@ export const api = {
     request<OkOut>('POST', `/api/playlists/${enc(id)}/remove`, { json: { indexes } }),
   deletePlaylist: (id: string) => request<OkOut>('DELETE', `/api/playlists/${enc(id)}`),
 
-  // the Navidrome library (a browser shows it; the app has it natively)
-  ndHome: (signal?: AbortSignal) => request<NdHomeOut>('GET', '/api/nd/home', { signal }),
-  ndLiked: (signal?: AbortSignal) => request<NdLikedOut>('GET', '/api/nd/liked', { signal }),
-  ndArtists: (signal?: AbortSignal) => cachedGet<NdArtistOut[]>('/api/nd/artists', signal),
-  ndArtist: (id: string, signal?: AbortSignal) => request<NdArtistPageOut>('GET', `/api/nd/artists/${enc(id)}`, { signal }),
-  ndAlbum: (id: string, signal?: AbortSignal) => request<NdAlbumOut>('GET', `/api/nd/albums/${enc(id)}`, { signal }),
-  ndAlbums: (type: NdAlbumList, offset = 0, size = 50, signal?: AbortSignal) =>
-    request<NdAlbumOut[]>('GET', withQuery('/api/nd/albums', { type, offset, size }), { signal }),
 
   // imports from music services
   imports: (signal?: AbortSignal) => request<ImportOut[]>('GET', '/api/imports', { signal }),

@@ -27,8 +27,6 @@ export interface ListenTrack {
   ref: string;
   /** the library track, when it is one: the Hub names it by `uid` (`lib:<uid>`, `idOf`) */
   uid?: string | null;
-  /** deprecated alias of `uid`: the Navidrome song, until stage 7 */
-  nd_song_id?: string | null;
   /** a recommendation of the smart shuffle (`lib/smartShuffle.ts`): ✨ in the player and the queue; `label` — «Рекомендация
    * на основе …», `session` — the Hub's session (its events carry the context `smart:<session>`) */
   rec?: { label: string; session: string } | null;
@@ -75,8 +73,8 @@ export interface ListenState {
   repeat: RepeatMode;
 }
 
-/** The id the Hub knows a track of a playlist by: its Hub `uid`, else the deprecated Navidrome song, else the ref. */
-export const idOf = (t: Pick<ListenTrack, 'ref' | 'uid' | 'nd_song_id'>) => t.uid || t.nd_song_id || t.ref;
+/** The id the Hub knows a track of a playlist by: its Hub `uid`, else the ref. */
+export const idOf = (t: Pick<ListenTrack, 'ref' | 'uid'>) => t.uid || t.ref;
 
 const VOLUME_KEY = 'hm-listen-volume';
 const savedVolume = (() => {
@@ -158,7 +156,7 @@ const RESTART_AFTER_S = 3;
 const FINISH_SHARE = 0.9;
 
 /** The track being played, as reported to the Hub: `started` once its `start` was sent. */
-type OpenPlay = { ref: string; context: string; launch: Launch; started: boolean; playbackId: string; listenedMs: number; anchor: number | null; account: number | null; uid?: string | null; ndSongId?: string | null };
+type OpenPlay = { ref: string; context: string; launch: Launch; started: boolean; playbackId: string; listenedMs: number; anchor: number | null; account: number | null; uid?: string | null };
 let played: OpenPlay | null = null;
 let OPEN_PLAY_KEY = (() => {
   try {
@@ -191,20 +189,20 @@ function checkpoint() {
   if (!p?.started) return;
   accrue(p);
   const snapshot = { ref: p.ref, context: p.context, playback_id: p.playbackId, device_id: deviceId,
-    listened_ms: Math.round(p.listenedMs), uid: p.uid, nd_song_id: p.ndSongId, track_metadata: metadata(), account: p.account, updated_ms: Date.now(),
+    listened_ms: Math.round(p.listenedMs), uid: p.uid, track_metadata: metadata(), account: p.account, updated_ms: Date.now(),
     launch_id: p.launch.id, launch_origin: p.launch.origin };
   try { localStorage.setItem(OPEN_PLAY_KEY, JSON.stringify(snapshot)); } catch (e) { console.error('Could not persist listening checkpoint', e); }
-  playEvent('progress', { ref: p.ref, uid: p.uid, nd_song_id: p.ndSongId }, snapshot);
+  playEvent('progress', { ref: p.ref, uid: p.uid }, snapshot);
 }
 
 type SavedPlay = { ref: string; context: string; playback_id: string; device_id: string; listened_ms: number;
-  uid?: string | null; nd_song_id?: string | null; account?: number | null; updated_ms?: number; launch_id?: string | null; launch_origin?: LaunchOrigin | null };
+  uid?: string | null; account?: number | null; updated_ms?: number; launch_id?: string | null; launch_origin?: LaunchOrigin | null };
 
 function recover(key: string) {
   try {
     const old = JSON.parse(localStorage.getItem(key) ?? 'null') as SavedPlay | null;
     if (old?.ref && old.playback_id && old.device_id && old.account != null && Number.isFinite(old.listened_ms)) {
-      if (playEvent('interrupted', { ref: old.ref, uid: old.uid, nd_song_id: old.nd_song_id }, old)) localStorage.removeItem(key);
+      if (playEvent('interrupted', { ref: old.ref, uid: old.uid }, old)) localStorage.removeItem(key);
     }
   } catch (e) { console.error('Could not recover listening checkpoint', e); }
 }
@@ -279,9 +277,8 @@ function reportStart() {
   if (state.phase !== 'playing') return;
   p.started = true;
   p.uid = state.info.uid ?? state.track?.uid ?? null;
-  p.ndSongId = state.info.nd_song_id;
   p.anchor = performance.now();
-  playEvent('start', { ref: p.ref, uid: p.uid, nd_song_id: p.ndSongId }, { context: p.context, playback_id: p.playbackId, device_id: deviceId, listened_ms: 0, track_metadata: metadata(), account: p.account, launch_id: p.launch.id, launch_origin: p.launch.origin });
+  playEvent('start', { ref: p.ref, uid: p.uid }, { context: p.context, playback_id: p.playbackId, device_id: deviceId, listened_ms: 0, track_metadata: metadata(), account: p.account, launch_id: p.launch.id, launch_origin: p.launch.origin });
   checkpoint();
 }
 
@@ -294,7 +291,7 @@ function reportEnd(ended = false, failed = false, interrupted = false) {
   const duration = state.duration || state.track.duration_s || 0;
   const position = ended ? duration : state.position;
   const kind = interrupted ? 'interrupted' : failed ? 'error' : ended || (duration > 0 && position >= duration * FINISH_SHARE) ? 'finish' : 'skip';
-  const persisted = playEvent(kind, { ref: p.ref, uid: p.uid, nd_song_id: p.ndSongId }, { position_s: position, duration_s: duration || null, context: p.context, playback_id: p.playbackId, device_id: deviceId, listened_ms: Math.round(p.listenedMs), track_metadata: metadata(), account: p.account, launch_id: p.launch.id, launch_origin: p.launch.origin });
+  const persisted = playEvent(kind, { ref: p.ref, uid: p.uid }, { position_s: position, duration_s: duration || null, context: p.context, playback_id: p.playbackId, device_id: deviceId, listened_ms: Math.round(p.listenedMs), track_metadata: metadata(), account: p.account, launch_id: p.launch.id, launch_origin: p.launch.origin });
   if (persisted) try { localStorage.removeItem(OPEN_PLAY_KEY); } catch (e) { console.error('Could not close listening checkpoint', e); }
 }
 

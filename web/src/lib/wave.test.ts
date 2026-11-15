@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as Wave from './waveSeed';
 
-/** «Радиостанции» and «Радио по исполнителю» (task 3.3 / council D1): the library branch must seed the wave with the
- * Hub `artist_uid` (the Hub rejects a lone `nd_artist_id`), the deprecated `/api/nd` branch with the ND id. */
+/** «Радиостанции» and «Радио по исполнителю»: the wave is seeded with the Hub artist `uid`, and a library track with
+ * its Hub track `uid` (`lib:<uid>` is its ref) — there is no other kind of artist id any more. */
 
 beforeEach(() => {
   // `lib/embedded.ts` reads window/navigator at import time
@@ -28,19 +28,16 @@ async function load(): Promise<typeof Wave> {
 }
 
 describe('artistRadioSeed', () => {
-  it('sends the Hub artist uid when /api/library answered', async () => {
+  it('sends the Hub artist uid', async () => {
     const { artistRadioSeed } = await load();
-    expect(artistRadioSeed({ id: 'a-uid', lib_uid: 'a-uid' })).toEqual({ artist_uid: 'a-uid' });
+    expect(artistRadioSeed({ uid: 'a-uid' })).toEqual({ artist_uid: 'a-uid' });
   });
 
-  it('keeps the deprecated Navidrome artist id on the /api/nd branch', async () => {
-    const { artistRadioSeed } = await load();
-    expect(artistRadioSeed({ id: 'nd-ar' })).toEqual({ nd_artist_id: 'nd-ar' });
-  });
-
-  it('keys the in-flight spinner by whichever id is sent', async () => {
+  it('keys the in-flight spinner by that uid', async () => {
     const { artistRadioSeed, seedKey } = await load();
-    expect(seedKey(artistRadioSeed({ id: 'a-uid', lib_uid: 'a-uid' }))).toBe('a-uid');
-    expect(seedKey(artistRadioSeed({ id: 'nd-ar' }))).toBe('nd-ar');
+    expect(seedKey(artistRadioSeed({ uid: 'a-uid' }))).toBe('a-uid');
+    expect(seedKey({ artist_ref: 'dz:500' })).toBe('dz:500');
+    expect(seedKey({ song_uid: 't-uid' })).toBe('t-uid');
+    expect(seedKey({ ref: 'lib:t-uid', by_artist: true })).toBe('artist:lib:t-uid');
   });
 });

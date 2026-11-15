@@ -2,7 +2,6 @@ import type { HealthOut, PlayEventIn } from '../api/types';
 
 let supported = false;
 let checkpointsSupported = false;
-let librarySupported = false;
 let checkedAt = 0;
 let checking: Promise<boolean | null> | null = null;
 
@@ -17,13 +16,11 @@ async function check(signal?: AbortSignal): Promise<void> {
       const caps = ((await r.json()) as HealthOut).capabilities ?? [];
       supported = caps.includes('typed_favorites_v1');
       checkpointsSupported = caps.includes('listening_checkpoints_v1');
-      librarySupported = caps.includes('hub_library_v1');
       checkedAt = Date.now();
       result = supported;
     } catch {
       supported = false;
       checkpointsSupported = false;
-      librarySupported = false;
       checkedAt = Date.now(); // a timed-out Hub is not asked again on every catalog call
     } finally {
       checking = null;
@@ -40,20 +37,11 @@ export async function typedFavoritesSupported(): Promise<boolean | null> {
   return supported;
 }
 
-/** The Hub serves the catalog, the covers and library listening through `/api/library/*` and `lib:<uid>`:
- * without it (an older server, or `/healthz` unreachable) the PWA keeps the deprecated `/api/nd/*` branch. */
-export async function hubLibrarySupported(): Promise<boolean> {
-  if (Date.now() - checkedAt < 30_000) return librarySupported;
-  await check();
-  return librarySupported;
-}
-
 /** Tests and a re-login: forget what the last `/healthz` said. */
 export function resetCapabilities() {
   checkedAt = 0;
   supported = false;
   checkpointsSupported = false;
-  librarySupported = false;
 }
 
 export function canSendPlayEvent(event: PlayEventIn): boolean {

@@ -6,11 +6,17 @@ import { Button, Cover, Empty, ErrorState, IconButton, PageHeader, ProgressBar, 
 import { useHubConnected, useHubEvent } from '../lib/events';
 import { DOWNLOAD_ACTIVE, fmtWhen, providerLabel, warningText } from '../lib/format';
 import { useAsync, useInterval } from '../lib/hooks';
-import { canPlay, playList } from '../lib/player';
+import { canPlayAll, playHubItems, type HubItem } from '../lib/player';
 import { Link } from '../lib/router';
 import { attempt, toast } from '../lib/ui';
 
 type Filter = 'all' | 'active' | 'problems';
+
+/** The finished downloads, as the app's player takes them: library songs by `lib:<uid>`. */
+const doneItems = (items: DownloadItemOut[]): HubItem[] =>
+  items
+    .filter((x) => x.status === 'done' && x.uid)
+    .map((x) => ({ ref: `lib:${x.uid}`, title: x.title, artist: x.artist, album: x.album, cover_url: x.chosen?.cover_url ?? null, duration_s: null }));
 
 export function DownloadsPage() {
   const res = useAsync((s) => api.downloads(undefined, 200, s), []);
@@ -130,7 +136,11 @@ export function DownloadsPage() {
               busy={busyId === item.id}
               onRetry={() => act(item, 'retry')}
               onCancel={() => act(item, 'cancel')}
-              onPlay={canPlay() && item.status === 'done' && item.nd_song_id ? () => playList(shown.filter((x) => x.status === 'done'), (x) => x.nd_song_id, item) : undefined}
+              onPlay={
+                canPlayAll() && item.status === 'done' && item.uid
+                  ? () => playHubItems(doneItems(shown), doneItems(shown).findIndex((x) => x.ref === `lib:${item.uid}`))
+                  : undefined
+              }
             />
           ))}
         </ul>
@@ -150,7 +160,7 @@ function DownloadRow({
   busy: boolean;
   onRetry: () => void;
   onCancel: () => void;
-  /** Done and scanned by Navidrome: plays it (and the finished ones around it) in the app's player. */
+  /** Done and in the library: plays it (and the finished ones around it) in the app's player. */
   onPlay?: () => void;
 }) {
   const active = DOWNLOAD_ACTIVE.includes(item.status);

@@ -104,16 +104,13 @@ import { seedKey } from './waveSeed';
 type SeedTrack = {
   ref?: string | null;
   uid?: string | null;
-  nd_song_id?: string | null;
   artist_ref?: string | null;
 };
 export function trackSeed(t: SeedTrack): WaveSeedIn | null {
   const ref = t.ref?.trim();
-  if (ref && /^(dz|nd|lib):.+/.test(ref)) return { ref };
+  if (ref && /^(dz|lib):.+/.test(ref)) return { ref };
   const uid = t.uid?.trim();
   if (uid) return { song_uid: uid };
-  const id = t.nd_song_id?.trim();
-  if (id) return { nd_song_id: id };
   return ref && /^file:[^:]+:.+/.test(ref) ? { ref } : null;
 }
 export function artistSeed(t: SeedTrack): WaveSeedIn | null {
@@ -125,6 +122,7 @@ export function artistSeed(t: SeedTrack): WaveSeedIn | null {
 
 const listenTrack = (t: WaveTrackOut): ListenTrack => ({
   ref: t.ref,
+  uid: t.uid ?? null,
   title: t.title,
   artist: t.artists?.length ? t.artists.join(', ') : t.artist,
   cover_url: t.cover_url,
@@ -141,7 +139,7 @@ const listenTrack = (t: WaveTrackOut): ListenTrack => ({
 function remember(s: Session, w: WaveOut) {
   for (const t of w.tracks) {
     s.refs.add(t.ref);
-    if (t.nd_song_id) s.songs.add(t.nd_song_id);
+    if (t.uid) s.songs.add(t.uid);
   }
 }
 
@@ -224,7 +222,7 @@ onPlayEvent((e) => {
   const s = session;
   if (!s) return;
   if (getListenState().context !== s.context) return end(); // another list plays now
-  if (!(e.ref && s.refs.has(e.ref)) && !(e.nd_song_id && s.songs.has(e.nd_song_id))) return;
+  if (!(e.ref && s.refs.has(e.ref)) && !(e.uid && s.songs.has(e.uid))) return;
   s.pending.push(e);
   persistWave();
   if (e.kind === 'start' || e.kind === 'like' || e.kind === 'dislike') void ask();
