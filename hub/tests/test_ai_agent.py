@@ -574,7 +574,9 @@ async def test_chat_client_is_the_httpx2_client_the_hub_builds(hub_env, monkeypa
         llm.answer = httpx2.Response(200, json=completion("Привет"))
         client = make_client()
         try:
-            assert isinstance(client._client, httpx2.AsyncClient)
+            assert (
+                type(client._client) is httpx2.AsyncClient
+            )  # exactly the client make_client() passes, not the SDK default
             resp = await client.chat.completions.create(model="m", messages=[{"role": "user", "content": "hi"}])
         finally:
             await client.close()
