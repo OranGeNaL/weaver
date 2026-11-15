@@ -16,6 +16,8 @@
 - Не переводить статус-поля (`jobs.status`, `download_items.status`, `imports.status`, `assistant_tasks.status`,
   `uploads.status`) — это state machines, наборы меняются чаще; отдельный шаг.
 - Не вводить нативные PG-enum типы и не менять типы колонок.
+- Не ограничивать касты "БД → Literal" вне первого набора: `favorite_subjects.target_type` и
+  `favorite_events.target_type` (`app/favorites.py`) остаются на соглашении — отдельный `td-*` change.
 - Не добавлять валидацию в API поверх существующих Pydantic-схем.
 - Не менять поведение валидных путей записи.
 

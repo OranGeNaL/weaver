@@ -11,7 +11,8 @@
 
   Имена: `ck_imports_source`, `ck_imports_method`, `ck_imports_mode`, `ck_import_collections_kind`,
   `ck_albums_release_type`, `ck_mix_settings_mode`, `ck_mixes_mode`, `ck_wave_sessions_mode`. Статус-поля не
-  тронуты (state machines, см. design.md Non-Goals).
+  тронуты (state machines, см. design.md Non-Goals). Другие касты "БД → Literal" (`favorite_subjects.target_type`,
+  `favorite_events.target_type`) в первый набор не входят — отдельный `td-*` change (найдено советом валидации).
 
 ## 2. Схема и модели
 

@@ -2,10 +2,14 @@
 
 ### Requirement: Допустимые значения перечислимых полей
 
-Hub SHALL ограничивать на уровне Postgres значения перечислимых текстовых колонок, на которые опираются
-Literal-типы API и домена. Наборы MUST совпадать с соответствующими Literal; изменение набора MUST
-сопровождаться Alembic-миграцией. Ограничения MUST иметь имена `ck_<таблица>_<колонка>` и MAY допускать
-`NULL` для nullable-полей.
+Hub SHALL ограничивать на уровне Postgres значения перечислимых текстовых колонок первого набора — `imports.source`,
+`imports.method`, `imports.mode`, `import_collections.kind`, `albums.release_type`, `mix_settings.mode`, `mixes.mode`,
+`wave_sessions.mode` — то есть полей, на которые опираются Literal-типы API и домена. Наборы MUST совпадать с
+соответствующими Literal; изменение набора MUST сопровождаться Alembic-миграцией. Ограничения MUST иметь имена
+`ck_<таблица>_<колонка>` и MAY допускать `NULL` для nullable-полей.
+
+Другие касты "БД → Literal" вне этого перечня (например `favorite_subjects.target_type`,
+`favorite_events.target_type`) остаются на соглашении: их ограничение — отдельный change.
 
 #### Scenario: Допустимое значение
 - **WHEN** приложение записывает значение из набора
