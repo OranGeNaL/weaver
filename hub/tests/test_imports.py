@@ -1,29 +1,29 @@
 """Imports through the HTTP API: preview → matching → ♥ and playlists in the service's order → downloads below the
 user's work. The service is a ready snapshot (its parsing: test_import_yandex.py), the catalog is FakeDeezer,
-Navidrome a mock that keeps playlists and the order of stars. Downloads are not run (no ffmpeg needed): the tests
-look at what is queued and play its end by hand.
+the ♥ and playlists are the Hub's own. Downloads are not run (no ffmpeg needed): the tests look at what is queued
+and play its end by hand.
 """
 
 from __future__ import annotations
 
 import asyncio
-import uuid
 
 import httpx
 import pytest
 import respx
 from sqlalchemy import select
 
-from tests.support import FakeDeezer, FakeProvider, app_client, cand, grant_navidrome
+from tests.support import FakeDeezer, FakeProvider, app_client, cand
 
 
 def track(artist: str, title: str, duration_s: int | None = 200, **extra) -> dict:
     return {"artist": artist, "artists": [artist], "title": title, "duration_s": duration_s, **extra}
 
 
-OSEN = track("ДДТ", "Осень", 260)  # in the library (ndB)
+OSEN = track("ДДТ", "Осень", 260)  # in the library (Hub uid UID_B)
 KROVI = track("Кино", "Группа крови", 245)  # in the catalog (dz:100)
-GOROD = track("Аквариум", "Город золотой", 190)  # in the library (ndA)
+GOROD = track("Аквариум", "Город золотой", 190)  # in the library (Hub uid UID_A)
+UID_A, UID_B, UID_C = "uid-gorod", "uid-osen", "uid-krovi"
 NONE = track("Неизвестный", "Нет такого", 180)  # nowhere
 
 
@@ -83,34 +83,7 @@ async def env(hub_env, monkeypatch):
     from app.main import create_app
     from app.services import svc
 
-    state: dict = {"playlists": {}, "stars": [], "star_log": [], "fetches": []}
-
-    def nd_handler(request: httpx.Request) -> httpx.Response:
-        ep = request.url.path.rsplit("/", 1)[-1]
-        p = request.url.params
-        ok = {"status": "ok", "version": "1.16.1"}
-
-        def reply(**body) -> httpx.Response:
-            return httpx.Response(200, json={"subsonic-response": {**ok, **body}})
-
-        if ep == "getUser":
-            return reply(user={"adminRole": True})
-        if ep == "createPlaylist":
-            pid = p.get("playlistId") or f"pl{len(state['playlists']) + 1}"
-            name = p.get("name") or state["playlists"].get(pid, {}).get("name")
-            state["playlists"][pid] = {"name": name, "songs": p.get_list("songId")}  # with an id: replaces
-            return reply(playlist={"id": pid, "name": name})
-        if ep == "updatePlaylist":
-            state["playlists"][p["playlistId"]]["songs"] += p.get_list("songIdToAdd")
-            return reply()
-        if ep in ("star", "unstar"):
-            ids = p.get_list("id")
-            state["star_log"].append((ep, ids))
-            state["stars"] = [x for x in state["stars"] if x not in ids] + (ids if ep == "star" else [])
-            return reply()
-        if ep == "getStarred2":
-            return reply(starred2={"song": [{"id": i} for i in state["stars"]]})
-        return reply()
+    state: dict = {"fetches": []}
 
     def fake_fetch(token, login):
         state["fetches"].append((token, login))
@@ -122,24 +95,21 @@ async def env(hub_env, monkeypatch):
         svc.providers = {"hitmoz": FakeProvider("hitmoz", [])}
         svc.deezer = FakeDeezer()
         with respx.mock(assert_all_called=False) as mock:
-            mock.route(host="navidrome.test").mock(side_effect=nd_handler)
             async with app_client(app) as client:
-                await grant_navidrome("admin")  # stage-4 transition: the ND proxy tests need ND credentials
-                await add_library_track(GOROD, "ndA")
-                await add_library_track(OSEN, "ndB")
+                await add_library_track(GOROD, UID_A)
+                await add_library_track(OSEN, UID_B)
                 yield {"client": client, "state": state, "mock": mock}
 
 
-async def add_library_track(raw: dict, nd_song_id: str) -> int:
+async def add_library_track(raw: dict, uid: str) -> int:
     from app.db import session_scope
     from app.matching.normalize import fingerprint
     from app.models import Track
 
     async with session_scope() as s:
         t = Track(
-            uid=str(uuid.uuid4()),
+            uid=uid,
             path=f"{raw['artist']}/{raw['title']}.mp3",
-            nd_song_id=nd_song_id,
             artist=raw["artist"],
             title=raw["title"],
             duration_s=raw["duration_s"],
@@ -196,11 +166,11 @@ async def local_playlist(playlist_uid: str | None) -> list[str]:
         tracks = (
             {t.uid: t for t in (await s.execute(select(Track).where(Track.uid.in_(uids)))).scalars()} if uids else {}
         )
-        return [tracks[u].nd_song_id or tracks[u].uid for u in uids if u in tracks]
+        return [tracks[u].uid for u in uids if u in tracks]
 
 
 async def liked_refs() -> set[str]:
-    """The user's own track ♥ as refs (nd ids for library tracks, catalog refs otherwise)."""
+    """The user's own track ♥ as refs (Hub uids for library tracks, catalog refs otherwise)."""
     from app.db import session_scope
     from app.favorites import snapshot
     from app.models import User
@@ -209,7 +179,7 @@ async def liked_refs() -> set[str]:
         user = (await s.execute(select(User))).scalars().first()
         assert user is not None
         states = await snapshot(s, user.id)
-    return {x.nd_id or x.ref or x.uid or "" for x in states.values() if x.liked and x.target_type == "track"}
+    return {x.uid or x.ref or "" for x in states.values() if x.liked and x.target_type == "track"}
 
 
 async def prepared(c: httpx.AsyncClient) -> dict:
@@ -302,8 +272,8 @@ async def test_spotify_export_preview_and_economy_import_preserve_playlist_order
     await run_imports()
     after = (await client.get(f"/api/imports/{imp['id']}")).json()
     pl_uid = next(x["playlist_uid"] for x in after["collections"] if x["kind"] == "playlist")
-    assert await local_playlist(pl_uid) == ["ndB", "ndA"]
-    assert "ndA" in await liked_refs()
+    assert await local_playlist(pl_uid) == [UID_B, UID_A]
+    assert UID_A in await liked_refs()
     assert (await client.post(f"/api/imports/{imp['id']}/sync")).status_code == 409
 
 
@@ -349,19 +319,17 @@ async def test_economy_import_likes_and_playlists_in_order(env):
     assert (rows[likes, "Группа крови"]["status"], rows[likes, "Группа крови"]["match"]) == ("waiting", "exact")
     assert rows[likes, "Группа крови"]["ref"] == "dz:100"
     assert (rows[playlist, "Нет такого"]["status"], rows[playlist, "Нет такого"]["match"]) == ("not_found", "not_found")
-    assert rows[playlist, "Город золотой"]["nd_song_id"] == "ndA"
+    assert rows[playlist, "Город золотой"]["uid"] == UID_A
     assert rows[imp["collections"][4]["id"], "Что-то"]["status"] == "skipped"  # a dislike is only kept
 
     # the Hub playlist holds what the library has, in Yandex's order; ♥ are local decisions
     pl_uid = next(x["playlist_uid"] for x in imp["collections"] if x["kind"] == "playlist")
-    assert await local_playlist(pl_uid) == ["ndA", "ndB"]
-    assert await liked_refs() == {"ndA", "ndB"}
+    assert await local_playlist(pl_uid) == [UID_A, UID_B]
+    assert await liked_refs() == {UID_A, UID_B}
     # the liked track the library lacks shows ♥ by its catalog ref
     stars = (await c.get("/api/starred")).json()
-    assert {k: stars[k] for k in ("song_ids", "album_ids", "artist_ids", "refs")} == {
-        "song_ids": ["ndA", "ndB"],
-        "album_ids": [],
-        "artist_ids": [],
+    assert {k: stars[k] for k in ("track_uids", "refs")} == {
+        "track_uids": [UID_A, UID_B],
         "refs": ["dz:100"],
     }
     assert len(stars["subjects"]) == 3 and all(x["provenance"] == "import" for x in stars["subjects"])
@@ -393,17 +361,17 @@ async def test_economy_import_likes_and_playlists_in_order(env):
     }
 
     # the download is over: the playlist is rewritten in order with it
-    track_id = await add_library_track(KROVI, "ndC")
+    track_id = await add_library_track(KROVI, UID_C)
     async with session_scope() as s:
         item = await s.get(DownloadItem, dl["id"])
         item.status, item.track_id = "done", track_id
         await imports_done(s, [item])
     await run_imports()
-    assert await local_playlist(pl_uid) == ["ndC", "ndA", "ndB"]
+    assert await local_playlist(pl_uid) == [UID_C, UID_A, UID_B]
     assert {x["status"] for x in await items(c, imp) if x["title"] == "Группа крови" and x["kind"] == "track"} == {
         "done"
     }
-    assert await liked_refs() == {"ndA", "ndC", "ndB"}
+    assert await liked_refs() == {UID_A, UID_C, UID_B}
 
     # the user takes the ♥ off Город золотой in the app: the import leaves it alone from then on
     from app.api.schemas import FavoriteTarget
@@ -413,11 +381,11 @@ async def test_economy_import_likes_and_playlists_in_order(env):
 
     async with session_scope() as s:
         user = (await s.execute(select(User))).scalars().first()
-        await command(s, user, [FavoriteTarget(nd_song_id="ndA")], liked=False, operation="app-unlike")
+        await command(s, user, [FavoriteTarget(uid=UID_A)], liked=False, operation="app-unlike")
     async with session_scope() as s:
         await sync_likes(s, await s.get(Import, imp["id"]))
-    assert "ndA" not in await liked_refs()
-    assert await liked_refs() == {"ndC", "ndB"}
+    assert UID_A not in await liked_refs()
+    assert await liked_refs() == {UID_C, UID_B}
 
 
 async def test_all_likes_are_downloaded_once(env):
@@ -445,8 +413,8 @@ async def test_all_likes_are_downloaded_once(env):
         f"/api/imports/{imp['id']}/start", json={"collection_ids": [imp["collections"][0]["id"]], "mode": "full"}
     )
     await run_imports()
-    # the Navidrome «Понравившиеся» order is not preserved any more (the server is being decommissioned):
-    # every like is downloaded exactly once, in any completion order
+    # the service's «Понравившиеся» order is not preserved by the downloads: every like is downloaded exactly
+    # once, in any completion order
     titles = [d["title"] for d in (await c.get("/api/downloads")).json()]
     assert sorted(titles) == sorted(["Группа крови", "Звезда по имени Солнце"])
 
@@ -631,9 +599,10 @@ async def test_dislikes_of_the_service_become_the_users_dislikes(env):
     )
     assert r.status_code == 200, r.text
     await run_imports()
-    # a catalog track by its ref, an owned one by its Navidrome song too; one not found is no dislike
+    # a catalog track by its ref, an owned one by its Hub uid too; one not found is no dislike
     rows = {x["title"]: x for x in (await c.get("/api/dislikes")).json()}
     assert sorted(rows) == ["Город золотой", "Группа крови"]
     assert (rows["Группа крови"]["ref"], rows["Группа крови"]["source"]) == ("dz:100", "yandex_import")
-    assert (rows["Город золотой"]["nd_song_id"], rows["Город золотой"]["source"]) == ("ndA", "yandex_import")
-    assert await jobs("download_item") == [] and state["stars"] == []  # still never downloaded nor ♥
+    assert (rows["Город золотой"]["ref"], rows["Город золотой"]["source"]) == ("lib:uid-gorod", "yandex_import")
+    assert await jobs("download_item") == []  # still never downloaded nor ♥
+    assert (await c.get("/api/starred")).json()["track_uids"] == []

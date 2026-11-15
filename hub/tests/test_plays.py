@@ -1,7 +1,7 @@
 """Listening data (MIXES.md 3.2): player events, client scrobbles, «Не нравится».
 
-The library has «Кино — Группа крови» (catalog dz:100, Navidrome song "ndK", 245 s) and a song known only to
-Navidrome ("ndX").
+The library has «Кино — Группа крови» (catalog dz:100, Hub uid KROVI, 245 s) and a song the catalog does not
+know (Hub uid SVOE).
 """
 
 from __future__ import annotations
@@ -11,12 +11,14 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
-import respx
 from sqlalchemy import select
 
-from tests.support import app_client, grant_navidrome
+from tests.support import app_client
 
 NOW = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
+# the Hub uids of the library's songs
+KROVI = "uid-krovi"
+SVOE = "uid-svoe"
 
 
 def iso(dt: datetime) -> str:
@@ -31,48 +33,23 @@ def ev(kind: str, *, at: datetime | None = None, **kw) -> dict:
 async def env(hub_env):
     from app.main import create_app
 
-    state: dict = {"scrobbles": [], "logins": 0}
-
-    def nd_handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            state["logins"] += 1
-            return httpx.Response(200, json={"token": "jwt", "id": "nd-user-1", "username": "admin"})
-        if request.url.path == "/api/scrobble":
-            p = request.url.params
-            assert request.headers["x-nd-authorization"] == "Bearer jwt" and p["user_id"] == "nd-user-1"
-            assert (p["_sort"], p["_order"]) == ("id", "DESC")
-            rows = sorted(state["scrobbles"], key=lambda x: -x["id"])
-            return httpx.Response(200, json=rows[int(p["_start"]) : int(p["_end"])])
-        ok = {"status": "ok", "version": "1.16.1"}
-        if request.url.path.endswith("getUser"):
-            return httpx.Response(200, json={"subsonic-response": {**ok, "user": {"adminRole": True}}})
-        if request.url.path.endswith("getStarred2"):
-            return httpx.Response(200, json={"subsonic-response": {**ok, "starred2": {}}})
-        if request.url.path.endswith("unstar"):
-            state.setdefault("unstarred", []).append(request.url.params.get_list("id"))
-        return httpx.Response(200, json={"subsonic-response": ok})
-
     app = create_app()
     async with app.router.lifespan_context(app):
-        with respx.mock(assert_all_called=False) as mock:
-            mock.route(host="navidrome.test").mock(side_effect=nd_handler)
-            async with app_client(app) as client:
-                await grant_navidrome("admin")  # stage-4 transition: the ND proxy tests need ND credentials
-                await add_track("Кино", "Группа крови", "ndK", deezer_track_id="100")
-                await add_track("Кто-то", "Своё", "ndX")
-                yield {"client": client, "state": state}
+        async with app_client(app) as client:
+            await add_track("Кино", "Группа крови", KROVI, deezer_track_id="100")
+            await add_track("Кто-то", "Своё", SVOE)
+            yield {"client": client}
 
 
-async def add_track(artist: str, title: str, nd_song_id: str, duration_s: int = 245, **kw) -> int:
+async def add_track(artist: str, title: str, uid: str, duration_s: int = 245, **kw) -> int:
     from app.db import session_scope
     from app.matching.normalize import fingerprint
     from app.models import Track
 
     async with session_scope() as s:
         t = Track(
-            uid=str(uuid.uuid4()),
+            uid=uid,
             path=f"{artist}/{title}.mp3",
-            nd_song_id=nd_song_id,
             artist=artist,
             title=title,
             duration_s=duration_s,
@@ -123,7 +100,7 @@ async def test_listening_metadata_survives_library_deletion(env):
     c = env["client"]
     event = ev(
         "start",
-        nd_song_id="ndK",
+        uid=KROVI,
         playback_id="play",
         device_id="device",
         listened_ms=0,
@@ -131,7 +108,7 @@ async def test_listening_metadata_survives_library_deletion(env):
     )
     assert (await post(c, event))["accepted"] == 1
     async with session_scope() as s:
-        track = (await s.execute(select(Track).where(Track.nd_song_id == "ndK"))).scalar_one()
+        track = (await s.execute(select(Track).where(Track.uid == KROVI))).scalar_one()
         await s.delete(track)
     row = next(x for x in await stored() if x.event_id == event["event_id"])
     assert row.track_metadata["title"] == "Группа крови"
@@ -213,12 +190,10 @@ async def test_summary_unifies_verified_aliases_after_library_deletion(env):
     c = env["client"]
     now = datetime.now(UTC) - timedelta(seconds=10)
     async with session_scope() as s:
-        track = (await s.execute(select(Track).where(Track.nd_song_id == "ndK"))).scalar_one()
+        track = (await s.execute(select(Track).where(Track.uid == KROVI))).scalar_one()
         await s.delete(track)
     await post(c, ev("finish", at=now, ref="dz:100", device_id="dev", playback_id="a", listened_ms=30000))
-    await post(
-        c, ev("finish", at=now, ref="dz:100", nd_song_id="ndK", device_id="dev", playback_id="b", listened_ms=40000)
-    )
+    await post(c, ev("finish", at=now, ref="dz:100", uid=KROVI, device_id="dev", playback_id="b", listened_ms=40000))
     day = now.date().isoformat()
     response = await c.get("/api/plays/summary", params={"start": day, "end": day})
     assert response.status_code == 200, response.text
@@ -286,10 +261,10 @@ async def test_typed_favorites_and_old_star_payload_share_one_state(env):
     from app.models import User
 
     c = env["client"]
-    r = await c.post("/api/star", json={"song_ids": ["ndK"], "event_id": "decision"})
+    r = await c.post("/api/star", json={"uids": [KROVI], "event_id": "decision"})
     assert r.status_code == 200, r.text
     assert r.json()["event_ids"] == ["decision"]
-    assert (await post(c, ev("like", event_id="decision", nd_song_id="ndK")))["duplicates"] == 1
+    assert (await post(c, ev("like", event_id="decision", uid=KROVI)))["duplicates"] == 1
     out = await post(
         c,
         ev("like", target_type="album", ref="dz:100"),
@@ -477,20 +452,20 @@ async def test_scrobble_dedup_preserves_synthetic_likes_and_bounds_future(env):
         s.add(
             PlayEvent(
                 user_id=user.id,
-                event_id="ndstar",
+                event_id="synthetic-like",
                 kind="like",
                 target_type="track",
                 ref="dz:100",
-                nd_song_id="ndK",
+                track_uid=KROVI,
                 ts=now,
                 received_at=now,
-                client="navidrome",
+                client="pwa",
             )
         )
     await post(
         env["client"],
-        ev("finish", nd_song_id="ndK", at=now.replace(tzinfo=UTC)),
-        ev("unlike", nd_song_id="ndK", at=(now + timedelta(minutes=30)).replace(tzinfo=UTC)),
+        ev("finish", uid=KROVI, at=now.replace(tzinfo=UTC)),
+        ev("unlike", uid=KROVI, at=(now + timedelta(minutes=30)).replace(tzinfo=UTC)),
     )
     async with session_scope() as s:
         rows = await user_events(s, user.id, now=now + timedelta(seconds=1))
@@ -551,14 +526,8 @@ async def test_scrobble_near_a_measured_event_is_stored_superseded(env):
 
 
 async def test_uid_only_scrobble_is_accepted(env):
-    from sqlalchemy import select
-
-    from app.db import session_scope
-    from app.models import Track
-
     c = env["client"]
-    async with session_scope() as s:
-        uid = (await s.execute(select(Track.uid).where(Track.nd_song_id == "ndK"))).scalar_one()
+    uid = KROVI
     r = await c.post(
         "/api/plays/scrobble", json={"event_id": "sc-uid-only", "track_uid": uid, "ts": iso(NOW), "client": "pwa"}
     )
@@ -569,15 +538,9 @@ async def test_uid_only_scrobble_is_accepted(env):
 
 
 async def test_library_ref_and_uid_name_the_track(env):
-    """`lib:<uid>` and a bare uid are resolved to the Hub track uid, like the deprecated `nd:<song>`."""
-    from sqlalchemy import select
-
-    from app.db import session_scope
-    from app.models import Track
-
+    """`lib:<uid>` and a bare uid are both resolved to the Hub track uid."""
     c = env["client"]
-    async with session_scope() as s:
-        uid = (await s.execute(select(Track.uid).where(Track.nd_song_id == "ndK"))).scalar_one()
+    uid = KROVI
     await post(c, ev("start", ref=f"lib:{uid}"), ev("start", ref=uid))
     rows = await stored()
     assert len(rows) == 2 and all(e.track_uid == uid for e in rows)
@@ -633,18 +596,12 @@ async def test_progress_only_measured_attempt_supersedes_a_scrobble(env):
 
 
 async def test_uid_only_measured_finish_supersedes_a_scrobble(env):
-    from sqlalchemy import select
-
-    from app.db import session_scope
-    from app.models import Track
-
     c = env["client"]
     await c.post(
         "/api/plays/scrobble",
         json={"event_id": "sc-uid", "ref": "dz:100", "ts": iso(NOW), "client": "pwa", "duration_s": 245},
     )
-    async with session_scope() as s:
-        uid = (await s.execute(select(Track.uid).where(Track.nd_song_id == "ndK"))).scalar_one()
+    uid = KROVI
     # the app's measured event names only the Hub uid: it still replaces the scrobble of the same listen
     await post(
         c,
@@ -718,7 +675,7 @@ async def test_events_are_stored_once_with_both_ids(env):
     batch = [
         ev("start", ref="dz:100", context="album"),
         ev("skip", ref="dz:100", position_s=12.5, duration_s=245, context="album"),
-        ev("finish", nd_song_id="ndK", position_s=245, duration_s=245, context="mix:7"),
+        ev("finish", uid=KROVI, position_s=245, duration_s=245, context="mix:7"),
         ev("like", ref="hm:555"),  # not in the library: the ref alone
     ]
     assert await post(c, *batch) == {"accepted": 4, "duplicates": 0, "rejected": []}
@@ -729,15 +686,15 @@ async def test_events_are_stored_once_with_both_ids(env):
     assert len(rows) == 5
     by_id = {r.event_id: r for r in rows}
     skip = by_id[batch[1]["event_id"]]
-    assert (skip.kind, skip.ref, skip.nd_song_id, skip.position_s, skip.context, skip.client) == (
+    assert (skip.kind, skip.ref, skip.track_uid, skip.position_s, skip.context, skip.client) == (
         "skip",
         "dz:100",
-        "ndK",
+        KROVI,
         12.5,
         "album",
         "app/1.5.0",
     )
-    assert (by_id[batch[2]["event_id"]].ref, by_id[batch[3]["event_id"]].nd_song_id) == ("dz:100", None)
+    assert (by_id[batch[2]["event_id"]].ref, by_id[batch[3]["event_id"]].track_uid) == ("dz:100", None)
 
 
 async def test_malformed_event_is_rejected_alone(env):
@@ -752,7 +709,7 @@ async def test_malformed_event_is_rejected_alone(env):
     )
     assert out["accepted"] == 1 and out["duplicates"] == 0
     assert [(x["index"], x["event_id"]) for x in out["rejected"]] == [(0, "x1"), (1, trackless["event_id"]), (3, None)]
-    assert "kind" in out["rejected"][0]["detail"] and "nd_song_id" in out["rejected"][1]["detail"]
+    assert "kind" in out["rejected"][0]["detail"] and "ref or uid" in out["rejected"][1]["detail"]
     assert [r.event_id for r in await stored()] == [good["event_id"]]
 
 
@@ -773,9 +730,9 @@ async def test_wrong_client_clock_gets_the_time_the_event_came(env):
 
 async def test_dislike_event_marks_the_track_and_undislike_clears_it(env):
     c = env["client"]
-    await post(c, ev("dislike", nd_song_id="ndK", context="queue"))
+    await post(c, ev("dislike", uid=KROVI, context="queue"))
     rows = (await c.get("/api/dislikes")).json()
-    assert [(x["ref"], x["nd_song_id"], x["source"]) for x in rows] == [("dz:100", "ndK", "app")]
+    assert [(x["ref"], x["artist_ref"], x["source"]) for x in rows] == [("dz:100", None, "app")]
     await post(c, ev("undislike", ref="dz:100"))
     assert (await c.get("/api/dislikes")).json() == []
 
@@ -786,9 +743,9 @@ async def test_dislikes_api_tracks_and_artists(env):
         "/api/dislikes", json={"ref": "dz:100", "artist": "Кино", "title": "Группа крови", "context": "search"}
     )
     assert r.status_code == 200, r.text
-    assert (r.json()["nd_song_id"], r.json()["source"]) == ("ndK", "pwa")
-    # the same track by its other id is the same row
-    r = await c.post("/api/dislikes", json={"nd_song_id": "ndK"})
+    assert (r.json()["ref"], r.json()["source"]) == ("dz:100", "pwa")
+    # the same track again is the same row
+    r = await c.post("/api/dislikes", json={"ref": "dz:100"})
     assert r.status_code == 200 and r.json()["title"] == "Группа крови"
     r = await c.post("/api/dislikes", json={"artist_ref": "dz:artist:5", "artist": "Кто-то"})
     assert r.status_code == 200, r.text
@@ -798,13 +755,14 @@ async def test_dislikes_api_tracks_and_artists(env):
 
     rows = (await c.get("/api/dislikes")).json()
     assert [(x["ref"], x["artist_ref"]) for x in rows] == [(None, "dz:artist:5"), ("dz:100", None)]  # newest first
-    assert [(e.kind, e.target_type, e.ref, e.nd_song_id, e.client, e.context) for e in await stored()] == [
-        ("dislike", "track", "dz:100", "ndK", "pwa", "search"),
-        ("dislike", "track", "dz:100", "ndK", "pwa", None),
+    assert [(e.kind, e.target_type, e.ref, e.track_uid, e.client, e.context) for e in await stored()] == [
+        ("dislike", "track", "dz:100", None, "pwa", "search"),
+        ("dislike", "track", "dz:100", None, "pwa", None),
         ("dislike", "artist", "dz:artist:5", None, "pwa", None),
     ]
 
-    r = await c.delete("/api/dislikes", params={"nd_song_id": "ndK"})
+    # the track by its Hub uid: the same row
+    r = await c.delete("/api/dislikes", params={"uid": KROVI})
     assert r.json() == {"removed": 1}
     assert (await c.delete("/api/dislikes")).status_code == 400
     assert (await c.delete(f"/api/dislikes/{artist_id}")).json() == {"removed": 1}
@@ -822,15 +780,22 @@ async def test_import_likes_do_not_count_unless_liked_again(env):
     c = env["client"]
     async with session_scope() as s:
         uid = (await s.execute(select(User.id))).scalar_one()
-        s.add(Import(user_id=uid, source="yandex", method="token", options_json={"liked": ["ndK", "ndX", "ndZ"]}))
+        s.add(
+            Import(
+                user_id=uid,
+                source="yandex",
+                method="token",
+                options_json={"liked_uids": [KROVI, SVOE, "uid-z"]},
+            )
+        )
     await post(
         c,
-        ev("like", nd_song_id="ndX"),
+        ev("like", uid=SVOE),
         ev("finish", ref="dz:100", at=datetime.now(UTC) - timedelta(days=40)),
         ev("skip", ref="dz:100", position_s=5),
     )
     async with session_scope() as s:
-        assert await imported_likes(s, uid) == {"ndK", "ndZ"}
+        assert await imported_likes(s, uid) == {KROVI, "uid-z"}
         assert [e.kind for e in await user_events(s, uid, days=30)] == ["like", "skip"]
         assert [e.kind for e in await user_events(s, uid, days=60, kinds=["finish", "skip"])] == ["finish", "skip"]
 
@@ -903,7 +868,7 @@ async def test_launch_fields_are_stored_and_never_change_the_taste(env):
         ev(
             "skip",
             at=at + timedelta(minutes=5),
-            nd_song_id="ndX",
+            uid=SVOE,
             position_s=5,
             duration_s=200,
             context="album",
@@ -920,7 +885,7 @@ async def test_launch_fields_are_stored_and_never_change_the_taste(env):
     song = build.Cand(
         track=CatalogTrack(ref="dz:100", source="dz", id="100", title="Группа крови", artist="Кино", artists=["Кино"]),
         gens={"ytm_radio": 0},
-        nd_song_id="ndK",
+        uid=KROVI,
     )
 
     async def taste():

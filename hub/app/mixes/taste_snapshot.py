@@ -146,13 +146,13 @@ async def load_snapshot(session, user_id: int, *, now: datetime) -> TasteSnapsho
     for ref, nd in pairs:
         ref, nd = await ids.complete(ref, nd)
         if ref and nd:
-            subjects.append(Subject("track", (f"ref:{ref}", f"lib:{nd}"), ref, nd))
+            subjects.append(Subject("track", (f"ref:{ref}", f"uid:{nd}"), ref, nd))
     index = AliasIndex(rows, cast("Iterable[Any]", subjects))
     wanted = {index.key(e) for e in rows if aliases(e)}
     wanted.update(
         index.root(("track", alias))
         for ref, nd in pairs
-        for alias in ((f"ref:{ref}",) if ref else (f"lib:{nd}",))
+        for alias in ((f"ref:{ref}",) if ref else (f"uid:{nd}",))
         if ref or nd
     )
     subjects = [x for x in subjects if x.aliases and index.root((x.target_type, min(x.aliases))) in wanted]
@@ -167,7 +167,7 @@ async def load_snapshot(session, user_id: int, *, now: datetime) -> TasteSnapsho
     for x in subjects:
         if x.target_type == "track":
             refs.update(a[4:] for a in x.aliases if a.startswith("ref:"))
-            songs.update(a[4:] for a in x.aliases if a.startswith("lib:"))
+            songs.update(a[4:] for a in x.aliases if a.startswith("uid:"))
         elif x.target_type == "album":
             if x.ref:
                 album_refs.add(x.ref)

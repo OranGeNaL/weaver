@@ -37,7 +37,7 @@ async def seed(db_url, events, extra_objects=()):
         async with session_scope() as s:
             have = {getattr(obj, "id", None) for obj in extra_objects if isinstance(obj, User)}
             for user_id in {e.user_id for e in events} - have:
-                s.add(User(id=user_id, username=f"user{user_id}", nd_username=f"user{user_id}", nd_password_enc="x"))
+                s.add(User(id=user_id, username=f"user{user_id}"))
             await s.flush()
             for e in events:
                 s.add(
@@ -47,7 +47,7 @@ async def seed(db_url, events, extra_objects=()):
                         ts=e.ts,
                         kind=e.kind,
                         ref=e.ref,
-                        nd_song_id=e.nd_song_id,
+                        track_uid=e.track_uid,
                         target_type=e.target_type,
                         target_data=e.target_data,
                         context=e.context,
@@ -122,8 +122,8 @@ async def test_history_ignores_current_mutable_state_and_limits_occurred_availab
             replace(ev("other"), user_id=2),
         ],
         [
-            User(id=1, username="taste", nd_username="taste", nd_password_enc="x"),
-            User(id=2, username="other", nd_username="other", nd_password_enc="x"),
+            User(id=1, username="taste"),
+            User(id=2, username="other"),
             Dislike(user_id=1, ref="dz:future-state", source="pwa", created_at=NOW - timedelta(days=1)),
             MixSettings(
                 user_id=1,
@@ -214,7 +214,7 @@ async def test_online_v2_adapter_loads_batches_without_network_or_writes(db_url,
     engine = init_engine(db_url)
     try:
         async with session_scope() as s:
-            user = User(username="taste-test", nd_username="taste-test", nd_password_enc="unused")
+            user = User(username="taste-test")
             s.add(user)
             album = Album(uid="hub-album-id", title="Album", album_artist="Artist", deezer_album_id="album")
             s.add(album)
@@ -222,9 +222,8 @@ async def test_online_v2_adapter_loads_batches_without_network_or_writes(db_url,
             s.add_all(
                 [
                     Track(
-                        uid="one",
+                        uid="current",
                         path="one.mp3",
-                        nd_song_id="current",
                         artist="Artist",
                         title="One",
                         deezer_track_id="1",
@@ -232,9 +231,8 @@ async def test_online_v2_adapter_loads_batches_without_network_or_writes(db_url,
                         duration_s=200,
                     ),
                     Track(
-                        uid="two",
+                        uid="album-song",
                         path="two.mp3",
-                        nd_song_id="album-song",
                         artist="Artist",
                         title="Two",
                         deezer_track_id="2",
@@ -243,9 +241,8 @@ async def test_online_v2_adapter_loads_batches_without_network_or_writes(db_url,
                         album_id=album.id,
                     ),
                     Track(
-                        uid="other",
+                        uid="other-song",
                         path="other.mp3",
-                        nd_song_id="other-song",
                         artist="Other",
                         title="Other",
                         deezer_track_id="other",
@@ -259,8 +256,8 @@ async def test_online_v2_adapter_loads_batches_without_network_or_writes(db_url,
                     target_type="track",
                     canonical_key="ref:dz:1",
                     ref="dz:1",
-                    nd_id="current",
-                    aliases=["ref:dz:1", "nd:old", "nd:current"],
+                    uid="current",
+                    aliases=["ref:dz:1", "uid:old", "uid:current"],
                     data={},
                 )
             )
@@ -271,7 +268,7 @@ async def test_online_v2_adapter_loads_batches_without_network_or_writes(db_url,
                     ts=NOW,
                     kind="finish",
                     ref=None,
-                    nd_song_id="old",
+                    track_uid="old",
                     client="pwa",
                     received_at=NOW,
                 )
@@ -305,9 +302,9 @@ async def test_online_v2_adapter_loads_batches_without_network_or_writes(db_url,
             p = await build_profile(s, user, now=NOW, model="v2", timezone="Europe/Moscow")
             assert not s.new and not s.dirty and not s.deleted
         assert len(statements) < 20  # 100 events do not produce 100 metadata SQL queries.
-        assert set(p.tracks) == {"nd:current", "nd:album-song"}
-        assert p.find(nd_song_id="old") is p.find(nd_song_id="current")
-        assert p.tracks["nd:current"].positive_raw == 200
-        assert p.tracks["nd:album-song"].album_liked and p.tracks["nd:album-song"].score == 0
+        assert set(p.tracks) == {"lib:current", "lib:album-song"}
+        assert p.find(uid="old") is p.find(uid="current")
+        assert p.tracks["lib:current"].positive_raw == 200
+        assert p.tracks["lib:album-song"].album_liked and p.tracks["lib:album-song"].score == 0
     finally:
         await dispose()

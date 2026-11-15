@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -46,7 +46,7 @@ async def db(hub_env, db_url: str, monkeypatch: pytest.MonkeyPatch):
 
 
 def test_radio_rows_parse_songs_and_videos() -> None:
-    hits = [sources.radio_hit(r) for r in sources.radio_rows(load("ytm_next"))]
+    hits = [h for r in sources.radio_rows(load("ytm_next")) if (h := sources.radio_hit(r)) is not None]
     assert [(h.artist, h.title, h.duration_s) for h in hits[:3]] == [
         ("Кино", "Группа крови", 285),
         ("Кино", "В наших глазах", 215),
@@ -278,7 +278,7 @@ async def test_resolve_takes_only_sure_matches_and_remembers(db) -> None:
     other = CatalogTrack(
         ref="dz:300", source="dz", id="300", title="Война", artist="Кино", artists=["Кино"], duration_s=240, rank=1000
     )
-    fake = svc.deezer = FakeDeezer(more=[other])
+    fake = svc.deezer = cast(Any, FakeDeezer(more=[other]))
     try:
         hits = [Hit("Кино", "Война", 240, "v1"), Hit("Кино", "Группа крови", 245, "v2"), Hit("Никто", "Ничего")]
         first = await resolve_hits("ytm", hits)
@@ -298,7 +298,7 @@ async def test_resolve_looks_up_a_repeated_hit_once(db) -> None:
     from app.services import svc
     from tests.support import FakeDeezer
 
-    fake = svc.deezer = FakeDeezer()
+    fake = svc.deezer = cast(Any, FakeDeezer())
     try:
         out = await resolve_hits("lastfm", [Hit("Кино", "Группа крови", 245), Hit("Кино", "Группа крови", 245)])
     finally:
@@ -307,19 +307,17 @@ async def test_resolve_looks_up_a_repeated_hit_once(db) -> None:
 
 
 async def test_resolve_prefers_the_library(db) -> None:
-    import uuid
-
     from app.db import session_scope
     from app.matching.normalize import fingerprint
     from app.mixes.resolve import resolve_hits
     from app.models import Track
 
+    uid = "uid-own"
     async with session_scope() as s:
         s.add(
             Track(
-                uid=str(uuid.uuid4()),
+                uid=uid,
                 path="a/b.mp3",
-                nd_song_id="ndOwn",
                 artist="Своя группа",
                 title="Песня",
                 duration_s=200,
@@ -329,7 +327,7 @@ async def test_resolve_prefers_the_library(db) -> None:
 
     [t] = await resolve_hits("lastfm", [Hit("Своя группа", "Песня", 201)])
 
-    assert (t.ref, t.source) == ("nd:ndOwn", "nd")
+    assert (t.ref, t.source) == (f"lib:{uid}", "lib")
 
 
 # --- the embedder ---------------------------------------------------------------------------------------------------

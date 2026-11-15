@@ -3,7 +3,7 @@ skips and likes, by sound), learning from the session's events, the session over
 first, events into the history, «Не нравится», the quiet download, the radio of a liked track, a restart.
 
 The generators are fakes (`fake_sources`; the real ones and the filters are the mix's: test_mix_build.py,
-test_mix_sources.py); Navidrome is the mock of test_mixes.py.
+test_mix_sources.py); the library is the Hub's own.
 """
 
 from __future__ import annotations
@@ -14,14 +14,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import respx
 from sqlalchemy import select
 
 from app.catalog.models import CatalogTrack
 from app.mixes import build, wave
 from app.mixes.taste import Profile, artist_key
-from tests.support import FakeDeezer, app_client, grant_navidrome
-from tests.test_mixes import ND, add_user, history, user_id
+from tests.support import FakeDeezer, app_client
+from tests.test_mixes import add_user, history, user_id
 
 NOW = datetime(2026, 10, 23, 12, 0)
 
@@ -254,21 +253,16 @@ async def env(hub_env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     warmed: list[list[str]] = []
     monkeypatch.setattr(listen, "prefetch", lambda uid, refs: prefetched.append(list(refs)) or len(refs))
     monkeypatch.setattr(listen, "warm_light", lambda refs: warmed.append(list(refs)))
-    nd = ND()
     app = create_app()
     async with app.router.lifespan_context(app):
         svc.deezer = FakeDeezer()
-        with respx.mock(assert_all_called=False) as mock:
-            mock.route(host="navidrome.test").mock(side_effect=nd.handler)
-            async with app_client(app) as client:
-                await grant_navidrome("admin")  # stage-4 transition: the ND proxy tests need ND credentials
-                yield {
-                    "client": client,
-                    "nd": nd,
-                    "admin": await user_id("admin"),
-                    "prefetched": prefetched,
-                    "warmed": warmed,
-                }
+        async with app_client(app) as client:
+            yield {
+                "client": client,
+                "admin": await user_id("admin"),
+                "prefetched": prefetched,
+                "warmed": warmed,
+            }
 
 
 def fake_sources(
@@ -482,12 +476,11 @@ async def test_a_wave_by_a_hub_artist_takes_its_songs_and_its_deezer_artist(env,
         album = Album(uid=str(uuid.uuid4()), title="Группа крови", album_artist="Кино", artist_id=artist.id)
         s.add(album)
         await s.flush()
-        for nd_id, title, deezer in (("nd100", "Песня 100", "100"), ("s2", "Кукушка", None), ("s4", "Вместе", None)):
+        for uid, title, deezer in (("u100", "Песня 100", "100"), ("u2", "Кукушка", None), ("u4", "Вместе", None)):
             s.add(
                 Track(
-                    uid=str(uuid.uuid4()),
+                    uid=uid,
                     path=f"{title}.mp3",
-                    nd_song_id=nd_id,
                     deezer_track_id=deezer,
                     album_id=album.id,
                     artist="Кино",
@@ -498,9 +491,8 @@ async def test_a_wave_by_a_hub_artist_takes_its_songs_and_its_deezer_artist(env,
         # a compilation's track of another artist is not the artist's
         s.add(
             Track(
-                uid=str(uuid.uuid4()),
+                uid="u3",
                 path="Чужая.mp3",
-                nd_song_id="s3",
                 artist="Другой",
                 title="Чужая",
                 fingerprint="другой|чужая",
@@ -532,7 +524,7 @@ async def test_a_wave_by_a_hub_artist_takes_its_songs_and_its_deezer_artist(env,
         "artist_uid": artist_uid,
     }
     assert got[0]["ref"] == "dz:1"  # the exact name among Deezer's artists
-    assert {t.ref for t in got[0]["songs"]} == {"dz:100", "nd:s2", "nd:s4"}
+    assert {t.ref for t in got[0]["songs"]} == {"dz:100", "lib:u2", "lib:u4"}
     st = wave._rt[w["session_id"]].state
     assert st.seed_artist == artist_key("Кино")
     assert (await c.post("/api/wave/start", json={"seed": {"artist_uid": "nope"}})).status_code == 404
@@ -548,20 +540,19 @@ async def test_artist_from_library_track_resolves_and_survives_restart(env, monk
         artist = Artist(uid=str(uuid.uuid4()), name="Кино", name_norm=normalize_artist("Кино").text)
         s.add(artist)
         await s.flush()
-        for nd_id, credited in (("song", "Кино"), ("noartist", "Безымянный")):
+        for uid, credited in (("song", "Кино"), ("noartist", "Безымянный")):
             s.add(
                 Track(
-                    uid=str(uuid.uuid4()),
-                    path=f"{nd_id}.mp3",
-                    nd_song_id=nd_id,
+                    uid=uid,
+                    path=f"{uid}.mp3",
                     artist=credited,
-                    title=nd_id,
-                    fingerprint=f"{credited}|{nd_id}",
+                    title=uid,
+                    fingerprint=f"{credited}|{uid}",
                 )
             )
         artist_uid = artist.uid
     fake_sources(monkeypatch, [tr(5000 + i) for i in range(10)])
-    response = await c.post("/api/wave/start", json={"seed": {"nd_song_id": "song", "by_artist": True}})
+    response = await c.post("/api/wave/start", json={"seed": {"song_uid": "song", "by_artist": True}})
     assert response.status_code == 200, response.text
     out = response.json()
     assert out["seed"]["artist_uid"] == artist_uid
@@ -570,7 +561,7 @@ async def test_artist_from_library_track_resolves_and_survives_restart(env, monk
     assert next_response.status_code == 200 and next_response.json()["seed"]["artist_uid"] == artist_uid
     for song in ("missing", "noartist"):
         assert (
-            await c.post("/api/wave/start", json={"seed": {"nd_song_id": song, "by_artist": True}})
+            await c.post("/api/wave/start", json={"seed": {"song_uid": song, "by_artist": True}})
         ).status_code == 404
 
 
@@ -815,10 +806,7 @@ async def test_handed_out_tracks_are_recorded_once_and_counted_again(env, monkey
         x.handed_count == 1 and x.generator == "ytm_radio" and x.value is not None and x.user_id == env["admin"]
         for x in items
     )
-    assert all(
-        x.title == f"Песня {x.ref[3:]}" and x.key == x.ref and x.gens == {"ytm_radio": int(x.ref[3:]) - 5000}
-        for x in items
-    )
+    assert all(x.title == f"Песня {x.ref[3:]}" and x.gens == {"ytm_radio": int(x.ref[3:]) - 5000} for x in items)
 
     r = await c.post(f"/api/wave/{sid}/next", json={"played": [ev("skip", first[0], 5)], "queued": first[1:]})
     assert r.status_code == 200, r.text

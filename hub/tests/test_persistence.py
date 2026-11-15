@@ -35,7 +35,7 @@ async def test_jsonb_numeric_paths_use_explicit_casts(db_url):
     db.init_engine(db_url)
     try:
         async with db.session_scope() as s:
-            user = User(username="jsonb", nd_username="jsonb", nd_password_enc="x")
+            user = User(username="jsonb")
             s.add(user)
             await s.flush()
             s.add(Job(kind="mix_build", payload_json={"user_id": user.id, "mix_id": 9}))
@@ -156,7 +156,7 @@ async def test_timestamps_round_trip_as_timezone_aware_utc(db_url):
     try:
         moment = datetime(2026, 3, 1, 9, 30, tzinfo=UTC)
         async with db.session_scope() as s:
-            user = User(username="tz", nd_username="tz", nd_password_enc="x")
+            user = User(username="tz")
             s.add(user)
             await s.flush()
             s.add(PlayEvent(user_id=user.id, event_id="e1", ts=moment, kind="finish", client="pwa", received_at=moment))

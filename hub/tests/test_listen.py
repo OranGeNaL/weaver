@@ -13,7 +13,7 @@ import httpx
 import pytest
 import respx
 
-from tests.support import FakeDeezer, FakeProvider, app_client, cand, grant_navidrome
+from tests.support import FakeDeezer, FakeProvider, app_client, cand
 
 AUDIO = bytes(range(256)) * 1024  # 256 KiB standing in for an MP3
 
@@ -87,16 +87,9 @@ async def env(hub_env):
 
     music = hub_env
 
-    def nd_handler(request: httpx.Request) -> httpx.Response:
-        ok = {"status": "ok", "version": "1.16.1"}
-        if request.url.path.endswith("getUser"):
-            return httpx.Response(200, json={"subsonic-response": {**ok, "user": {"adminRole": True}}})
-        return httpx.Response(200, json={"subsonic-response": ok})
-
     app = create_app()
     async with app.router.lifespan_context(app), httpx.AsyncClient() as upstream:
         with respx.mock(assert_all_called=False) as mock:
-            mock.route(host="navidrome.test").mock(side_effect=nd_handler)
             mock.route(host="cdn.test", path="/good.mp3").mock(side_effect=ranged)
             mock.route(host="cdn.test", path="/dead.mp3").mock(return_value=httpx.Response(404))
             mock.route(host="cdn.test", path="/page.mp3").mock(
@@ -109,7 +102,6 @@ async def env(hub_env):
             svc.deezer = FakeDeezer()
             config.get_settings().cfg.sources.ru = ["hitmoz", "hitmos_fm"]
             async with app_client(app) as client:
-                await grant_navidrome("admin")  # stage-4 transition: the ND proxy tests need ND credentials
                 yield {"client": client, "hm": hm, "fm": fm, "mock": mock, "music": music, "app": app}
 
 
@@ -580,7 +572,6 @@ async def test_import_finishing_during_resolution_replaces_the_preview(env, monk
                     title="Группа крови",
                     duration_s=245,
                     isrc="RUA1D8800001",
-                    nd_song_id="qa-song",
                     fingerprint=fingerprint("Кино", "Группа крови"),
                 )
             )
@@ -662,23 +653,14 @@ async def test_owned_track_plays_the_library_file(env, monkeypatch):
     monkeypatch.setattr(svc.deezer, "get_album", album_lookup)
     r = await c.get("/api/listen", params={"ref": "dz:100"})
     assert r.status_code == 200, r.text
-    assert r.json()["kind"] == "library" and env["hm"].searched == 0
+    assert r.json()["kind"] == "library" and r.json()["uid"] == "u1" and env["hm"].searched == 0
     album_lookup.assert_not_awaited()
-    assert r.json()["nd_song_id"] is None  # Navidrome hasn't scanned it yet
     r = await c.get(r.json()["stream_url"], headers={"Range": "bytes=0-9"})
     assert r.status_code == 206 and r.content == AUDIO[:10]
 
-    # scanned meanwhile: the cached choice is looked up again and carries the song id (♥ in the player)
-    async with session_scope() as s:
-        from sqlalchemy import update
-
-        await s.execute(update(Track).values(nd_song_id="nd7"))
-    r = await c.get("/api/listen", params={"ref": "dz:100"})
-    assert r.json()["kind"] == "library" and r.json()["nd_song_id"] == "nd7"
-
 
 async def test_library_song_of_a_mix_plays_its_file(env):
-    """A song only the library has (`nd:<song>`, a mix's track) plays its file in the page's player."""
+    """A song only the library has (`lib:<uid>`, a mix's track) plays its file in the page's player."""
     from app.db import session_scope
     from app.matching.normalize import fingerprint
     from app.models import Track
@@ -695,23 +677,22 @@ async def test_library_song_of_a_mix_plays_its_file(env):
                 artist="Кино",
                 title="Закрой за мной дверь",
                 duration_s=260,
-                nd_song_id="nd9",
                 fingerprint=fingerprint("Кино", "Закрой за мной дверь"),
             )
         )
     c = env["client"]
-    r = await c.get("/api/listen", params={"ref": "nd:nd9"})
+    r = await c.get("/api/listen", params={"ref": "lib:u2"})
     assert r.status_code == 200, r.text
     out = r.json()
-    assert out["kind"] == "library" and out["nd_song_id"] == "nd9" and out["title"] == "Закрой за мной дверь"
+    assert out["kind"] == "library" and out["uid"] == "u2" and out["title"] == "Закрой за мной дверь"
     assert env["hm"].searched == 0
     r = await c.get(r.json()["stream_url"], headers={"Range": "bytes=0-9"})
     assert r.status_code == 206 and r.content == AUDIO[:10]
-    assert (await c.get("/api/listen", params={"ref": "nd:gone"})).status_code == 404
+    assert (await c.get("/api/listen", params={"ref": "lib:gone"})).status_code == 404
 
 
 async def test_library_track_is_addressed_by_uid(env):
-    """`ref=lib:<uid>` plays the library file; the legacy `lib:<int>` and `nd:<song>` are resolved until stage 7."""
+    """`ref=lib:<uid>` plays the library file; the legacy `lib:<int>` is resolved until stage 7."""
     from sqlalchemy import select
 
     from app.db import session_scope
@@ -730,7 +711,6 @@ async def test_library_track_is_addressed_by_uid(env):
                 artist="Кино",
                 title="Печаль",
                 duration_s=300,
-                nd_song_id="nd-pechal",
                 fingerprint=fingerprint("Кино", "Печаль"),
             )
         )
@@ -741,18 +721,15 @@ async def test_library_track_is_addressed_by_uid(env):
     r = await c.get("/api/listen", params={"ref": "lib:u-lib"})
     assert r.status_code == 200, r.text
     out = r.json()
-    assert out["kind"] == "library" and out["uid"] == "u-lib" and out["nd_song_id"] == "nd-pechal"
+    assert out["kind"] == "library" and out["uid"] == "u-lib" and out["title"] == "Печаль"
     assert env["hm"].searched == 0
     r = await c.get(out["stream_url"], headers={"Range": "bytes=0-9"})
     assert r.status_code == 206 and r.content == AUDIO[:10]
 
-    # legacy `lib:<int>` (until stage 7) and the deprecated `nd:<song>` alias name the same track
+    # the legacy `lib:<int>` (until stage 7) names the same track
     legacy = await c.get("/api/listen", params={"ref": f"lib:{legacy_id}"})
     assert legacy.status_code == 200, legacy.text
     assert legacy.json()["uid"] == "u-lib"
-    by_song = await c.get("/api/listen", params={"ref": "nd:nd-pechal"})
-    assert by_song.status_code == 200, by_song.text
-    assert by_song.json()["uid"] == "u-lib"
 
     assert (await c.get("/api/listen", params={"ref": "lib:nope"})).status_code == 404
     assert (await c.get("/api/listen", params={"ref": "lib:999999"})).status_code == 404

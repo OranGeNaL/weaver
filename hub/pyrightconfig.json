@@ -1,6 +1,6 @@
 {
   "include": ["app"],
-  "exclude": ["**/__pycache__", "app/static"],
+  "exclude": ["**/__pycache__", "app/static", "tests"],
   "pythonVersion": "3.12",
   "typeCheckingMode": "standard",
   "venvPath": ".",

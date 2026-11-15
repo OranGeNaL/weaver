@@ -129,8 +129,6 @@ def hub_env(db_url: str, tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator:
     monkeypatch.setenv("STORAGE_BACKEND", "fs")
     monkeypatch.setenv("ENVIRONMENT", "development")
     monkeypatch.setenv("MEDIA_BLOB_TOKEN", "test-blob-token")
-    monkeypatch.setenv("NAVIDROME_ADMIN_USER", "admin")
-    monkeypatch.setenv("NAVIDROME_ADMIN_PASSWORD", "adminpw")
     monkeypatch.setenv("HUB_SECRET_KEY", Fernet.generate_key().decode())
     monkeypatch.setenv("JWT_SIGNING_KEY", "test-jwt-signing-key")
     # the first administrator comes from the environment (no `admin/admin` default anywhere)

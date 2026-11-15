@@ -108,8 +108,6 @@ async def hub(hub_env, db_url: str, tmp_path, monkeypatch):
             # seen «in the future»: the auth check has nothing to refresh, so a request writes nothing
             u = User(
                 username=name,
-                nd_username=name,
-                nd_password_enc="x",
                 is_admin=name == "admin",
                 last_seen_at=datetime(2100, 1, 1, tzinfo=UTC),
             )
@@ -123,9 +121,8 @@ async def hub(hub_env, db_url: str, tmp_path, monkeypatch):
         ):
             s.add(
                 Track(
-                    uid=str(uuid.uuid4()),
+                    uid=nd,
                     path=f"{artist}/{title}.mp3",
-                    nd_song_id=nd,
                     artist=artist,
                     title=title,
                     duration_s=dur,
@@ -155,7 +152,7 @@ def pe(uid, kind, at, ref=None, nd=None, **kw):
         ts=at,
         kind=kind,
         ref=ref,
-        nd_song_id=nd,
+        track_uid=nd,
         client=kw.pop("client", "app/1.12.0"),
         received_at=kw.pop("received_at", at),
         **kw,
@@ -202,7 +199,7 @@ def mix_row(uid, mix_id, created, *, closed=None, old=False, playlist="pl1"):
         "mode": "normal",
         "taste_model": "v2",
         "seeds": ["Кино — Группа крови"],
-        "seed_keys": ["nd:ndK"],
+        "seed_keys": ["lib:ndK"],
         "generators": {
             "ytm_radio": {"tracks": 40, "used": 2, "seconds": 1.2},
             "lastfm_similar": {"tracks": 0, "used": 0, "seconds": 0, "off": True},
@@ -211,7 +208,7 @@ def mix_row(uid, mix_id, created, *, closed=None, old=False, playlist="pl1"):
         "kept": 50,
         "familiar": 1,
         "maturity": 0.4,
-        "facets": [{"id": "f0", "weight": 1.0, "artists": ["Кино"], "members": ["nd:ndK"]}],
+        "facets": [{"id": "f0", "weight": 1.0, "artists": ["Кино"], "members": ["lib:ndK"]}],
         "embedder": {"space_id": "sp", "model": "m"},
         "build_seconds": 3.1,
     }
@@ -224,7 +221,7 @@ def mix_row(uid, mix_id, created, *, closed=None, old=False, playlist="pl1"):
         title="Микс дня",
         description="",
         mode="normal",
-        nd_playlist_id=playlist,
+        playlist_uid=playlist,
         status="closed" if closed else "active",
         stats_json=stats,
         closed_at=closed,
@@ -261,7 +258,6 @@ def mix_item(
         state=state,
         familiar=familiar,
         ref=ref,
-        nd_song_id=nd,
         generator=generator,
         score=1.3,
         features_json=features,
@@ -304,8 +300,6 @@ def wave_item(uid, sid, position, *, ref, nd=None, generator="favorites", artist
         last_handed_at=NOW - timedelta(days=1),
         position=position,
         ref=ref,
-        nd_song_id=nd,
-        key=f"nd:{nd}" if nd else ref,
         artist=artist,
         title=title,
         generator=generator,
@@ -491,7 +485,7 @@ async def test_counted_listens_match_the_summary_and_hours_are_local(hub):
     by_day = {d["date"]: d for d in got["by_day"]}
     assert by_day["2026-03-14"]["heard"] == 3 and by_day["2026-03-14"]["by_source"]["scrobble"] == 1
     # ndK was heard in February already: only ndM (and the legacy dz:300) are new
-    assert {d["key"] for d in got["discoveries"]} == {"nd:ndM", "dz:300"}
+    assert {d["key"] for d in got["discoveries"]} == {"lib:ndM", "dz:300"}
     assert got["totals"]["new_artists"] == 1  # Би-2; dz:300 has no local name (no network): «Неизвестный трек»
     assert next(d for d in got["discoveries"] if d["key"] == "dz:300")["title"] == "Неизвестный трек"
 
@@ -535,7 +529,7 @@ PATHS = [
     "/api/admin/users/{u}/listening",
     "/api/admin/users/{u}/taste",
     "/api/admin/users/{u}/taste/tracks",
-    "/api/admin/users/{u}/taste/track?key=nd:ndK",
+    "/api/admin/users/{u}/taste/track?key=lib:ndK",
     "/api/admin/taste/matrix",
     "/api/admin/users/{u}/mixes",
     "/api/admin/mixes/1",
@@ -617,13 +611,13 @@ async def test_taste_endpoints_explain_each_weight(hub):
     r = await hub["admin"].get(f"/api/admin/users/{u}/taste/tracks", params={"filter": "liked"})
     rows = r.json()["rows"]
     assert [(x["key"], x["artist"], x["title"], x["owned"], x["liked"]) for x in rows] == [
-        ("nd:ndK", "Кино", "Группа крови", True, True)
+        ("lib:ndK", "Кино", "Группа крови", True, True)
     ]
     r = await hub["admin"].get(f"/api/admin/users/{u}/taste/tracks", params={"sort": "title", "q": "АНГЕЛ"})
     assert [x["title"] for x in r.json()["rows"]] == ["Беспечный ангел"]
     r = await hub["admin"].get(f"/api/admin/users/{u}/taste/track", params={"key": "dz:100"})  # an alias
     track = r.json()
-    assert track["key"] == "nd:ndK" and track["formula"].startswith("s = sat(P) − N")
+    assert track["key"] == "lib:ndK" and track["formula"].startswith("s = sat(P) − N")
     p = sum(c["value"] for c in track["contributions"] if c["side"] == "P")
     assert p == pytest.approx(track["p"]) and track["s"] == pytest.approx(saturation(p) - track["n"])
     assert [c["kind"] for c in track["contributions"]][:2] == ["like", "finish"] or {
@@ -660,10 +654,10 @@ async def test_matrix_joins_verified_aliases_only_and_leaves_out_the_qa_user(hub
     m = r.json()
     assert [u["username"] for u in m["users"]] == ["admin", "anna", "boris"]
     rows = {x["key"]: x for x in m["rows"]}
-    assert set(rows["nd:ndQ"]["cells"]) == {str(ids["anna"]), str(ids["boris"])}
+    assert set(rows["lib:ndQ"]["cells"]) == {str(ids["anna"]), str(ids["boris"])}
     assert "dz:501" in rows and rows["dz:501"]["title"] == "Песня"
     shared = (await hub["admin"].get("/api/admin/taste/matrix", params={"filter": "shared_liked"})).json()
-    assert [x["key"] for x in shared["rows"]] == ["nd:ndQ"]
+    assert [x["key"] for x in shared["rows"]] == ["lib:ndQ"]
     single = (await hub["admin"].get("/api/admin/taste/matrix", params={"filter": "single"})).json()
     assert {x["key"] for x in single["rows"]} == {"dz:501"}
     by_boris = (await hub["admin"].get("/api/admin/taste/matrix", params={"sort": f"user:{ids['boris']}"})).json()

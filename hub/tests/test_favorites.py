@@ -1,7 +1,6 @@
 """Permanent typed favorite state and reconciliation, with explicit clocks and no network."""
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
@@ -13,8 +12,7 @@ from app.models import FavoriteSubject, PlayEvent, User
 NOW = datetime(2026, 10, 26, 12, tzinfo=UTC)
 
 
-def event(eid, kind, at=NOW, *, received=None, typ="track", ref: str | None = "dz:1", nd=None, reverts=None, user=1):
-    fields = {"track": "nd_song_id", "album": "nd_album_id", "artist": "nd_artist_id"}
+def event(eid, kind, at=NOW, *, received=None, typ="track", ref: str | None = "dz:1", uid=None, reverts=None, user=1):
     return PlayEvent(
         id=int(eid) if str(eid).isdigit() else 0,
         user_id=user,
@@ -22,12 +20,11 @@ def event(eid, kind, at=NOW, *, received=None, typ="track", ref: str | None = "d
         kind=kind,
         target_type=typ,
         ref=ref,
-        **{fields[typ]: nd},
+        track_uid=uid if typ == "track" else None,
         ts=at,
         received_at=received or at,
         client="app/1",
         reverts_event_id=reverts,
-        mirror_pending=False,
     )
 
 
@@ -83,20 +80,20 @@ def test_aliases_merge_replaced_songs_and_keep_types_separate():
         target_type="track",
         canonical_key="ref:dz:1",
         ref="dz:1",
-        nd_id="new",
-        aliases=["ref:dz:1", "nd:old", "nd:new"],
+        uid="new",
+        aliases=["ref:dz:1", "uid:old", "uid:new"],
         data={},
     )
     states = fold(
         [
-            event(1, "like", ref=None, nd="old"),
-            event(2, "unlike", ref=None, nd="new"),
+            event(1, "like", ref=None, uid="old"),
+            event(2, "unlike", ref=None, uid="new"),
             event(3, "like", typ="album", ref="dz:1"),
         ],
         [subject],
     )
     assert len(states) == 2
-    assert not states[("track", "nd:new")].liked
+    assert not states[("track", "ref:dz:1")].liked
     assert states[("album", "ref:dz:1")].liked
 
 
@@ -116,10 +113,10 @@ def test_event_intake_uses_three_calendar_years_including_leap_day():
 @pytest.mark.parametrize(
     "payload",
     [
-        {"target_type": "album", "nd_song_id": "s"},
-        {"target_type": "artist", "nd_album_id": "a", "ref": "dz:1"},
-        {"target_type": "album", "nd_album_id": "a", "kind": "start"},
-        {"target_type": "album", "nd_album_id": "a", "kind": "dislike"},
+        {"target_type": "album"},
+        {"target_type": "artist", "ref": ""},
+        {"target_type": "track"},
+        {"target_type": "album"},
         {"ref": "dz:1", "reverts_event_id": "self"},
         {"ref": "dz:1", "target_data": {"name": "x" * 8193}},
     ],
@@ -135,8 +132,8 @@ async def ledger(db_url: str):
 
     init_engine(db_url)
     async with session_scope() as s:
-        user = User(username="qa", nd_username="qa", nd_password_enc="unused")
-        other = User(username="other", nd_username="other", nd_password_enc="unused")
+        user = User(username="qa")
+        other = User(username="other")
         s.add_all([user, other])
         await s.flush()
     yield user, other
@@ -148,12 +145,11 @@ async def test_command_repeat_and_stale_request_do_not_overwrite_newer_decision(
 
     user, _ = ledger
     async with session_scope() as s:
-        nd = AsyncMock()
-        target = FavoriteTarget(nd_song_id="s")
-        await command(s, user, [target], liked=True, operation="one", ts=NOW, nd=nd)
-        await command(s, user, [target], liked=False, operation="two", ts=NOW + timedelta(seconds=2), nd=nd)
-        await command(s, user, [target], liked=True, operation="one", ts=NOW, nd=nd)
-        await command(s, user, [target], liked=True, operation="late", ts=NOW - timedelta(seconds=2), nd=nd)
+        target = FavoriteTarget(uid="s")
+        await command(s, user, [target], liked=True, operation="one", ts=NOW)
+        await command(s, user, [target], liked=False, operation="two", ts=NOW + timedelta(seconds=2))
+        await command(s, user, [target], liked=True, operation="one", ts=NOW)
+        await command(s, user, [target], liked=True, operation="late", ts=NOW - timedelta(seconds=2))
         assert not next(iter((await snapshot(s, user.id)).values())).liked
 
 
@@ -165,7 +161,7 @@ async def test_assistant_bulk_command_journals_every_type_locally(ledger):
         await command(
             s,
             user,
-            [FavoriteTarget(nd_song_id="s"), FavoriteTarget(target_type="album", nd_album_id="a")],
+            [FavoriteTarget(uid="s"), FavoriteTarget(target_type="album", uid="a")],
             liked=True,
             client="assistant",
             context="assistant:bulk",
@@ -233,7 +229,7 @@ async def test_pending_unlike_preserves_explicit_download_and_survives_stale_job
         stale = dict(items[0].query_json)
         ids = [i.id for i in items]
     async with session_scope() as s:
-        await command(s, user, [FavoriteTarget(ref="dz:pending")], liked=False, nd=AsyncMock())
+        await command(s, user, [FavoriteTarget(ref="dz:pending")], liked=False)
     await update_item(ids[0], query_json=stale)
     async with session_scope() as s:
         mine, theirs = [await s.get(DownloadItem, id_) for id_ in ids]

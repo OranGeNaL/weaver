@@ -15,7 +15,7 @@ import respx
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
-from tests.support import ND, app_client
+from tests.support import app_client
 
 CLIENT_ID = "123-web.apps.googleusercontent.com"
 CERTS = "https://www.googleapis.com/oauth2/v3/certs"
@@ -177,14 +177,11 @@ def pending_cookie(client: httpx.AsyncClient) -> dict:
 # --- sign-in and the attempt limiter --------------------------------------------------------
 
 
-async def test_login_is_local_and_never_calls_navidrome(env):
+async def test_login_is_local(env):
     async with env["client"]() as c:
-        with respx.mock(assert_all_called=False) as nd:
-            nd.route(host=ND.split("://", 1)[1]).mock(side_effect=AssertionError("Navidrome must not be asked"))
-            r = await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
-            assert r.status_code == 200, r.text
-            assert r.json()["username"] == "admin" and r.json()["is_admin"] is True
-            assert not nd.calls
+        r = await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
+        assert r.status_code == 200, r.text
+        assert r.json()["username"] == "admin" and r.json()["is_admin"] is True
         me = (await c.get("/api/auth/me")).json()
         assert me["username"] == "admin" and me["must_change_password"] is False
 
@@ -409,7 +406,7 @@ async def test_register_with_invite_creates_a_local_user(env):
     listed = (await env["admin"].get("/api/admin/invites")).json()
     assert listed[0]["status"] == "used" and listed[0]["used_by"] == "anna"
     assert (await env["admin"].delete(f"/api/admin/invites/{inv['id']}")).status_code == 409
-    # the account is local: no Navidrome user was made and the password is stored as an argon2id hash
+    # the account is local: the password is stored as an argon2id hash
     from sqlalchemy import select
 
     from app.db import session_scope
@@ -417,7 +414,6 @@ async def test_register_with_invite_creates_a_local_user(env):
 
     async with session_scope() as s:
         anna = (await s.execute(select(User).where(User.username == "anna"))).scalar_one()
-        assert anna.nd_username is None and anna.nd_password_enc is None
         assert anna.password_hash and anna.password_hash.startswith("$argon2id$")
 
 
@@ -817,7 +813,7 @@ async def test_google_sign_in_registers_with_invite_then_signs_in(env):
         r = await c.post("/api/auth/google", json={"id_token": google_token(), "code": inv["code"]})
         assert r.status_code == 200, r.text
         out = r.json()
-        # the name comes from the email when the app sends none; no Navidrome password is returned any more
+        # the name comes from the email when the app sends none; no password is returned
         assert out["username"] == "anna.k" and out["google_email"] == "anna.k@gmail.com"
         assert "password" not in out
     async with env["client"]() as c:  # another phone: the same account, no code needed
@@ -879,33 +875,17 @@ async def test_google_account_survives_a_password_change(env):
         assert r.status_code == 200 and r.json()["username"] == "admin"
 
 
-# --- the admin list and the ND transition ----------------------------------------------------
+# --- the admin list ----------------------------------------------------------------------------
 
 
 async def test_admin_user_list_has_only_local_users(env):
     inv = await make_invite(env["admin"], "Анна")
     async with env["client"]() as c:
         await c.post("/api/auth/register", json={"code": inv["code"], "username": "anna", "password": "secret1"})
-    with respx.mock(assert_all_called=False) as nd:
-        nd.route(host=ND.split("://", 1)[1]).mock(side_effect=AssertionError("the list is local now"))
-        users = (await env["admin"].get("/api/admin/users")).json()["users"]
-        assert not nd.calls
+    users = (await env["admin"].get("/api/admin/users")).json()["users"]
     assert {u["username"] for u in users} == {"admin", "anna"}
     assert all(u["in_hub"] and u["id"] is not None for u in users)
     assert users[0]["starred_songs"] == 0 and users[0]["playlists"] == 0
-
-
-async def test_nd_endpoints_answer_from_the_hub_for_a_user_without_navidrome(env):
-    with respx.mock(assert_all_called=False) as nd:
-        nd.route(host=ND.split("://", 1)[1]).mock(side_effect=AssertionError("no ND account: no ND call"))
-        r = await env["admin"].get("/api/nd/home")
-        assert r.status_code == 200, r.text
-        body = r.json()
-        assert body["recent"] == [] and body["radio"] == [] and "starred" in body
-        assert (await env["admin"].get("/api/nd/liked")).json() == {"songs": [], "albums": [], "artists": []}
-        assert (await env["admin"].get("/api/nd/albums")).json() == []
-        assert (await env["admin"].get("/api/nd/artists")).json() == []
-        assert not nd.calls
 
 
 async def test_search_history_is_shared_between_sessions_and_isolated_between_accounts(env):

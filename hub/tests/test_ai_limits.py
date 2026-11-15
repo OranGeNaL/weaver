@@ -16,9 +16,9 @@ from app.models import AssistantDailyUsage, User
 async def users(hub_env, db_url: str):
     db.init_engine(db_url)
     async with db.session_scope() as s:
-        ordinary = User(username="member", nd_username="member", nd_password_enc="unused", is_admin=False)
-        other = User(username="other", nd_username="other", nd_password_enc="unused", is_admin=False)
-        admin = User(username="admin", nd_username="admin", nd_password_enc="unused", is_admin=True)
+        ordinary = User(username="member", is_admin=False)
+        other = User(username="other", is_admin=False)
+        admin = User(username="admin", is_admin=True)
         s.add_all([ordinary, other, admin])
     yield ordinary, other, admin
     await db.dispose()

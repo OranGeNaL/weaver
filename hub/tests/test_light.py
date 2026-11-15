@@ -45,8 +45,8 @@ def fake_encoder(monkeypatch):
     return st
 
 
-async def song(env, name: str, nd_id: str, body: bytes = AUDIO) -> Path:
-    """A library song `nd:<nd_id>` whose file is called `name`."""
+async def song(env, name: str, uid: str, body: bytes = AUDIO) -> Path:
+    """A library song `lib:<uid>` whose file is called `name`."""
     from app.db import session_scope
     from app.matching.normalize import fingerprint
     from app.models import Track
@@ -58,12 +58,11 @@ async def song(env, name: str, nd_id: str, body: bytes = AUDIO) -> Path:
     async with session_scope() as s:
         s.add(
             Track(
-                uid=nd_id,
+                uid=uid,
                 path=rel,
                 artist="Artist",
                 title=name,
                 duration_s=200,
-                nd_song_id=nd_id,
                 fingerprint=fingerprint("Artist", name),
             )
         )
@@ -85,20 +84,20 @@ def test_ffmpeg_makes_opus_160_without_tags():
 
 async def test_heavy_song_is_served_as_an_opus_copy_with_size_and_range(env, fake_encoder):
     c = env["client"]
-    await song(env, "heavy.mp3", "nd1")
-    r = await c.get("/api/listen/stream", params={"ref": "nd:nd1", "q": "mobile"}, headers={"Range": "bytes=0-"})
+    await song(env, "heavy.mp3", "u1")
+    r = await c.get("/api/listen/stream", params={"ref": "lib:u1", "q": "mobile"}, headers={"Range": "bytes=0-"})
     assert r.status_code == 206 and r.headers[VARIANT] == light.LIGHT
     assert r.headers["content-type"].startswith("audio/ogg")
     copy = b"OggS" + AUDIO[: len(AUDIO) // 2]
     assert r.content == copy and r.headers["content-range"] == f"bytes 0-{len(copy) - 1}/{len(copy)}"
 
-    r = await c.get("/api/listen/stream", params={"ref": "nd:nd1", "q": "mobile"})
+    r = await c.get("/api/listen/stream", params={"ref": "lib:u1", "q": "mobile"})
     assert r.status_code == 200 and r.headers["content-length"] == str(len(copy)) and r.content == copy
-    r = await c.get("/api/listen/stream", params={"ref": "nd:nd1", "q": "mobile"}, headers={"Range": "bytes=10-19"})
+    r = await c.get("/api/listen/stream", params={"ref": "lib:u1", "q": "mobile"}, headers={"Range": "bytes=10-19"})
     assert r.status_code == 206 and r.content == copy[10:20]
     assert r.headers["content-range"] == f"bytes 10-19/{len(copy)}" and r.headers["accept-ranges"] == "bytes"
     r = await c.get(
-        "/api/listen/stream", params={"ref": "nd:nd1", "q": "mobile"}, headers={"Range": f"bytes={len(copy) + 5}-"}
+        "/api/listen/stream", params={"ref": "lib:u1", "q": "mobile"}, headers={"Range": f"bytes={len(copy) + 5}-"}
     )
     assert r.status_code == 416
     assert len(fake_encoder.calls) == 1  # one encode for all of them
@@ -106,15 +105,15 @@ async def test_heavy_song_is_served_as_an_opus_copy_with_size_and_range(env, fak
 
 async def test_light_song_is_served_as_it_is(env, fake_encoder):
     c = env["client"]
-    await song(env, "plain.opus", "nd2")
-    r = await c.get("/api/listen/stream", params={"ref": "nd:nd2", "q": "mobile"})
+    await song(env, "plain.opus", "u2")
+    r = await c.get("/api/listen/stream", params={"ref": "lib:u2", "q": "mobile"})
     assert r.status_code == 200 and r.content == AUDIO and r.headers[VARIANT] == light.ORIGINAL
     assert fake_encoder.calls == []  # never re-encoded: lossy audio again only loses quality
 
 
 async def test_a_blob_backed_library_track_by_uid_answers_the_variant(env, fake_encoder):
-    """A `lib:<uid>` choice of a blob-backed track (served from the S3 hot-cache, no Navidrome song yet) also answers
-    `X-HomeMusic-Variant` — the library track the PWA of stage 6 names by uid (task 3.3)."""
+    """A `lib:<uid>` choice of a blob-backed track (served from the S3 hot-cache) also answers `X-HomeMusic-Variant` —
+    the library track the PWA names by uid (task 3.3)."""
     from app.db import session_scope
     from app.matching.normalize import fingerprint
     from app.models import Track
@@ -130,13 +129,12 @@ async def test_a_blob_backed_library_track_by_uid_answers_the_variant(env, fake_
                 artist="Artist",
                 title="Stream",
                 duration_s=200,
-                nd_song_id=None,
                 fingerprint=fingerprint("Artist", "Stream"),
             )
         )
     c = env["client"]
     out = (await c.get("/api/listen", params={"ref": "lib:u-blob"})).json()
-    assert out["kind"] == "library" and out["uid"] == "u-blob" and out["nd_song_id"] is None
+    assert out["kind"] == "library" and out["uid"] == "u-blob"
     r = await c.get("/api/listen/stream", params={"ref": "lib:u-blob", "q": "mobile"})
     assert r.status_code == 200 and r.content == AUDIO
     assert r.headers[VARIANT] == light.ORIGINAL
@@ -145,10 +143,10 @@ async def test_a_blob_backed_library_track_by_uid_answers_the_variant(env, fake_
 
 async def test_without_the_quality_the_stream_is_as_before(env, fake_encoder):
     c = env["client"]
-    await song(env, "heavy.mp3", "nd3")
-    r = await c.get("/api/listen/stream", params={"ref": "nd:nd3"})
+    await song(env, "heavy.mp3", "u3")
+    r = await c.get("/api/listen/stream", params={"ref": "lib:u3"})
     assert r.status_code == 200 and r.content == AUDIO and VARIANT not in r.headers
-    r = await c.get("/api/listen/stream", params={"ref": "nd:nd3", "q": "something-new"})
+    r = await c.get("/api/listen/stream", params={"ref": "lib:u3", "q": "something-new"})
     assert r.content == AUDIO and VARIANT not in r.headers  # an unknown quality is ignored
     assert fake_encoder.calls == []
 
@@ -159,19 +157,19 @@ async def test_copy_not_ready_in_time_gives_the_original_and_is_finished_in_the_
     c = env["client"]
     monkeypatch.setattr(light, "WAIT_S", 0.05)
     fake_encoder.gate = asyncio.Event()
-    await song(env, "heavy.mp3", "nd4")
+    await song(env, "heavy.mp3", "u4")
 
-    r = await c.get("/api/listen/stream", params={"ref": "nd:nd4", "q": "mobile"}, headers={"Range": "bytes=0-9"})
+    r = await c.get("/api/listen/stream", params={"ref": "lib:u4", "q": "mobile"}, headers={"Range": "bytes=0-9"})
     assert r.status_code == 206 and r.content == AUDIO[:10] and r.headers[VARIANT] == light.PENDING
     assert r.headers["content-range"] == f"bytes 0-9/{len(AUDIO)}"
 
     fake_encoder.gate.set()
     await settled(lambda: not light._jobs)
     # the same source keeps getting the original for a while: one client cache entry never holds both variants
-    r = await c.get("/api/listen/stream", params={"ref": "nd:nd4", "q": "mobile"}, headers={"Range": "bytes=0-9"})
+    r = await c.get("/api/listen/stream", params={"ref": "lib:u4", "q": "mobile"}, headers={"Range": "bytes=0-9"})
     assert r.content == AUDIO[:10] and r.headers[VARIANT] == light.PENDING
     light._served_original.clear()
-    r = await c.get("/api/listen/stream", params={"ref": "nd:nd4", "q": "mobile"})
+    r = await c.get("/api/listen/stream", params={"ref": "lib:u4", "q": "mobile"})
     assert r.headers[VARIANT] == light.LIGHT and r.content == b"OggS" + AUDIO[: len(AUDIO) // 2]
     assert len(fake_encoder.calls) == 1
 
@@ -184,9 +182,9 @@ async def test_failed_encode_gives_the_original_and_is_not_retried(env, fake_enc
         raise RuntimeError("Unknown encoder 'libopus'")
 
     monkeypatch.setattr(light, "_ffmpeg", broken)
-    await song(env, "heavy.mp3", "nd5")
+    await song(env, "heavy.mp3", "u5")
     for _ in range(2):
-        r = await c.get("/api/listen/stream", params={"ref": "nd:nd5", "q": "mobile"})
+        r = await c.get("/api/listen/stream", params={"ref": "lib:u5", "q": "mobile"})
         assert r.status_code == 200 and r.content == AUDIO and r.headers[VARIANT] == light.PENDING
         light._served_original.clear()
     assert len(fake_encoder.calls) == 1
@@ -195,9 +193,9 @@ async def test_failed_encode_gives_the_original_and_is_not_retried(env, fake_enc
 
 async def test_ffmpeg_runs_a_few_at_a_time(env, fake_encoder):
     fake_encoder.gate = asyncio.Event()
-    files = [await song(env, f"heavy{i}.mp3", f"nd1{i}") for i in range(5)]
-    tasks = [light.ensure(f, f"lib|{f}") for f in files]
-    assert all(tasks)
+    files = [await song(env, f"heavy{i}.mp3", f"u1{i}") for i in range(5)]
+    tasks = [t for f in files if (t := light.ensure(f, f"lib|{f}")) is not None]
+    assert len(tasks) == len(files)
     # background work leaves one slot to a user's request
     await settled(lambda: fake_encoder.running == light.ENCODERS - 1)
     await asyncio.sleep(0.1)
@@ -210,8 +208,8 @@ async def test_ffmpeg_runs_a_few_at_a_time(env, fake_encoder):
 async def test_background_encode_yields_to_the_one_a_user_waits_for(env, fake_encoder):
     fake_encoder.gate = asyncio.Event()
     # background encodes take the slots they may (one is kept free for a user), the rest wait
-    files = [await song(env, f"heavy{i}.mp3", f"nd2{i}") for i in range(4)]
-    tasks = [light.ensure(f, f"lib|{f}") for f in files]
+    files = [await song(env, f"heavy{i}.mp3", f"u2{i}") for i in range(4)]
+    tasks = [t for f in files if (t := light.ensure(f, f"lib|{f}")) is not None]
     await settled(lambda: fake_encoder.running == light.ENCODERS - 1)
     await asyncio.sleep(0.1)
     assert fake_encoder.running == light.ENCODERS - 1
@@ -226,9 +224,10 @@ async def test_background_encode_yields_to_the_one_a_user_waits_for(env, fake_en
 
 async def test_background_job_joined_by_a_request_goes_first(env, fake_encoder):
     fake_encoder.gate = asyncio.Event()
-    f = await song(env, "heavy.mp3", "nd6")
+    f = await song(env, "heavy.mp3", "u6")
     ident = f"lib|{f}"
     task = light.ensure(f, ident)
+    assert task is not None
     await settled(lambda: light.key_of(ident) in light._jobs)
     assert light._jobs[light.key_of(ident)][1].background
     waiting = asyncio.create_task(light.get(f, ident, wait_s=5))
@@ -262,8 +261,8 @@ async def test_copies_are_kept_within_the_limit_least_recently_used_out(env, fak
     c = env["client"]
     monkeypatch.setattr(light, "MAX_BYTES", 2 * (len(AUDIO) // 2 + 4) + 50)  # room for two copies
     for i in range(3):
-        await song(env, f"heavy{i}.mp3", f"nd3{i}")
-        r = await c.get("/api/listen/stream", params={"ref": f"nd:nd3{i}", "q": "mobile"})
+        await song(env, f"heavy{i}.mp3", f"u3{i}")
+        r = await c.get("/api/listen/stream", params={"ref": f"lib:u3{i}", "q": "mobile"})
         assert r.headers[VARIANT] == light.LIGHT
         await asyncio.sleep(0.05)  # distinct times of use
     assert len([f for f in light.root().iterdir() if f.suffix == light.SUFFIX]) == 2
@@ -335,13 +334,13 @@ async def test_catalog_track_whose_copy_is_slow_plays_the_original_and_the_copy_
 async def test_warm_makes_the_copies_ahead(env, fake_encoder):
     from app import listen
 
-    await song(env, "heavy.mp3", "nd7")
-    await song(env, "plain.opus", "nd8")
-    listen.warm_light(["nd:nd7", "nd:nd8", "nd:gone"])
+    await song(env, "heavy.mp3", "u7")
+    await song(env, "plain.opus", "u8")
+    listen.warm_light(["lib:u7", "lib:u8", "lib:gone"])
     await settled(lambda: len(fake_encoder.calls) == 1 and not light._jobs)
     assert len(list(root_files(env))) == 1
     t0 = time.monotonic()
-    r = await env["client"].get("/api/listen/stream", params={"ref": "nd:nd7", "q": "mobile"})
+    r = await env["client"].get("/api/listen/stream", params={"ref": "lib:u7", "q": "mobile"})
     assert r.headers[VARIANT] == light.LIGHT and time.monotonic() - t0 < 1 and len(fake_encoder.calls) == 1
 
 
@@ -403,16 +402,15 @@ async def test_real_ffmpeg_halves_a_320_mp3_and_the_copy_is_reproducible(env):
                     artist="Artist",
                     title=p.name,
                     duration_s=12,
-                    nd_song_id=uid,
                     fingerprint=fingerprint("Artist", p.name),
                 )
             )
 
-    r = await c.get("/api/listen/stream", params={"ref": "nd:a", "q": "mobile"}, headers={"Range": "bytes=0-"})
+    r = await c.get("/api/listen/stream", params={"ref": "lib:ua", "q": "mobile"}, headers={"Range": "bytes=0-"})
     if r.headers[VARIANT] == light.PENDING:  # a slow machine: the copy is finished in the background
         await settled(lambda: not light._jobs)
         light._served_original.clear()
-        r = await c.get("/api/listen/stream", params={"ref": "nd:a", "q": "mobile"}, headers={"Range": "bytes=0-"})
+        r = await c.get("/api/listen/stream", params={"ref": "lib:ua", "q": "mobile"}, headers={"Range": "bytes=0-"})
     assert r.headers[VARIANT] == light.LIGHT and r.headers["content-type"].startswith("audio/ogg")
     assert r.content[:4] == b"OggS" and len(r.content) < f.stat().st_size * 0.6
     total = int(r.headers["content-range"].rpartition("/")[2])
@@ -422,11 +420,11 @@ async def test_real_ffmpeg_halves_a_320_mp3_and_the_copy_is_reproducible(env):
     first = r.content
     for copy in light.root().iterdir():
         copy.unlink()
-    r = await c.get("/api/listen/stream", params={"ref": "nd:a", "q": "mobile"})
+    r = await c.get("/api/listen/stream", params={"ref": "lib:ua", "q": "mobile"})
     await settled(lambda: not light._jobs)
     light._served_original.clear()
-    r = await c.get("/api/listen/stream", params={"ref": "nd:a", "q": "mobile"})
+    r = await c.get("/api/listen/stream", params={"ref": "lib:ua", "q": "mobile"})
     assert r.content == first
 
-    r = await c.get("/api/listen/stream", params={"ref": "nd:b", "q": "mobile"})
+    r = await c.get("/api/listen/stream", params={"ref": "lib:ub", "q": "mobile"})
     assert r.headers[VARIANT] == light.ORIGINAL and r.content == plain.read_bytes()

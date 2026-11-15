@@ -489,7 +489,6 @@ async def _save_items(rt: SmartRuntime, picked: list[tuple[int, build.Cand, floa
                     position=nxt + i,
                     slot=k,
                     ref=c.track.ref,
-                    uid=c.uid,
                     fingerprint=wave.fp_of(c)[:1024],
                     artist=(c.track.artist or "")[:256],
                     title=(c.track.title or "")[:256],

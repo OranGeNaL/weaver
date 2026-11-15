@@ -50,7 +50,7 @@ def profile(*tracks: TasteTrack, listens: dict[str, int] | None = None) -> Profi
     p = Profile(user_id=1, now=NOW)
     for t in tracks:
         p.tracks[t.key] = t
-        for k in (t.ref, f"nd:{t.nd_song_id}" if t.nd_song_id else None, t.fp or None):
+        for k in (t.ref, f"lib:{t.uid}" if t.uid else None, t.fp or None):
             if k:
                 p.by_id[k] = t.key
         p.artists[artist_key(t.artist)] = p.artists.get(artist_key(t.artist), 0) + t.score
@@ -369,7 +369,7 @@ async def test_name_by_ai(db, monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(LLMClient, "call_tool", call_tool)
     async with session_scope() as s:
-        s.add(User(id=1, username="u", nd_username="u", nd_password_enc="x"))
+        s.add(User(id=1, username="u"))
     songs = [cand(1, "Кино", familiar=True), cand(2, "Сплин")]
 
     title, desc = await b.name_mix(1, songs, b.local_now(NOW), {})

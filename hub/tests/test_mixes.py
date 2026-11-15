@@ -47,10 +47,9 @@ async def add_user(name: str) -> int:
     from app.db import session_scope
     from app.models import User
     from app.passwords import hash_password
-    from app.security import encrypt
 
     async with session_scope() as s:
-        u = User(username=name, password_hash=hash_password("pw"), nd_username=name, nd_password_enc=encrypt("pw"))
+        u = User(username=name, password_hash=hash_password("pw"))
         s.add(u)
         await s.flush()
         return u.id
@@ -197,7 +196,7 @@ async def test_profile_weights_and_decay(env) -> None:
                 query_json={"query": {}, "meta": {"track_ref": "dz:9"}},
             )
         )
-        s.add(Dislike(user_id=me, source="app", created_at=NOW))
+        s.add(Dislike(user_id=me, ref="lib:u5", source="app", created_at=NOW))
         s.add(Import(user_id=me, source="yandex", method="token", options_json={"liked_uids": ["u6"]}))
         user = await s.get(User, me)
         p = await build_profile(
@@ -216,10 +215,10 @@ async def test_profile_weights_and_decay(env) -> None:
         "u7": 0.977,  # the ♥ event a day ago
         "u8": 1.954,  # a skip at the very end counts almost as a finish
         "u9": 0.0,  # only downloaded
-    }  # nd6: the import's ♥, a mix's download
+    }  # u6: the import's ♥, a mix's download
     assert p.tracks["lib:u4"].liked and p.tracks["lib:u4"].downloaded and p.tracks["lib:u7"].liked
     assert p.find(ref="dz:1") is p.tracks["lib:u1"]  # known by its catalog id too
-    # nd2 and nd4 tie at 1.0: the profile's order (events first)
+    # u2 and u4 tie at 1.0: the profile's order (events first)
     assert [t.uid for t in p.seeds(8)] == ["u1", "u8", "u2", "u4", "u7"]
     assert p.disliked(ref=None, uid="u5", artist="x", artist_ref=None)
 
@@ -326,6 +325,7 @@ async def test_skip_after_30_s_takes_the_length_of_the_event(env) -> None:
                 event_id="e1",
                 ts=NOW,
                 kind="skip",
+                track_uid="u1",
                 position_s=80,
                 duration_s=130,
                 client="app/1.6.0",
@@ -410,11 +410,20 @@ async def test_build_queues_quiet_downloads_and_writes_the_playlist(env, monkeyp
         assert mix.stats_json["taste_shadow"]["sound"] is None
     rows = await mix_rows(mix.id)
     active = [r for r in rows if r.state == "active"]
+    from app.models import Track
+
+    async with session_scope() as s:
+        library_uids = {
+            t.id: t.uid
+            for t in (
+                await s.execute(select(Track).where(Track.id.in_([r.track_id for r in active if r.track_id])))
+            ).scalars()
+        }
     # the light copies for a metered network are made ahead: the songs of the mix the library has
-    assert warmed and warmed[-1] == [f"lib:{r.uid}" for r in active if r.uid]
+    assert warmed and warmed[-1] == [f"lib:{library_uids[r.track_id]}" for r in active if r.track_id]
     assert len(active) == 6 and len([r for r in rows if r.state == "reserve"]) == 2
     assert sum(r.familiar for r in active) == 2  # «Обычный»: 40 % of 6
-    assert active[0].familiar and active[0].uid and active[0].generator == "favorites"
+    assert active[0].familiar and active[0].track_id in library_uids and active[0].generator == "favorites"
     async with session_scope() as s:
         dls = list((await s.execute(select(DownloadItem))).scalars())
         jobs = list((await s.execute(select(Job).where(Job.kind == "download_item"))).scalars())

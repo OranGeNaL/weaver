@@ -63,7 +63,10 @@ async def _favorites_snapshot(session: AsyncSession, user_id: int, now: datetime
 
 
 async def _uid_of_ref(session: AsyncSession, ref: str) -> str | None:
-    """The Hub track uid of a catalog track the library has."""
+    """The Hub track uid of a library track named by `lib:<uid>`, a bare uid or a catalog ref."""
+    if ref.startswith("lib:") or ":" not in ref:
+        if uid := await _uid_of_library_ref(session, ref):
+            return uid
     try:
         src, id_ = split_ref(ref)
     except ValueError:
@@ -104,7 +107,7 @@ async def _uid_of_ref(session: AsyncSession, ref: str) -> str | None:
 
 
 async def _ref_of_uid(s: AsyncSession, uid: str) -> str | None:
-    """The catalog track of a library song."""
+    """The catalog track of a library song (`lib:<uid>` when the library has it without a catalog record)."""
     t = (
         await s.execute(select(Track).where(Track.uid == uid, Track.deleted_at.is_(None)).limit(1))
     ).scalar_one_or_none()
@@ -122,7 +125,7 @@ async def _ref_of_uid(s: AsyncSession, uid: str) -> str | None:
     ).scalar_one_or_none()
     if ref:
         return str(ref)
-    return (
+    imported = (
         await s.execute(
             select(ImportItem.ref)
             .where(ImportItem.track_id == t.id, ImportItem.ref.is_not(None))
@@ -130,6 +133,7 @@ async def _ref_of_uid(s: AsyncSession, uid: str) -> str | None:
             .limit(1)
         )
     ).scalar_one_or_none()
+    return imported or f"lib:{uid}"
 
 
 async def _uid_of_library_ref(s: AsyncSession, ref: str) -> str | None:
@@ -478,6 +482,9 @@ async def record_events(
             continue
         seen.add(e.event_id)
         ref, uid = await fill.complete(e.ref, e.uid) if e.target_type == "track" else (e.ref, None)
+        if e.target_type == "track" and uid is None and ref:
+            # `lib:<uid>` and a bare uid name a library track: resolved like a catalog ref
+            uid = await track_uid_of(session, ref)
         metadata = (
             await _listening_metadata(session, e, uid)
             if e.kind in ("start", "progress", "interrupted", "error", "skip", "finish")

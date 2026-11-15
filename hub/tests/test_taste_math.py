@@ -23,7 +23,8 @@ NOW = datetime(2026, 10, 27, 12, tzinfo=UTC)
 
 
 def event(eid="e", kind="finish", at=NOW, ref: str | None = "dz:1", **kwargs):
-    return TasteEvent(1, eid, at, kind, ref, received_at=kwargs.pop("received_at", at), **kwargs)
+    uid = kwargs.pop("uid", None)
+    return TasteEvent(1, eid, at, kind, ref, track_uid=uid, received_at=kwargs.pop("received_at", at), **kwargs)
 
 
 def _clock(p):
@@ -86,17 +87,17 @@ def test_alias_repeats_and_typed_actions_are_counted_once_per_local_day():
     rows = [
         event("old", at=NOW - timedelta(days=1), ref="dz:old"),
         event("ref", ref="dz:1"),
-        event("nd", ref=None, nd_song_id="song"),
+        event("nd", ref=None, uid="song"),
         event("l", "like"),
         event("duplicate", "like"),
         event("u", "unlike"),
         event("al", "like", target_type="album"),
         event("ar", "like", target_type="artist"),
     ]
-    p = profile(*rows, subjects=(Subject("track", ("ref:dz:1", "nd:song"), "dz:1", "song"),))
+    p = profile(*rows, subjects=(Subject("track", ("ref:dz:1", "lib:song"), "dz:1", "song"),))
     assert _clock(p).units[-1] == 0.8  # one heard + three typed action objects
     assert len(p.tracks) == 2
-    assert p.find(ref="dz:1") is p.find(nd_song_id="song")
+    assert p.find(ref="dz:1") is p.find(uid="song")
 
 
 @pytest.mark.parametrize(
@@ -178,11 +179,11 @@ def test_current_like_is_one_contribution_and_unlike_is_neutral():
 
 def test_playback_alias_pair_also_unifies_favorite_state_and_current_vector_key():
     p = profile(
-        event("finish", nd_song_id="song"),
+        event("finish", uid="song"),
         event("like-ref", "like", at=NOW - timedelta(seconds=2)),
-        event("like-nd", "like", ref=None, nd_song_id="song", at=NOW - timedelta(seconds=1)),
+        event("like-nd", "like", ref=None, uid="song", at=NOW - timedelta(seconds=1)),
     )
-    assert len(p.tracks) == 1 and p.tracks["nd:song"].positive_raw == 3
+    assert len(p.tracks) == 1 and p.tracks["lib:song"].positive_raw == 3
 
 
 @pytest.mark.parametrize(
@@ -226,7 +227,7 @@ def test_negative_tracks_are_not_explicitly_filtered_or_familiar():
     )
     assert not p.known(ref="dz:1") and not p.known(ref="dz:start")
     assert p.tracks["dz:1"].last_heard is None
-    assert not p.disliked(ref="dz:1", nd_song_id=None, artist="", artist_ref=None)
+    assert not p.disliked(ref="dz:1", uid=None, artist="", artist_ref=None)
     assert p.negative_keys() == {"dz:negative"}
 
 
@@ -234,7 +235,7 @@ def test_explicit_dislike_survives_age_and_unjournalled_state_is_supported():
     old = calendar_cutoff(NOW) - timedelta(days=1)
     p = profile(event("dislike", "dislike", old), dislikes=(DislikedTarget(ref="dz:legacy", at=old),))
     assert p.negative_keys() == {"dz:1", "dz:legacy"}
-    assert p.disliked(ref="dz:1", nd_song_id=None, artist="", artist_ref=None)
+    assert p.disliked(ref="dz:1", uid=None, artist="", artist_ref=None)
     assert not p.tracks["dz:1"].familiar
     p = profile(
         event("dislike", "dislike"),
@@ -261,7 +262,7 @@ def test_album_and_artist_likes_contribute_only_to_artist_and_album_stash():
         event("artist", "like", ref="dz:artist", target_type="artist", target_data={"name": "Artist"}),
         metadata=(TrackMetadata("dz:track", "song", "Artist", "Title", 200, "dz:album"),),
     )
-    t = p.tracks["nd:song"]
+    t = p.tracks["lib:song"]
     assert t.album_liked and t.familiar and not t.liked and t.score == t.positive_raw == 0
     assert p.artists[artist_key("Artist")] == 1.5
     assert p.maturity == 0 and p.active_seed_pool() == []

@@ -9,23 +9,21 @@ from sqlalchemy import select
 from app import db
 from app.jobs.downloads import process_playlist_adds
 from app.models import DownloadBatch, DownloadItem, PendingPlaylistAdd, Playlist, PlaylistItem, Track, User
-from app.security import encrypt
 
 
 @pytest.fixture
 async def playlist_env(hub_env, db_url: str):
     db.init_engine(db_url)
     async with db.session_scope() as s:
-        user = User(username="qa", nd_username="qa", nd_password_enc=encrypt("qa-password"))
+        user = User(username="qa")
         s.add(user)
         await s.flush()
         existing = Track(
-            uid=str(uuid.uuid4()),
+            uid="existing",
             path="existing.mp3",
             artist="A",
             title="existing",
             fingerprint="existing",
-            nd_song_id="existing",
         )
         pl = Playlist(uid=f"pl-{user.id}", owner_id=user.id, name="Плейлист")
         s.add_all([existing, pl])
@@ -64,12 +62,11 @@ async def seed(user_id, playlist_uid, statuses):
 
 async def finish(s, item):
     track = Track(
-        uid=str(uuid.uuid4()),
+        uid=f"song{item.id}",
         path=f"{item.id}.mp3",
         artist="Artist",
         title=f"Song {item.id}",
         fingerprint=str(item.id),
-        nd_song_id=f"song{item.id}",
     )
     s.add(track)
     await s.flush()
@@ -99,7 +96,7 @@ async def songs(playlist_uid: str) -> list[str]:
                 )
             ).all()
         )
-        return [t.nd_song_id or t.uid for _item, t in rows]
+        return [t.uid for _item, t in rows]
 
 
 async def test_review_releases_ready_songs_and_retry_inserts_in_requested_order(playlist_env, db_url: str):
@@ -177,12 +174,11 @@ async def test_delayed_insertion_preserves_a_large_playlist_in_one_request(playl
         manual = []
         for i in range(650):
             t = Track(
-                uid=str(uuid.uuid4()),
+                uid=f"manual{i}",
                 path=f"manual{i}.mp3",
                 artist="A",
                 title=f"manual{i}",
                 fingerprint=f"manual{i}",
-                nd_song_id=f"manual{i}",
             )
             s.add(t)
             manual.append(t)

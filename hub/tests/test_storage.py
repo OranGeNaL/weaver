@@ -159,9 +159,8 @@ async def test_library_items_uses_a_url_for_the_embedder(hub_env, db_url):
     src = make_wav(hub_env / "staging" / "embed.wav")
     async with db.session_scope() as s:
         track = await import_file(s, src, ImportSpec(artist="А", title="Т", album="А"))
-        track.nd_song_id = "nd42"
     items = await library_items()
-    assert items and items[0]["key"].startswith("nd:")
+    assert items and items[0]["key"].startswith("lib:")
     assert items[0]["url"].endswith(f"/api/media/blob/{await _sha_of(track.id)}")
 
 
@@ -338,8 +337,8 @@ async def test_s3_end_to_end_import_listen_cover_and_export(hub_env, db_url, mon
             src,
             ImportSpec(artist="А", title="Т", album="А", cover=buf.getvalue()),
         )
-        track.nd_song_id = "nd-s3"
         album_id = track.album_id
+        uid = track.uid
         assert track.blob_id is not None
         blob = await s.get(Blob, track.blob_id)
         assert blob is not None and blob.status == blobs.COMMITTED
@@ -347,7 +346,7 @@ async def test_s3_end_to_end_import_listen_cover_and_export(hub_env, db_url, mon
     assert await backend().head(f"audio/{sha}") is not None
     assert await backend().head(f"manifests/{sha}/{track.uid}.json") is not None
 
-    media = await listen.open_media("nd:nd-s3", "bytes=0-9")
+    media = await listen.open_media(f"lib:{uid}", "bytes=0-9")
     if media.path is not None:
         data = media.path.read_bytes()[:10]
     else:
@@ -381,13 +380,12 @@ async def test_album_metadata_edit_keeps_paths_and_nd_ids(hub_env, db_url):
     src = make_wav(hub_env / "staging" / "meta.wav")
     async with db.session_scope() as s:
         track = await import_file(s, src, ImportSpec(artist="А", title="Т", album="А"))
-        track.nd_song_id = "nd-meta"
         album = await s.get(Album, track.album_id)
         assert album is not None
         before = track.path
         await editor.update_album(s, album, genre="Rock")
         assert track.path == before
-        assert track.nd_song_id == "nd-meta"
+        assert track.uid
 
 
 async def test_library_etag_is_the_sha_on_cache_hit_and_miss(hub_env, db_url):
@@ -397,17 +395,17 @@ async def test_library_etag_is_the_sha_on_cache_hit_and_miss(hub_env, db_url):
     src = make_wav(hub_env / "staging" / "etag.wav")
     async with db.session_scope() as s:
         track = await import_file(s, src, ImportSpec(artist="А", title="Т", album="А"))
-        track.nd_song_id = "nd-etag"
+        uid = track.uid
         blob = await s.get(Blob, track.blob_id)
         assert blob is not None
         sha = blob.sha256
-    first = await listen.open_media("nd:nd-etag", "bytes=0-9")
+    first = await listen.open_media(f"lib:{uid}", "bytes=0-9")
     if first.body is not None:
         b"".join([c async for c in first.body])
         if first.close is not None:
             await first.close()
     await cache().ensure(backend(), sha, expected_size=first.choice.blob_size)  # the miss filled the cache
-    second = await listen.open_media("nd:nd-etag", "bytes=0-9")
+    second = await listen.open_media(f"lib:{uid}", "bytes=0-9")
     assert second.path is not None
     assert first.headers.get("etag") == sha and second.headers.get("etag") == sha
 

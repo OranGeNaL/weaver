@@ -26,7 +26,6 @@ from app.library.catalog import catalog_commit
 from app.library.importer import ImportSpec, import_file
 from app.library.reconcile import MISSING_BLOB, MISSING_COVER, catalog_reconcile
 from app.models import Album, Artist, Blob, DownloadBatch, DownloadItem, PlayEvent, Track, User, utcnow
-from app.security import encrypt
 from app.storage import backend, blobs
 from app.tokens import issue_access
 from tests.support import app_client
@@ -51,7 +50,7 @@ async def api(hub_env, db_url) -> AsyncIterator:
 
     db.init_engine(db_url)
     async with db.session_scope() as s:
-        user = User(username="admin", nd_username="admin", nd_password_enc=encrypt("adminpw"), is_admin=True)
+        user = User(username="admin", is_admin=True)
         s.add(user)
         await s.flush()
         token = issue_access(user)
@@ -168,16 +167,15 @@ async def test_album_sorts_pagination_and_deprecated_type(api, tmp_path):
 
 
 async def test_home_recent_frequent_starred(api, tmp_path):
-    track_id, _track_uid, album_uid = await _import(tmp_path, "Кино", "Группа крови")
+    track_id, track_uid, album_uid = await _import(tmp_path, "Кино", "Группа крови")
     async with db.session_scope() as s:
         album = (await s.execute(select(Album).where(Album.uid == album_uid))).scalar_one()
         album.deezer_album_id = "10"
         track = await s.get(Track, track_id)
         assert track is not None
-        track.nd_song_id = "ndK"
         user_id = (await s.execute(select(User.id))).scalar_one()
         now = datetime.now(UTC)
-        s.add(PlayEvent(user_id=user_id, event_id="e1", ts=now, kind="start", nd_song_id="ndK", client="pwa"))
+        s.add(PlayEvent(user_id=user_id, event_id="e1", ts=now, kind="start", track_uid=track_uid, client="pwa"))
         s.add(
             PlayEvent(
                 user_id=user_id,
@@ -221,7 +219,7 @@ async def test_cover_by_uid_resize_and_404(api, tmp_path):
     assert (await api.get("/api/library/albums/00000000-0000-0000-0000-000000000000/cover")).status_code == 404
 
 
-async def test_edits_keep_uid_and_nd_link(hub_env, tmp_path, db_url):
+async def test_edits_keep_uid(hub_env, tmp_path, db_url):
     import uuid
 
     db.init_engine(db_url)
@@ -229,18 +227,17 @@ async def test_edits_keep_uid_and_nd_link(hub_env, tmp_path, db_url):
     async with db.session_scope() as s:
         track = await s.get(Track, track_id)
         assert track is not None
-        track.nd_song_id = "nd1"
         original_path = track.path
-    # renaming the album moves the logical path but keeps the public id and the Navidrome link
+    # renaming the album moves the logical path but keeps the public id
     async with db.session_scope() as s:
         album = (await s.execute(select(Album).where(Album.uid == album_uid))).scalar_one()
         await editor.update_album(s, album, title="Новый альбом")
         track = await s.get(Track, track_id)
         assert track is not None
-        assert track.uid == track_uid and track.nd_song_id == "nd1"
+        assert track.uid == track_uid
         assert track.path != original_path and "Новый альбом" in (track.path or "")
         renamed_path = track.path
-    # moving the track to another album does the same, without a rescan or re-link
+    # moving the track to another album does the same, without a re-import
     async with db.session_scope() as s:
         target = Album(uid=str(uuid.uuid4()), title="Другой", album_artist="Кино")
         s.add(target)
@@ -248,7 +245,7 @@ async def test_edits_keep_uid_and_nd_link(hub_env, tmp_path, db_url):
         await editor.move_tracks(s, [track_id], target)
         track = await s.get(Track, track_id)
         assert track is not None
-        assert track.uid == track_uid and track.nd_song_id == "nd1"
+        assert track.uid == track_uid
         assert track.path != renamed_path and track.album == "Другой"
 
 
@@ -256,7 +253,7 @@ async def test_catalog_commit_is_idempotent(hub_env, tmp_path, db_url):
     db.init_engine(db_url)
     track_id, track_uid, _album_uid = await _import(tmp_path, "Кино", "Группа крови")
     async with db.session_scope() as s:
-        user = User(username="admin", nd_username="admin", nd_password_enc=encrypt("x"), is_admin=True)
+        user = User(username="admin", is_admin=True)
         s.add(user)
         await s.flush()
         user_id = user.id
@@ -286,7 +283,7 @@ async def test_catalog_commit_is_idempotent(hub_env, tmp_path, db_url):
 async def test_catalog_commit_refuses_a_track_without_blob(hub_env, tmp_path, db_url):
     db.init_engine(db_url)
     async with db.session_scope() as s:
-        user = User(username="u", nd_username="u", nd_password_enc=encrypt("x"), is_admin=False)
+        user = User(username="u", is_admin=False)
         s.add(user)
         await s.flush()
         batch = DownloadBatch(user_id=user.id, origin="search")
@@ -305,38 +302,6 @@ async def test_catalog_commit_refuses_a_track_without_blob(hub_env, tmp_path, db
         with pytest.raises(ValueError, match="без блоба"):
             await catalog_commit(s, item, track)
         assert item.status == "queued" and item.track_id is None
-
-
-async def test_nd_sync_never_fails_on_an_unavailable_navidrome(hub_env, tmp_path, db_url, monkeypatch):
-    from app.jobs import downloads as jobs
-    from app.models import Job
-
-    db.init_engine(db_url)
-
-    def no_navidrome():
-        raise RuntimeError("navidrome is down")
-
-    monkeypatch.setattr(jobs, "admin_client", no_navidrome)
-    async with db.session_scope() as s:
-        user = User(username="u2", nd_username="u2", nd_password_enc=encrypt("x"), is_admin=False)
-        s.add(user)
-        await s.flush()
-        batch = DownloadBatch(user_id=user.id, origin="search")
-        s.add(batch)
-        await s.flush()
-        item = DownloadItem(
-            batch_id=batch.id,
-            user_id=user.id,
-            status="done",
-            query_json={"query": {"artist": "А", "title": "Т"}},
-        )
-        s.add(item)
-        await s.flush()
-        item_id = item.id
-    await jobs.handle_nd_sync(Job(kind="nd_sync", payload_json={}))
-    async with db.session_scope() as s:
-        item = await s.get(DownloadItem, item_id)
-    assert item is not None and item.query_json.get("nd_effects_done") is True
 
 
 async def test_reconcile_marks_and_clears_integrity(hub_env, tmp_path, db_url):

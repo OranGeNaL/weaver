@@ -3,7 +3,7 @@ recommendations between them over the API — the ratio, the filters, the events
 recommendations as the player moves on, a fresh set on every run, the restart.
 
 The generators are fakes (`fake_gens`): new catalog tracks dz:5000…; the playlist's songs are library songs
-«Свой n — Песня n» (nd<n>, dz:<n>); Navidrome is the mock of test_mixes.py.
+«Свой n — Песня n» (Hub uid u<n>, dz:<n>).
 """
 
 from __future__ import annotations
@@ -14,13 +14,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-import respx
 from sqlalchemy import select
 
 from app.catalog.models import CatalogTrack
 from app.mixes import smart
-from tests.support import FakeDeezer, app_client, grant_navidrome
-from tests.test_mixes import ND, add_event, add_track, user_id
+from tests.support import FakeDeezer, app_client
+from tests.test_mixes import add_event, add_track, user_id
 
 
 def new(n: int, artist: str | None = None) -> CatalogTrack:
@@ -46,15 +45,11 @@ async def env(hub_env, monkeypatch: pytest.MonkeyPatch):
     prefetched: list[list[str]] = []
     monkeypatch.setattr(listen, "prefetch", lambda uid, refs: prefetched.append(list(refs)) or len(refs))
     monkeypatch.setattr(listen, "warm_light", lambda refs: None)
-    nd = ND()
     app = create_app()
     async with app.router.lifespan_context(app):
         svc.deezer = FakeDeezer()
-        with respx.mock(assert_all_called=False) as mock:
-            mock.route(host="navidrome.test").mock(side_effect=nd.handler)
-            async with app_client(app) as client:
-                await grant_navidrome("admin")  # stage-4 transition: the ND proxy tests need ND credentials
-                yield {"client": client, "nd": nd, "admin": await user_id("admin"), "prefetched": prefetched}
+        async with app_client(app) as client:
+            yield {"client": client, "admin": await user_id("admin"), "prefetched": prefetched}
 
 
 def fake_gens(monkeypatch: pytest.MonkeyPatch, tracks: list[CatalogTrack]) -> list[list[str]]:
@@ -74,7 +69,7 @@ def fake_gens(monkeypatch: pytest.MonkeyPatch, tracks: list[CatalogTrack]) -> li
 
 
 async def library(n: int, artists: int | None = None) -> list[str]:
-    """Library songs 1..n (Navidrome ids nd1…); `artists` — they belong to that many artists."""
+    """Library songs 1..n (Hub uids u1…); `artists` — they belong to that many artists."""
     from app.db import session_scope
     from app.models import Track
 
@@ -83,12 +78,12 @@ async def library(n: int, artists: int | None = None) -> list[str]:
     if artists:
         async with session_scope() as s:
             for t in (await s.execute(select(Track))).scalars():
-                t.artist = f"Исп {int(t.nd_song_id[2:]) % artists}"
-    return [f"nd{i}" for i in range(1, n + 1)]
+                t.artist = f"Исп {int(t.uid[1:]) % artists}"
+    return [f"u{i}" for i in range(1, n + 1)]
 
 
 def ev(
-    kind: str, ref: str, position: float | None = None, *, context: str | None = None, nd: str | None = None
+    kind: str, ref: str, position: float | None = None, *, context: str | None = None, uid: str | None = None
 ) -> dict[str, Any]:
     e: dict[str, Any] = {
         "event_id": uuid.uuid4().hex,
@@ -98,39 +93,34 @@ def ev(
         "duration_s": 200,
         "client": "pwa",
     }
-    e.update(
-        {"ref": ref} if ref else {}, **({"nd_song_id": nd} if nd else {}), **({"context": context} if context else {})
-    )
+    e.update({"ref": ref} if ref else {}, **({"uid": uid} if uid else {}), **({"context": context} if context else {}))
     return e
 
 
-async def hub_playlist(uid: str, nd_ids: list[str]) -> None:
-    """A Hub playlist with the library tracks of those Navidrome ids (no Navidrome involved)."""
+async def hub_playlist(uid: str, uids: list[str]) -> None:
+    """A Hub playlist with the library tracks of those Hub uids."""
     from app.db import session_scope
     from app.models import Playlist, PlaylistItem, Track
 
     async with session_scope() as s:
-        tracks = {
-            t.nd_song_id: t.uid for t in (await s.execute(select(Track).where(Track.nd_song_id.in_(nd_ids)))).scalars()
-        }
+        known = set((await s.execute(select(Track.uid).where(Track.uid.in_(uids)))).scalars())
         pl = Playlist(uid=uid, owner_id=await user_id("admin"), name="Мой")
         s.add(pl)
         await s.flush()
-        for pos, nd in enumerate(nd_ids):
-            if nd in tracks:
+        for pos, track_uid in enumerate(uids):
+            if track_uid in known:
                 s.add(
                     PlaylistItem(
                         uid=uuid.uuid4().hex,
                         playlist_id=pl.id,
-                        track_uid=tracks[nd],
+                        track_uid=track_uid,
                         position=(pos + 1) * 1024,
                     )
                 )
 
 
-async def playlist_nd_ids(uid: str) -> list[str]:
+async def playlist_uids(uid: str) -> list[str]:
     from app.db import session_scope
-    from app.models import Track
     from app.playlists import get_by_uid
     from app.playlists import items as playlist_items
 
@@ -138,14 +128,7 @@ async def playlist_nd_ids(uid: str) -> list[str]:
         pl = await get_by_uid(s, uid)
         if pl is None:
             return []
-        rows = await playlist_items(s, pl.id)
-        uids = [i.track_uid for i in rows]
-        tracks = (
-            {t.uid: t.nd_song_id for t in (await s.execute(select(Track).where(Track.uid.in_(uids)))).scalars()}
-            if uids
-            else {}
-        )
-        return [tracks[u] for u in uids if u in tracks]
+        return [i.track_uid for i in await playlist_items(s, pl.id)]
 
 
 async def start(c, songs: list[str], context: str = "playlist:pl1", current: str | None = None) -> dict[str, Any]:
@@ -173,9 +156,9 @@ async def test_a_long_playlist_gets_a_recommendation_after_every_third_own_song(
     ids = await library(20)
     fake_gens(monkeypatch, [new(i) for i in range(30)])
 
-    plan = await start(env["client"], ids, current="nd7")
+    plan = await start(env["client"], ids, current="u7")
 
-    assert plan["own"][0] == "nd7" and sorted(plan["own"]) == sorted(ids) and plan["own_per_rec"] == 3
+    assert plan["own"][0] == "u7" and sorted(plan["own"]) == sorted(ids) and plan["own_per_rec"] == 3
     assert [r["slot"] for r in plan["recs"]] == [0, 1, 2]  # the first three places: three recommendations ahead
     assert [r["after"] for r in plan["recs"]] == [plan["own"][2], plan["own"][5], plan["own"][8]]
     seq = sequence(plan)
@@ -197,7 +180,7 @@ async def test_a_short_playlist_gets_one_after_every_second_and_a_tiny_one_gets_
         plan["own"][3],
         plan["own"][5],
     ]
-    assert len(one["recs"]) == 1 and one["recs"][0]["after"] == "nd1"  # a single song: followed by a recommendation
+    assert len(one["recs"]) == 1 and one["recs"][0]["after"] == "u1"  # a single song: followed by a recommendation
     assert len(two["recs"]) == 1 and two["recs"][0]["after"] == two["own"][1]
 
 
@@ -230,7 +213,7 @@ async def test_recently_heard_songs_stand_later_in_the_order(env, monkeypatch) -
     me = env["admin"]
     fake_gens(monkeypatch, [new(i) for i in range(30)])
     for i in range(1, 21):
-        await add_event(me, "finish", nd=f"nd{i}", at=datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=i))
+        await add_event(me, "finish", uid=f"u{i}", at=datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=i))
     from app.auth import current_user  # noqa: F401  (the user object below is the stored admin)
     from app.db import session_scope
     from app.models import User
@@ -240,9 +223,9 @@ async def test_recently_heard_songs_stand_later_in_the_order(env, monkeypatch) -
 
     heard_pos, fresh_pos = [], []
     for seed in range(15):
-        plan = await smart.start(user, "playlist:pl1", ids, "nd40", rng=random.Random(seed))
-        heard_pos += [plan.own.index(f"nd{i}") for i in range(1, 21)]
-        fresh_pos += [plan.own.index(f"nd{i}") for i in range(21, 40)]
+        plan = await smart.start(user, "playlist:pl1", ids, "u40", rng=random.Random(seed))
+        heard_pos += [plan.own.index(f"u{i}") for i in range(1, 21)]
+        fresh_pos += [plan.own.index(f"u{i}") for i in range(21, 40)]
 
     assert sum(heard_pos) / len(heard_pos) > sum(fresh_pos) / len(fresh_pos) + 4
 
@@ -266,16 +249,11 @@ async def test_start_validates_the_context_and_the_list(env) -> None:
 
 async def test_lib_refs_of_the_context_are_resolved_to_uids(env, monkeypatch) -> None:
     """A client of stage 6 names the library songs `lib:<uid>`; the session keeps them by uid, so `after` matches."""
-    from app.db import session_scope
-    from app.models import Track
-
     await library(4)
     fake_gens(monkeypatch, [new(i) for i in range(8)])
-    async with session_scope() as s:
-        uids = {t.nd_song_id: t.uid for t in (await s.execute(select(Track))).scalars()}
-    refs = [f"lib:{uids[f'nd{i}']}" for i in range(1, 5)]
+    refs = [f"lib:u{i}" for i in range(1, 5)]
     plan = await start(env["client"], refs, current=refs[1])
-    assert sorted(plan["own"]) == sorted(uids[f"nd{i}"] for i in range(1, 5))
+    assert sorted(plan["own"]) == sorted(f"u{i}" for i in range(1, 5))
     assert all(r["after"] in plan["own"] for r in plan["recs"])
 
 
@@ -332,7 +310,7 @@ async def test_events_of_a_recommendation_get_the_smart_context_and_teach_the_se
     plan = await start(c, ids)
     sid = plan["session_id"]
     first, second = plan["recs"][0], plan["recs"][1]
-    own_event = ev("finish", "", nd=plan["own"][0], context="playlist")
+    own_event = ev("finish", "", uid=plan["own"][0], context="playlist")
     early = ev("start", first["ref"])
     stored_first = {**ev("start", second["ref"]), "context": "queue"}
     assert (await c.post("/api/plays/events", json={"events": [stored_first]})).status_code == 200
@@ -348,7 +326,7 @@ async def test_events_of_a_recommendation_get_the_smart_context_and_teach_the_se
         rows = list((await s.execute(select(PlayEvent).where(PlayEvent.user_id == env["admin"]))).scalars())
     contexts = {e.ref: e.context for e in rows if e.ref}
     assert contexts[first["ref"]] == contexts[second["ref"]] == f"smart:{sid}"  # also the one stored under "queue"
-    assert {e.context for e in rows if e.nd_song_id == plan["own"][0]} == {"playlist"}  # an own song keeps its list
+    assert {e.context for e in rows if e.track_uid == plan["own"][0]} == {"playlist"}  # an own song keeps its list
     # the early skip counted against the artist in this session
     assert smart._rt[sid].state.skips.get(smart.artist_key(first["artist"])) == 1
 
@@ -417,12 +395,12 @@ async def test_add_puts_a_library_recommendation_in_the_playlist(env, monkeypatc
     c = env["client"]
     plan = await start(c, ids)
     rec = plan["recs"][0]
-    assert rec["ref"] == "dz:101" and rec["owned"] and rec["nd_song_id"] == "nd101"
+    assert rec["ref"] == "dz:101" and rec["owned"] and rec["uid"] == "u101"
 
     r = await c.post(f"/api/smart-shuffle/{plan['session_id']}/add", json={"ref": rec["ref"]})
 
     assert r.status_code == 200 and r.json() == {"ok": True, "status": "added", "playlist_id": "pl1"}
-    assert (await playlist_nd_ids("pl1"))[-1] == "nd101"
+    assert (await playlist_uids("pl1"))[-1] == "u101"
 
 
 async def test_add_downloads_a_catalog_track_into_the_playlist(env, monkeypatch) -> None:

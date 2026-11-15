@@ -1,6 +1,5 @@
 """The assistant's chat with tools through the HTTP API: the model (a scripted OpenAI-compatible server) reads the
-account and changes ♥ and playlists itself; deleting waits for the user's confirmation. Navidrome is a mock that keeps
-playlists and stars.
+account and changes the Hub's ♥ and playlists itself; deleting waits for the user's confirmation.
 """
 
 from __future__ import annotations
@@ -13,7 +12,7 @@ import pytest
 import respx
 from sqlalchemy import select
 
-from tests.support import app_client, grant_navidrome
+from tests.support import app_client
 
 LLM = "https://llm.test/v1"
 
@@ -39,7 +38,7 @@ def completion(content: str = "", calls: list[dict] | None = None) -> dict:
     }
 
 
-SONGS = {"ndA": ("Кино", "Группа крови"), "ndB": ("ДДТ", "Осень"), "ndC": ("Сплин", "Выхода нет")}
+SONGS = {"uA": ("Кино", "Группа крови"), "uB": ("ДДТ", "Осень"), "uC": ("Сплин", "Выхода нет")}
 
 
 @pytest.fixture
@@ -50,63 +49,7 @@ async def env(hub_env, monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setenv("LLM_BASE_URL", LLM)
     config.get_settings.cache_clear()
-    state: dict = {
-        "playlists": {"pl1": {"name": "Тест", "songs": ["ndA", "ndB"]}},
-        "stars": ["ndA", "ndB", "ndC"],
-        "deleted": [],
-        "script": [],
-        "llm_requests": [],
-    }
-
-    def song(i: str) -> dict:
-        return {"id": i, "artist": SONGS[i][0], "title": SONGS[i][1]}
-
-    def nd_handler(request: httpx.Request) -> httpx.Response:
-        ep = request.url.path.rsplit("/", 1)[-1]
-        p = request.url.params
-
-        def reply(**body) -> httpx.Response:
-            return httpx.Response(200, json={"subsonic-response": {"status": "ok", "version": "1.16.1", **body}})
-
-        if ep == "getUser":
-            return reply(user={"adminRole": True})
-        if ep == "getPlaylists":
-            return reply(
-                playlists={
-                    "playlist": [
-                        {"id": k, "name": v["name"], "songCount": len(v["songs"]), "owner": "admin"}
-                        for k, v in state["playlists"].items()
-                    ]
-                }
-            )
-        if ep == "getPlaylist":
-            pl = state["playlists"][p["id"]]
-            return reply(playlist={"id": p["id"], "name": pl["name"], "entry": [song(i) for i in pl["songs"]]})
-        if ep == "createPlaylist":
-            pid = p.get("playlistId") or f"pl{len(state['playlists']) + 1}"
-            name = p.get("name") or state["playlists"][pid]["name"]
-            state["playlists"][pid] = {"name": name, "songs": p.get_list("songId")}
-            return reply(playlist={"id": pid, "name": name})
-        if ep == "updatePlaylist":
-            pl = state["playlists"][p["playlistId"]]
-            for i in sorted(map(int, p.get_list("songIndexToRemove")), reverse=True):
-                del pl["songs"][i]
-            pl["songs"] += p.get_list("songIdToAdd")
-            pl["name"] = p.get("name") or pl["name"]
-            return reply()
-        if ep == "deletePlaylist":
-            state["deleted"].append(p["id"])
-            state["playlists"].pop(p["id"])
-            return reply()
-        if ep in ("star", "unstar"):
-            ids = p.get_list("id")
-            state["stars"] = [x for x in state["stars"] if x not in ids] + (ids if ep == "star" else [])
-            return reply()
-        if ep == "getStarred2":
-            return reply(starred2={"song": [song(i) for i in state["stars"]]})
-        if ep == "getAlbumList2":
-            return reply(albumList2={"album": []})
-        return reply()
+    state: dict = {"script": [], "llm_requests": []}
 
     def llm_handler(request: httpx.Request) -> httpx.Response:
         state["llm_requests"].append(json.loads(request.content))
@@ -117,17 +60,15 @@ async def env(hub_env, monkeypatch):
     app = create_app()
     async with app.router.lifespan_context(app):
         with respx.mock(assert_all_called=False) as mock:
-            mock.route(host="navidrome.test").mock(side_effect=nd_handler)
             mock.post(f"{LLM}/chat/completions").mock(side_effect=llm_handler)
             async with app_client(app) as client:
-                await grant_navidrome("admin")  # stage-4 transition: the ND proxy tests need ND credentials
                 info = await yandex_import()
                 await seed_local(info)
                 yield {"client": client, "state": state, "yandex": info}
 
 
 async def yandex_import() -> dict:
-    """A done Yandex import whose «Мне нравится» (newest first: Осень, Группа крови) starred ndA and ndB."""
+    """A done Yandex import whose «Мне нравится» (newest first: Осень, Группа крови) starred uA and uB."""
     from app.db import session_scope
     from app.matching.normalize import fingerprint
     from app.models import Import, ImportCollection, ImportItem, Track, User
@@ -140,7 +81,7 @@ async def yandex_import() -> dict:
             method="token",
             status="done",
             account="ivan",
-            options_json={"liked": ["ndA", "ndB"]},
+            options_json={"liked_uids": ["uA", "uB"]},
         )
         s.add(imp)
         await s.flush()
@@ -148,19 +89,18 @@ async def yandex_import() -> dict:
         s.add(likes)
         await s.flush()
         uids = {}
-        for pos, nd_id in enumerate(["ndB", "ndA"]):
-            artist, title = SONGS[nd_id]
+        for pos, tid in enumerate(["uB", "uA"]):
+            artist, title = SONGS[tid]
             t = Track(
-                uid=str(uuid.uuid4()),
+                uid=tid,
                 path=f"{artist}/{title}.mp3",
-                nd_song_id=nd_id,
                 artist=artist,
                 title=title,
                 fingerprint=fingerprint(artist, title),
             )
             s.add(t)
             await s.flush()
-            uids[nd_id] = t.uid
+            uids[tid] = t.uid
             s.add(
                 ImportItem(
                     import_id=imp.id,
@@ -173,12 +113,12 @@ async def yandex_import() -> dict:
                     track_id=t.id,
                 )
             )
-        imp.options_json = {"liked": ["ndA", "ndB"], "liked_uids": [uids["ndA"], uids["ndB"]]}
+        imp.options_json = {"liked_uids": [uids["uA"], uids["uB"]]}
         return {"import_id": imp.id, "likes_id": likes.id, "uids": uids}
 
 
 async def seed_local(info: dict) -> None:
-    """A Hub playlist «Тест» plus the user's own ♥ (ndA, ndB and ndC), newest last, as stage 5 keeps them."""
+    """A Hub playlist «Тест» plus the user's own ♥ (uA, uB and uC), newest last, as stage 5 keeps them."""
     from datetime import UTC, datetime, timedelta
 
     from app.api.schemas import FavoriteTarget
@@ -191,29 +131,28 @@ async def seed_local(info: dict) -> None:
     async with session_scope() as s:
         user = (await s.execute(select(User))).scalars().first()
         assert user is not None
-        artist, title = SONGS["ndC"]
-        ndc = Track(
-            uid=str(uuid.uuid4()),
+        artist, title = SONGS["uC"]
+        u_c = Track(
+            uid="uC",
             path=f"{artist}/{title}.mp3",
-            nd_song_id="ndC",
             artist=artist,
             title=title,
             fingerprint=fingerprint(artist, title),
         )
-        s.add(ndc)
+        s.add(u_c)
         await s.flush()
         pl = Playlist(uid="pl1", owner_id=user.id, name="Тест")
         s.add(pl)
         await s.flush()
-        await add_tracks(s, pl, [info["uids"]["ndA"], info["uids"]["ndB"]], added_by=user.id)
+        await add_tracks(s, pl, [info["uids"]["uA"], info["uids"]["uB"]], added_by=user.id)
         now = datetime.now(UTC)
-        for offset, nd_id in ((3, "ndB"), (2, "ndA"), (1, "ndC")):
+        for offset, tid in ((3, "uB"), (2, "uA"), (1, "uC")):
             await record(
                 s,
                 user.id,
-                FavoriteTarget(nd_song_id=nd_id),
+                FavoriteTarget(uid=tid),
                 True,
-                operation=f"seed-{nd_id}",
+                operation=f"seed-{tid}",
                 ts=now - timedelta(seconds=offset),
                 client="pwa",
             )
@@ -234,7 +173,7 @@ async def local_playlist(uid: str) -> dict:
         tracks = (
             {t.uid: t for t in (await s.execute(select(Track).where(Track.uid.in_(uids)))).scalars()} if uids else {}
         )
-        return {"name": pl.name, "songs": [tracks[u].nd_song_id for u in uids if u in tracks]}
+        return {"name": pl.name, "songs": [tracks[u].uid for u in uids if u in tracks]}
 
 
 async def local_stars() -> set[str]:
@@ -246,7 +185,7 @@ async def local_stars() -> set[str]:
         user = (await s.execute(select(User))).scalars().first()
         assert user is not None
         states = await snapshot(s, user.id)
-    return {x.nd_id for x in states.values() if x.liked and x.target_type == "track" and x.nd_id}
+    return {x.uid for x in states.values() if x.liked and x.target_type == "track" and x.uid}
 
 
 async def chat(env, text: str, *script: dict) -> dict:
@@ -482,8 +421,8 @@ async def test_moves_yandex_likes_into_a_playlist_without_asking(env):
     async with session_scope() as s:
         pl = (await s.execute(select(Playlist).where(Playlist.name == "Яндекс Музыка"))).scalar_one()
     new = await local_playlist(pl.uid)
-    assert new["songs"] == ["ndB", "ndA"]  # Yandex's order: the newest like first
-    assert await local_stars() == {"ndC"}  # the user's own ♥ stays
+    assert new["songs"] == ["uB", "uA"]  # Yandex's order: the newest like first
+    assert await local_stars() == {"uC"}  # the user's own ♥ stays
     assert out["done"] == ["Создан плейлист «Яндекс Музыка»: 2 трека", "♥ снято: 2 трека"]
     assert out["actions"] == [] and "task_id" not in out
     overview = tool_results(env)[0]
@@ -501,8 +440,8 @@ async def test_starred_songs_name_the_import_that_starred_them(env):
     assert res["cols"] == ["track_uid", "track", "album", "import_id"]
     uids = env["yandex"]["uids"]
     assert [r[:2] + r[3:] for r in res["rows"]] == [
-        [uids["ndA"], "Кино — Группа крови", env["yandex"]["import_id"]],
-        [uids["ndB"], "ДДТ — Осень", env["yandex"]["import_id"]],
+        [uids["uA"], "Кино — Группа крови", env["yandex"]["import_id"]],
+        [uids["uB"], "ДДТ — Осень", env["yandex"]["import_id"]],
     ]
 
 
@@ -512,13 +451,13 @@ async def test_removes_songs_from_a_playlist_and_renames_it(env):
         "убери Осень из Тест и назови его Рок",
         completion(
             calls=[
-                tool_call("remove_from_playlist", playlist_id="pl1", song_ids=["ndB"]),
+                tool_call("remove_from_playlist", playlist_id="pl1", song_ids=["uB"]),
                 tool_call("rename_playlist", playlist_id="pl1", name="Рок"),
             ]
         ),
         completion("Готово."),
     )
-    assert await local_playlist("pl1") == {"name": "Рок", "songs": ["ndA"]}
+    assert await local_playlist("pl1") == {"name": "Рок", "songs": ["uA"]}
     assert out["done"] == ["Из плейлиста «Тест» убрано 1 трек", "Плейлист «Тест» переименован в «Рок»"]
 
 
@@ -549,11 +488,11 @@ async def test_deleting_a_playlist_waits_for_confirmation(env):
 async def test_a_bad_song_set_is_an_error_for_the_model(env, args):
     out = await chat(env, "поставь ♥", completion(calls=[tool_call("star", **args)]), completion("Не вышло."))
     assert "error" in tool_results(env)[0]
-    assert out["done"] == [] and env["state"]["stars"] == ["ndA", "ndB", "ndC"]
+    assert out["done"] == [] and await local_stars() == {"uA", "uB", "uC"}
 
 
 async def test_changes_made_stay_listed_when_the_model_stops_answering(env):
-    env["state"]["script"] = [completion(calls=[tool_call("star", song_ids=["ndA"])])]  # then the server fails
+    env["state"]["script"] = [completion(calls=[tool_call("star", song_ids=["uA"])])]  # then the server fails
     r = await env["client"].post("/api/assistant/chat", json={"messages": [{"role": "user", "content": "♥"}]})
     assert r.status_code == 200, r.text
     assert r.json()["done"] == ["♥ поставлено: 1 трек"]
@@ -562,7 +501,7 @@ async def test_changes_made_stay_listed_when_the_model_stops_answering(env):
 async def test_chat_turns_are_saved_and_continue_the_same_chat(env):
     c = env["client"]
     first = await chat(
-        env, "поставь ♥ Группе крови", completion(calls=[tool_call("star", song_ids=["ndA"])]), completion("Поставил.")
+        env, "поставь ♥ Группе крови", completion(calls=[tool_call("star", song_ids=["uA"])]), completion("Поставил.")
     )
     chat_id = first["chat_id"]
     assert first["title"] == "поставь ♥ Группе крови"
@@ -620,4 +559,4 @@ async def test_saved_chat_remembers_screenshots_and_the_answer_to_a_proposal(env
     assert saved[1]["proposal"]["actions"] == [{"type": "delete_playlist", "playlist_id": "pl1", "name": "Тест"}]
     r = await c.post(f"/api/assistant/chat/{out['task_id']}/confirm", json={"confirm_token": out["confirm_token"]})
     assert r.status_code == 409, r.text  # a dismissed proposal can no longer delete anything
-    assert env["state"]["deleted"] == []
+    assert await local_playlist("pl1") != {}

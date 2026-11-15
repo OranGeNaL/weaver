@@ -258,7 +258,7 @@ def _calculate(snapshot, *, now, timezone, mode, experiment, version="v2", trace
     events = tuple(e for e in visible_events(snapshot, now, mode) if _event_subject(e))
     subjects = list(snapshot.subjects)
     for tr in snapshot.metadata:
-        keys = tuple(k for k in (f"ref:{tr.ref}" if tr.ref else None, f"lib:{tr.uid}" if tr.uid else None) if k)
+        keys = tuple(k for k in (f"ref:{tr.ref}" if tr.ref else None, f"uid:{tr.uid}" if tr.uid else None) if k)
         if keys:
             subjects.append(
                 Subject(
@@ -272,7 +272,7 @@ def _calculate(snapshot, *, now, timezone, mode, experiment, version="v2", trace
     # A verified pair on a playback event must also unify ref-only/uid-only favorite
     # decisions: the ledger helper intentionally consumes only like/unlike rows.
     pairs = {(e.ref, e.track_uid) for e in events if e.target_type == "track" and e.ref and e.track_uid}
-    subjects.extend(Subject("track", (f"ref:{ref}", f"lib:{uid}"), ref, uid) for ref, uid in sorted(pairs))
+    subjects.extend(Subject("track", (f"ref:{ref}", f"uid:{uid}"), ref, uid) for ref, uid in sorted(pairs))
     index = AliasIndex(cast("Iterable[Any]", events), subjects)
     state = fold(cast("Iterable[PlayEvent]", events), subjects, now)
     p = V2Profile(snapshot.user_id, now, timezone=timezone, favorite_states=state, limitations=snapshot.limitations)
@@ -299,12 +299,12 @@ def _calculate(snapshot, *, now, timezone, mode, experiment, version="v2", trace
                     data.setdefault(key, value)
 
     def get_track(ref=None, uid=None):
-        aliases = {k for k in (f"ref:{ref}" if ref else None, f"lib:{uid}" if uid else None) if k}
+        aliases = {k for k in (f"ref:{ref}" if ref else None, f"uid:{uid}" if uid else None) if k}
         if not aliases:
             return None
         root = index.root(("track", min(aliases)))
         all_aliases = aliases_by_key.get(root, aliases)
-        uids = sorted(a[4:] for a in all_aliases if a.startswith("lib:"))
+        uids = sorted(a[4:] for a in all_aliases if a.startswith("uid:"))
         refs = sorted(a[4:] for a in all_aliases if a.startswith("ref:"))
         pref_ref, pref_uid = preferred.get(root, (None, None))
         canonical_uid = pref_uid or (uids[0] if uids else uid)
@@ -533,7 +533,7 @@ def _calculate(snapshot, *, now, timezone, mode, experiment, version="v2", trace
                 p.disliked_artists.add(artist_key(name))
         elif t := get_track(e.ref, e.track_uid):
             p.explicit_negative_keys.add(t.key)
-            p.disliked_ids.update(k for k in (t.ref, f"lib:{t.uid}" if t.uid else None) if k)
+            p.disliked_ids.update(k for k in (t.ref, f"uid:{t.uid}" if t.uid else None) if k)
             t.negative += 5 * weight(e.ts)
             if trace is not None:
                 w = weight(e.ts)
@@ -568,7 +568,7 @@ def _calculate(snapshot, *, now, timezone, mode, experiment, version="v2", trace
             if not t:
                 continue
             p.explicit_negative_keys.add(t.key)
-            p.disliked_ids.update(k for k in (t.ref, f"lib:{t.uid}" if t.uid else None) if k)
+            p.disliked_ids.update(k for k in (t.ref, f"uid:{t.uid}" if t.uid else None) if k)
             t.negative += 5 * weight(utc(d.at) if d.at else now)
             if trace is not None:
                 at = utc(d.at) if d.at else now
