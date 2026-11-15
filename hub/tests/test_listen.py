@@ -1,21 +1,38 @@
 """Listening before downloading: GET /api/listen picks the file a download would pick and streams it with Range."""
 
-# The fakes below replace the Hub's services (`svc.deezer`, the engine pool) with test doubles on purpose: this
-# module is not part of the project's type-checking scope (`hub/pyrightconfig.json` includes only `app`).
-# pyright: reportAttributeAccessIssue=false, reportOptionalMemberAccess=false
+# The fakes below replace the Hub's services (`svc.deezer`, the engine pool) with test doubles on purpose. The pool
+# is narrowed to its real driver class and the doubles are cast where they stand in for a service, so the module
+# stays inside the project's type-checking scope (`hub/pyrightconfig.json` includes `app` and `tests`).
 
 from __future__ import annotations
 
 import asyncio
 from datetime import date
+from typing import Any, cast
 
 import httpx
 import pytest
 import respx
+from sqlalchemy.pool import QueuePool
 
 from tests.support import FakeDeezer, FakeProvider, app_client, cand
 
 AUDIO = bytes(range(256)) * 1024  # 256 KiB standing in for an MP3
+
+
+def set_deezer(fake: FakeDeezer) -> None:
+    """Install the catalog double: a fake where the service contract is expected."""
+    from app.services import svc
+
+    svc.deezer = cast(Any, fake)
+
+
+def deezer() -> FakeDeezer:
+    """The catalog double the app under test uses."""
+    from app.services import svc
+
+    assert isinstance(svc.deezer, FakeDeezer)
+    return svc.deezer
 
 
 async def test_reset_waits_for_cancelled_resolution_cleanup(monkeypatch):
@@ -99,7 +116,7 @@ async def env(hub_env):
             hm = FakeProvider("hitmoz", [], client=upstream)
             fm = FakeProvider("hitmos_fm", [], client=upstream)
             svc.providers = {"hitmoz": hm, "hitmos_fm": fm}
-            svc.deezer = FakeDeezer()
+            set_deezer(FakeDeezer())
             config.get_settings().cfg.sources.ru = ["hitmoz", "hitmos_fm"]
             async with app_client(app) as client:
                 yield {"client": client, "hm": hm, "fm": fm, "mock": mock, "music": music, "app": app}
@@ -160,7 +177,7 @@ async def test_slow_listen_releases_auth_connection_before_resolving_and_allows_
         await asyncio.wait_for(entered.wait(), 1)
         # Fifteen such requests used to consume the entire pool while their own resolvers
         # needed another connection, blocking star/starred and authentication as well.
-        assert engine().pool.checkedout() == 0
+        assert cast(QueuePool, engine().pool).checkedout() == 0
         response = await env["client"].post("/api/star", json={"uids": ["qa-song"]})
         assert response.status_code == 200, response.text
     finally:
@@ -317,7 +334,7 @@ async def test_prefetch_picks_and_opens_tracks_on_screen(env):
         await asyncio.sleep(0.01)
     hit = listen._choices["dz:100"]
     # the background pick has opened its file already: the dead one gave way to the next
-    assert hit.candidate.provider_id == "2" and hit.source is not None
+    assert hit.candidate is not None and hit.candidate.provider_id == "2" and hit.source is not None
     # what is ready (or recently not found) is not queued again
     assert (await c.post("/api/listen/prefetch", json={"refs": ["dz:100", "bad"]})).json()["queued"] == 0
 
@@ -330,10 +347,10 @@ async def test_prefetch_picks_and_opens_tracks_on_screen(env):
 
 async def test_censored_copy_is_not_downloaded_and_is_picked_again(env):
     from app import listen
-    from app.services import svc
 
     c, hm = env["client"], env["hm"]
-    svc.deezer.track = svc.deezer.track.model_copy(update={"explicit": True})
+    fake = deezer()
+    fake.track = fake.track.model_copy(update={"explicit": True})
     hm.cands = [cand("1", "https://cdn.test/good.mp3"), cand("3", "https://cdn.test/good.mp3", bitrate=256)]
     hm.explicit = {"1": False, "3": True}  # only the track pages tell: "1" is the clean copy
     url = (await c.get("/api/listen", params={"ref": "dz:100"})).json()["stream_url"]
@@ -361,7 +378,9 @@ async def test_expired_link_is_renewed(env):
 
     from app.listen import _choices, _copies
 
-    assert _choices["dz:100"].source.url == "https://signed.test/a.mp3?exp=1"  # later requests skip the redirect
+    chosen = _choices["dz:100"]
+    assert chosen.source is not None
+    assert chosen.source.url == "https://signed.test/a.mp3?exp=1"  # later requests skip the redirect
     exp["n"] = 2
     _copies.clear()  # the server copy was pruned: the file comes from the source again
     r = await c.get(url, headers={"Range": "bytes=10-19"})
@@ -457,9 +476,8 @@ async def test_deezer_preview_when_no_source_has_it(env):
     assert r.json()["kind"] == "preview" and r.json()["duration_s"] == 30 and r.json()["provider"] is None
     r = await c.get(r.json()["stream_url"], headers={"Range": "bytes=0-"})
     assert r.status_code == 206 and r.content == AUDIO
-    from app.services import svc
 
-    assert svc.deezer.previews >= 1  # a fresh signed link, not the cached catalog one
+    assert deezer().previews >= 1  # a fresh signed link, not the cached catalog one
 
 
 async def test_full_song_request_never_plays_a_preview(env):
@@ -603,9 +621,8 @@ async def test_preview_picked_while_a_source_is_down_is_not_remembered(env):
     assert (await c.get("/api/listen", params={"ref": "dz:100"})).json()["kind"] == "full"
 
     # no preview either: an error, not "not found"
-    from app.services import svc
 
-    svc.deezer = FakeDeezer(preview=None)
+    set_deezer(FakeDeezer(preview=None))
     hm.down = fm.down = True
     await listen.forget("dz:100")
     await listen.reset()
@@ -614,9 +631,8 @@ async def test_preview_picked_while_a_source_is_down_is_not_remembered(env):
 
 
 async def test_nothing_to_play(env):
-    from app.services import svc
 
-    svc.deezer = FakeDeezer(preview=None)
+    set_deezer(FakeDeezer(preview=None))
     c = env["client"]
     r = await c.get("/api/listen", params={"ref": "dz:100"})
     assert r.status_code == 404 and "ни в одном источнике" in r.json()["detail"]
@@ -649,7 +665,7 @@ async def test_owned_track_plays_the_library_file(env, monkeypatch):
             )
         )
     c = env["client"]
-    album_lookup = AsyncMock(return_value=svc.deezer.album)
+    album_lookup = AsyncMock(return_value=deezer().album)
     monkeypatch.setattr(svc.deezer, "get_album", album_lookup)
     r = await c.get("/api/listen", params={"ref": "dz:100"})
     assert r.status_code == 200, r.text

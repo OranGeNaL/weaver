@@ -27,6 +27,7 @@
 
 - [x] 5.1 Снять `# pyright: reportOptionalMemberAccess=false, reportAttributeAccessIssue=false, reportArgumentType=false` в `tests/test_mixes.py`, добиться локального нуля.
 - [x] 5.2 Снять ту же директиву в `tests/test_insights.py`; проверить, что `include: ["app"]` пока не сломан.
+- [x] 5.3 Снять файловую директиву `reportAttributeAccessIssue`/`reportOptionalMemberAccess` в `tests/test_listen.py` (14 скрытых ошибок): сузить пул до `QueuePool`, заменить `svc.deezer` на типизированные `set_deezer()`/`deezer()`, добавить `assert ... is not None`; ложный комментарий «pyrightconfig includes only app» исправлен. Найдено советом валидации (`council-validate`) как P1.
 
 ## 6. Гейт
 
