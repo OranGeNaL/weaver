@@ -219,7 +219,11 @@ class Album(Base):
     """Album as the Hub manages it. `uid` is written into files as HOMEMUSIC_ALBUM_ID."""
 
     __tablename__ = "albums"
-    __table_args__ = (Index("ix_albums_artist_id", "artist_id"),)
+    __table_args__ = (
+        # nullable: NULL passes a CHECK; a set value is one of app.library.tagger.ReleaseType
+        CheckConstraint("release_type IN ('album','single','ep','compilation')", name="ck_albums_release_type"),
+        Index("ix_albums_artist_id", "artist_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     uid: Mapped[str] = mapped_column(String(36), unique=True)
@@ -474,6 +478,13 @@ class Import(Base):
     """Moving a user's collection over from a music service (Yandex Music now; Spotify, YouTube Music later)."""
 
     __tablename__ = "imports"
+    # the sets of app.api.schemas (ImportSource, ImportMethod, ImportMode): the casts of the row into a Literal are
+    # checked by Postgres, not by convention
+    __table_args__ = (
+        CheckConstraint("source IN ('yandex','spotify')", name="ck_imports_source"),
+        CheckConstraint("method IN ('device','token','profile','file')", name="ck_imports_method"),
+        CheckConstraint("mode IN ('economy','full')", name="ck_imports_mode"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
@@ -498,6 +509,12 @@ class ImportCollection(Base):
     """«Мне нравится», a playlist, liked albums / artists, dislikes of an import."""
 
     __tablename__ = "import_collections"
+    # app.api.schemas.CollectionKind
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('likes','playlist','albums','artists','dislikes')", name="ck_import_collections_kind"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     import_id: Mapped[int] = mapped_column(ForeignKey("imports.id", ondelete="CASCADE"), index=True)
@@ -625,6 +642,8 @@ class MixSettings(Base):
     """A user's «Микс дня» settings (MIXES.md 6): mode, the hour of the build, the playlist, onboarding artists."""
 
     __tablename__ = "mix_settings"
+    # app.api.schemas.MixMode
+    __table_args__ = (CheckConstraint("mode IN ('normal','favorites','discover')", name="ck_mix_settings_mode"),)
 
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     mode: Mapped[str] = mapped_column(String(16), default="normal")  # normal/favorites/discover
@@ -640,6 +659,8 @@ class Mix(Base):
     """One «Микс дня» of a user: lives until the next one (MIXES.md 6)."""
 
     __tablename__ = "mixes"
+    # app.api.schemas.MixMode
+    __table_args__ = (CheckConstraint("mode IN ('normal','favorites','discover')", name="ck_mixes_mode"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
@@ -682,7 +703,11 @@ class WaveSession(Base):
     the pool of candidates, what was handed out and played, the session's skips and likes (`app.mixes.wave`)."""
 
     __tablename__ = "wave_sessions"
-    __table_args__ = (Index("ix_wave_sessions_user_created", "user_id", "created_at"),)
+    # its `mode` is a mix's (app.api.schemas.MixMode)
+    __table_args__ = (
+        CheckConstraint("mode IN ('normal','favorites','discover')", name="ck_wave_sessions_mode"),
+        Index("ix_wave_sessions_user_created", "user_id", "created_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
