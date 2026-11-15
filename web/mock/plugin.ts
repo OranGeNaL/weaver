@@ -1031,7 +1031,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
       for (const key of ['typed', 'failNext', 'holdPending'] as const) if (typeof b[key] === 'boolean') favoriteControls[key] = b[key];
       if (b.reset) { favoriteSubjects.clear(); favoriteCommands.length = 0; favoriteEventIds.clear(); starRefs.clear(); }
       for (const s of (b.subjects as FavoriteSubject[] | undefined) ?? []) favoriteSubjects.set(s.key, s);
-      for (const id of (b.stale_song_ids as string[] | undefined) ?? []) starred.add(id);
+      for (const id of (b.stale_track_uids as string[] | undefined) ?? []) starred.add(id);
       if (b.fail_ref) {
         const ref = String(b.fail_ref);
         starRefs.delete(ref);

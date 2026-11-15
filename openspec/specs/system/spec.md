@@ -11,11 +11,11 @@ Hub SHALL сообщать в `/healthz.capabilities` возможность `hu
 #### Scenario: Новый клиент
 - **WHEN** клиент видит `hub_liked_v1`
 - **THEN** он MAY использовать `track_uids` и `/api/library/liked`
-- **AND** старый клиент продолжает использовать `song_ids`
+- **AND** отсутствие `track_uids` не ломает старый клиент
 
 #### Scenario: Старый клиент
 - **WHEN** клиент не знает `hub_liked_v1`
-- **THEN** он работает с прежними полями `/api/starred`
+- **THEN** он работает с полями `/api/starred`: `refs` и `subjects`
 
 ### Requirement: Capability каталога Hub
 
@@ -72,7 +72,7 @@ Hub SHALL отдавать `GET /api/events` как `text/event-stream` с им�
 #### Scenario: Изменение библиотеки
 - **WHEN** библиотека изменена, импортирована или у трека снят ♥
 - **THEN** Hub публикует `library` с типом изменения
-- **AND** идентификаторы (`album_id`, `track_id`, `song_ids`) передаются только там, где они есть у публикатора; `starred`/`unstarred` могут быть без `song_ids`
+- **AND** идентификаторы (`album_id`, `track_id`, `track_uids`) передаются только там, где они есть у публикатора; `starred`/`unstarred` могут быть без `track_uids`
 
 #### Scenario: Медленный клиент
 - **WHEN** очередь SSE заполнена

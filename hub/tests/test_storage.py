@@ -373,7 +373,7 @@ async def test_s3_end_to_end_import_listen_cover_and_export(hub_env, db_url, mon
             export.cleanup(out)
 
 
-async def test_album_metadata_edit_keeps_paths_and_nd_ids(hub_env, db_url):
+async def test_album_metadata_edit_keeps_paths_and_uid(hub_env, db_url):
     from app.models import Album
 
     db.init_engine(db_url)

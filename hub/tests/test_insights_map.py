@@ -18,11 +18,11 @@ BASE = "http://embedder.test"
 SPACE = {"model": "fake", "space_id": "snap", "dim": 2}
 DIAGNOSTICS = {"available": 3, "zero_residual": [], "invalid": []}
 FACETS = [
-    {"id": "fa", "weight": 0.6, "members": ["lib:ndK"], "center": [1, 0]},
-    {"id": "fb", "weight": 0.4, "members": ["lib:ndM"], "center": [0, 1]},
+    {"id": "fa", "weight": 0.6, "members": ["lib:uK"], "center": [1, 0]},
+    {"id": "fb", "weight": 0.4, "members": ["lib:uM"], "center": [0, 1]},
 ]
-COS = {"lib:ndK": [0.9, 0.1], "lib:ndM": [0.1, 0.8], "dz:300": [-0.2, -0.1]}
-XY = {"lib:ndK": [1.0, 0.5], "lib:ndM": [-1.0, 0.25], "dz:300": [0.0, -1.0]}
+COS = {"lib:uK": [0.9, 0.1], "lib:uM": [0.1, 0.8], "dz:300": [-0.2, -0.1]}
+XY = {"lib:uK": [1.0, 0.5], "lib:uM": [-1.0, 0.25], "dz:300": [0.0, -1.0]}
 
 
 def profile_body(space_id="snap"):
@@ -81,13 +81,13 @@ async def test_map_layers_layout_and_missing(hub, embedder_up):  # noqa: F811
     ]
     assert (body["facets"][0]["fx"], body["facets"][0]["fy"]) == pytest.approx((0, 1))
     points = {x["key"]: x for x in body["points"]}
-    assert set(points) == {"lib:ndK", "lib:ndM", "dz:300"}
-    k = points["lib:ndK"]
+    assert set(points) == {"lib:uK", "lib:uM", "dz:300"}
+    k = points["lib:uK"]
     assert k["layers"] == ["profile", "mix"] and (k["x"], k["y"]) == (1.0, 0.5)
     assert k["facet_id"] == "fa" and k["facet_cos"] == [0.9, 0.1] and k["liked"] and k["s"] > 0
     assert k["mix_position"] == 0 and k["generator"] == "ytm_radio" and k["outcome"] == "liked"
     assert k["fy"] > 0 and abs(k["fx"]) < k["fy"]  # pulled to the 12 o'clock anchor
-    m = points["lib:ndM"]
+    m = points["lib:uM"]
     assert m["layers"] == ["profile", "wave"] and m["wave_position"] == 0 and m["facet_id"] == "fb"
     a = points["dz:300"]  # a catalog track skipped early: negative, in the mix and the wave, far from both facets
     assert a["layers"] == ["profile", "mix", "wave"] and a["facet_cos"] == [-0.2, -0.1]
@@ -104,7 +104,7 @@ async def test_map_personal_basis_fits_on_the_profile_and_picks_the_requested_li
     body = r.json()
     assert body["available"] and body["basis"] == "user"
     sent = json.loads(embedder_up.project.calls.last.request.content)
-    assert sent["basis"] == "keys" and "lib:ndK" in sent["fit_keys"]
+    assert sent["basis"] == "keys" and "lib:uK" in sent["fit_keys"]
 
 
 async def test_map_limit_truncates_the_profile_layer(hub, embedder_up):  # noqa: F811
@@ -164,12 +164,12 @@ async def test_map_unknown_lists_users_and_non_admins(hub, embedder_up):  # noqa
 async def test_track_breakdown_gets_facet_cos_from_the_projection(hub, embedder_up):  # noqa: F811
     await listeners(hub["ids"])
     u = hub["ids"]["anna"]
-    r = await hub["admin"].get(f"/api/admin/users/{u}/taste/track", params={"key": "lib:ndK"})
+    r = await hub["admin"].get(f"/api/admin/users/{u}/taste/track", params={"key": "lib:uK"})
     assert r.status_code == 200, r.text
     assert r.json()["facet_cos"] == {"fa": 0.9, "fb": 0.1}
-    assert json.loads(embedder_up.project.calls.last.request.content)["keys"] == ["lib:ndK"]
+    assert json.loads(embedder_up.project.calls.last.request.content)["keys"] == ["lib:uK"]
     embedder_up.project.mock(return_value=httpx.Response(404))
-    r = await hub["admin"].get(f"/api/admin/users/{u}/taste/track", params={"key": "lib:ndK"})
+    r = await hub["admin"].get(f"/api/admin/users/{u}/taste/track", params={"key": "lib:uK"})
     assert r.status_code == 200 and r.json()["facet_cos"] is None
 
 
@@ -204,18 +204,16 @@ def geometry():
 
 async def test_client_sends_the_space_facets_and_basis(client, respx_mock):
     route = respx_mock.post(f"{BASE}/v2/project").mock(side_effect=project_reply)
-    out = await client.project_v2(["lib:ndK", "dz:lost", "lib:ndK"], geometry(), basis="keys", fit_keys=["lib:ndM"])
+    out = await client.project_v2(["lib:uK", "dz:lost", "lib:uK"], geometry(), basis="keys", fit_keys=["lib:uM"])
     sent = json.loads(route.calls.last.request.content)
     assert sent == {
         "space_id": "snap",
-        "keys": ["lib:ndK", "dz:lost"],
+        "keys": ["lib:uK", "dz:lost"],
         "basis": "keys",
-        "fit_keys": ["lib:ndM"],
+        "fit_keys": ["lib:uM"],
         "facets": [{"id": "fa", "center": [1, 0]}, {"id": "fb", "center": [0, 1]}],
     }
-    assert (
-        out.points == {"lib:ndK": [1.0, 0.5]} and out.missing == ["dz:lost"] and out.facet_cos["lib:ndK"] == [0.9, 0.1]
-    )
+    assert out.points == {"lib:uK": [1.0, 0.5]} and out.missing == ["dz:lost"] and out.facet_cos["lib:uK"] == [0.9, 0.1]
 
 
 @pytest.mark.parametrize(
@@ -231,7 +229,7 @@ async def test_client_sends_the_space_facets_and_basis(client, respx_mock):
 async def test_client_failures_map_to_down_or_expired(client, respx_mock, response, error):
     respx_mock.post(f"{BASE}/v2/project").mock(return_value=response)
     with pytest.raises(error):
-        await client.project_v2(["lib:ndK"], geometry())
+        await client.project_v2(["lib:uK"], geometry())
 
 
 async def test_client_rejects_a_response_that_does_not_cover_the_request(client, respx_mock):
@@ -242,6 +240,6 @@ async def test_client_rejects_a_response_that_does_not_cover_the_request(client,
 
     respx_mock.post(f"{BASE}/v2/project").mock(side_effect=partial)
     with pytest.raises(embedder.EmbedderDown):
-        await client.project_v2(["lib:ndK"], geometry())
+        await client.project_v2(["lib:uK"], geometry())
     with pytest.raises(embedder.EmbedderDown):
         await client.project_v2([f"k{i}" for i in range(5001)], geometry())

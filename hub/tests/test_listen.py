@@ -161,7 +161,7 @@ async def test_slow_listen_releases_auth_connection_before_resolving_and_allows_
         # Fifteen such requests used to consume the entire pool while their own resolvers
         # needed another connection, blocking star/starred and authentication as well.
         assert engine().pool.checkedout() == 0
-        response = await env["client"].post("/api/star", json={"song_ids": ["qa-song"]})
+        response = await env["client"].post("/api/star", json={"uids": ["qa-song"]})
         assert response.status_code == 200, response.text
     finally:
         release.set()
@@ -692,7 +692,7 @@ async def test_library_song_of_a_mix_plays_its_file(env):
 
 
 async def test_library_track_is_addressed_by_uid(env):
-    """`ref=lib:<uid>` plays the library file; the legacy `lib:<int>` is resolved until stage 7."""
+    """`ref=lib:<uid>` plays the library file; an `lib:<int>` ref answers `404`."""
     from sqlalchemy import select
 
     from app.db import session_scope

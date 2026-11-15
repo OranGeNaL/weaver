@@ -634,7 +634,6 @@ web/src/
 
 Через `window.HomeMusicAndroid`:
 
-- `play(songIdsJson, index)`;
 - `playQueue(itemsJson, index)`;
 - `playWave(waveJson)`;
 - `pauseNative()`;

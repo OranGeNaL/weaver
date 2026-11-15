@@ -1,7 +1,7 @@
 """Admin insights (INSIGHTS.md 7): weight breakdowns, launches, period statistics and the read-only admin API.
 
 All data is synthetic, with an explicit `NOW` (naive UTC) and the Hub's timezone (Europe/Moscow, UTC+3). The library
-has «Кино — Группа крови» (dz:100 / ndK, 245 s) and «Би-2 — Полковнику» (dz:200 / ndM, 200 s); «Ария — Беспечный
+has «Кино — Группа крови» (dz:100 / uK, 245 s) and «Би-2 — Полковнику» (dz:200 / uM, 200 s); «Ария — Беспечный
 ангел» (dz:300) is a catalog track only.
 """
 
@@ -116,13 +116,13 @@ async def hub(hub_env, db_url: str, tmp_path, monkeypatch):
             await s.flush()
             ids[name] = u.id
             tokens[name] = issue_access(u)
-        for artist, title, nd, dz, dur in (
-            ("Кино", "Группа крови", "ndK", "100", 245),
-            ("Би-2", "Полковнику", "ndM", "200", 200),
+        for artist, title, song_uid, dz, dur in (
+            ("Кино", "Группа крови", "uK", "100", 245),
+            ("Би-2", "Полковнику", "uM", "200", 200),
         ):
             s.add(
                 Track(
-                    uid=nd,
+                    uid=song_uid,
                     path=f"{artist}/{title}.mp3",
                     artist=artist,
                     title=title,
@@ -144,7 +144,7 @@ async def hub(hub_env, db_url: str, tmp_path, monkeypatch):
     await dispose()
 
 
-def pe(uid, kind, at, ref=None, nd=None, **kw):
+def pe(uid, kind, at, ref=None, track_uid=None, **kw):
     from app.models import PlayEvent
 
     return PlayEvent(
@@ -153,7 +153,7 @@ def pe(uid, kind, at, ref=None, nd=None, **kw):
         ts=at,
         kind=kind,
         ref=ref,
-        track_uid=nd,
+        track_uid=track_uid,
         client=kw.pop("client", "app/1.12.0"),
         received_at=kw.pop("received_at", at),
         **kw,
@@ -161,20 +161,30 @@ def pe(uid, kind, at, ref=None, nd=None, **kw):
 
 
 def attempt(
-    uid, at, ref=None, nd=None, *, end="finish", heard_ms=40_000, position=None, duration=245, device="dev1", **kw
+    uid,
+    at,
+    ref=None,
+    track_uid=None,
+    *,
+    end="finish",
+    heard_ms=40_000,
+    position=None,
+    duration=245,
+    device="dev1",
+    **kw,
 ):
     """One measured attempt: start, a checkpoint, then `end` (finish/skip) — all with one playback id."""
     pb = uuid.uuid4().hex
     common = {"playback_id": pb, "device_id": device, "duration_s": duration, **kw}
     return [
-        pe(uid, "start", at, ref, nd, listened_ms=0, **common),
-        pe(uid, "progress", at + timedelta(seconds=heard_ms / 1000), ref, nd, listened_ms=heard_ms, **common),
+        pe(uid, "start", at, ref, track_uid, listened_ms=0, **common),
+        pe(uid, "progress", at + timedelta(seconds=heard_ms / 1000), ref, track_uid, listened_ms=heard_ms, **common),
         pe(
             uid,
             end,
             at + timedelta(seconds=heard_ms / 1000 + 1),
             ref,
-            nd,
+            track_uid,
             listened_ms=heard_ms,
             position_s=position if position is not None else (duration if end == "finish" else heard_ms / 1000),
             **common,
@@ -200,7 +210,7 @@ def mix_row(uid, mix_id, created, *, closed=None, old=False, playlist="pl1"):
         "mode": "normal",
         "taste_model": "v2",
         "seeds": ["Кино — Группа крови"],
-        "seed_keys": ["lib:ndK"],
+        "seed_keys": ["lib:uK"],
         "generators": {
             "ytm_radio": {"tracks": 40, "used": 2, "seconds": 1.2},
             "lastfm_similar": {"tracks": 0, "used": 0, "seconds": 0, "off": True},
@@ -209,7 +219,7 @@ def mix_row(uid, mix_id, created, *, closed=None, old=False, playlist="pl1"):
         "kept": 50,
         "familiar": 1,
         "maturity": 0.4,
-        "facets": [{"id": "f0", "weight": 1.0, "artists": ["Кино"], "members": ["lib:ndK"]}],
+        "facets": [{"id": "f0", "weight": 1.0, "artists": ["Кино"], "members": ["lib:uK"]}],
         "embedder": {"space_id": "sp", "model": "m"},
         "build_seconds": 3.1,
     }
@@ -234,7 +244,6 @@ def mix_item(
     position,
     *,
     ref=None,
-    nd=None,
     state="active",
     generator="ytm_radio",
     familiar=False,
@@ -291,12 +300,12 @@ def wave_row(uid, sid, created, *, origin=None, seed=None, request=None, cleared
     )
 
 
-def wave_item(uid, sid, position, *, ref, nd=None, generator="favorites", artist="Би-2", title="Полковнику"):
+def wave_item(user, sid, position, *, ref, generator="favorites", artist="Би-2", title="Полковнику"):
     from app.models import WaveItem
 
     return WaveItem(
         session_id=sid,
-        user_id=uid,
+        user_id=user,
         first_handed_at=NOW - timedelta(days=1),
         last_handed_at=NOW - timedelta(days=1),
         position=position,
@@ -316,13 +325,13 @@ async def listeners(ids) -> None:
     mix_at = NOW - timedelta(days=2)
     await add(
         mix_row(m, 1, mix_at),
-        mix_item(1, 0, ref="dz:100", nd="ndK"),
+        mix_item(1, 0, ref="dz:100"),
         mix_item(1, 1, ref="dz:300", artist="Ария", title="Беспечный ангел", generator="lastfm_similar"),
-        mix_item(1, 50, ref="dz:200", nd="ndM", state="reserve"),
+        mix_item(1, 50, ref="dz:200", state="reserve"),
     )
     played = mix_at + timedelta(hours=2)
     await add(
-        attempt(m, played, "dz:100", "ndK", context="mix:1", launch_id="L1", launch_origin="mix_page"),
+        attempt(m, played, "dz:100", "uK", context="mix:1", launch_id="L1", launch_origin="mix_page"),
         attempt(
             m,
             played + timedelta(minutes=5),
@@ -333,7 +342,7 @@ async def listeners(ids) -> None:
             launch_id="L1",
             launch_origin="mix_page",
         ),
-        pe(m, "like", played + timedelta(minutes=2), "dz:100", "ndK", context="mix:1"),
+        pe(m, "like", played + timedelta(minutes=2), "dz:100", "uK", context="mix:1"),
     )
     w_at = NOW - timedelta(days=1)
     await add(
@@ -348,7 +357,7 @@ async def listeners(ids) -> None:
         ),
     )
     await add(
-        wave_item(m, "w1", 0, ref="dz:200", nd="ndM"),
+        wave_item(m, "w1", 0, ref="dz:200"),
         wave_item(m, "w1", 1, ref="dz:300", generator="ytm_radio", artist="Ария", title="Беспечный ангел"),
     )
     await add(
@@ -356,13 +365,13 @@ async def listeners(ids) -> None:
             m,
             w_at + timedelta(minutes=1),
             "dz:200",
-            "ndM",
+            "uM",
             duration=200,
             context="wave:w1",
             launch_id="wave:w1",
             launch_origin="wave",
         ),
-        attempt(m, w_at - timedelta(days=3), "dz:100", "ndK", context="wave:gone"),
+        attempt(m, w_at - timedelta(days=3), "dz:100", "uK", context="wave:gone"),
     )
 
 
@@ -433,15 +442,15 @@ async def test_playlists_are_attributed_to_the_mix_in_effect(hub):
     await add(
         mix_row(m, 1, NOW - timedelta(days=3), closed=NOW - timedelta(days=2)),
         mix_row(m, 2, NOW - timedelta(days=2)),
-        mix_item(2, 0, ref="dz:100", nd="ndK"),
-        mix_item(2, 1, ref="dz:200", nd="ndM"),
+        mix_item(2, 0, ref="dz:100"),
+        mix_item(2, 1, ref="dz:200"),
     )
     at = NOW - timedelta(hours=5)
     await add(
-        attempt(m, at, "dz:100", "ndK", context="playlist:pl1", launch_id="P1"),
+        attempt(m, at, "dz:100", "uK", context="playlist:pl1", launch_id="P1"),
         # the app's old `playlist` without an id: 2 of 3 tracks (67 %) are the mix's
-        attempt(m, at + timedelta(hours=1), "dz:100", "ndK", context="playlist", device="dev2"),
-        attempt(m, at + timedelta(hours=1, minutes=5), "dz:200", "ndM", context="playlist", device="dev2"),
+        attempt(m, at + timedelta(hours=1), "dz:100", "uK", context="playlist", device="dev2"),
+        attempt(m, at + timedelta(hours=1, minutes=5), "dz:200", "uM", context="playlist", device="dev2"),
         attempt(m, at + timedelta(hours=1, minutes=9), "dz:777", context="playlist", device="dev2"),
         # an unrelated playlist
         attempt(m, at + timedelta(hours=3), "dz:777", context="playlist", device="dev3"),
@@ -464,14 +473,12 @@ async def test_counted_listens_match_the_summary_and_hours_are_local(hub):
     # 21:30 UTC on March 13 is 00:30 on Saturday March 14 in Moscow
     late = datetime(2026, 3, 13, 21, 30, tzinfo=UTC)
     await add(
-        attempt(m, late, "dz:100", "ndK", context="album"),
+        attempt(m, late, "dz:100", "uK", context="album"),
         attempt(m, late + timedelta(minutes=5), "dz:300", end="skip", heard_ms=12_000, context="album"),
-        attempt(m, datetime(2026, 3, 1, 9, tzinfo=UTC), "dz:200", "ndM", context="search", duration=200),
-        pe(
-            m, "finish", datetime(2026, 3, 14, 8, tzinfo=UTC), None, "ndM", client="pwa", scrobble=True, origin="client"
-        ),
+        attempt(m, datetime(2026, 3, 1, 9, tzinfo=UTC), "dz:200", "uM", context="search", duration=200),
+        pe(m, "finish", datetime(2026, 3, 14, 8, tzinfo=UTC), None, "uM", client="pwa", scrobble=True, origin="client"),
         pe(m, "finish", datetime(2026, 3, 14, 9, tzinfo=UTC), "dz:300", client="app/1.0.0", position_s=200),  # legacy
-        attempt(m, datetime(2026, 2, 1, 9, tzinfo=UTC), "dz:100", "ndK", context="album"),
+        attempt(m, datetime(2026, 2, 1, 9, tzinfo=UTC), "dz:100", "uK", context="album"),
     )  # before the period
     start, end = date(2026, 3, 1), date(2026, 3, 15)
     async with session_scope() as s:
@@ -485,8 +492,8 @@ async def test_counted_listens_match_the_summary_and_hours_are_local(hub):
     assert got["totals"]["heard_events"] == 4  # two finishes, the scrobble, the legacy finish
     by_day = {d["date"]: d for d in got["by_day"]}
     assert by_day["2026-03-14"]["heard"] == 3 and by_day["2026-03-14"]["by_source"]["scrobble"] == 1
-    # ndK was heard in February already: only ndM (and the legacy dz:300) are new
-    assert {d["key"] for d in got["discoveries"]} == {"lib:ndM", "dz:300"}
+    # uK was heard in February already: only uM (and the legacy dz:300) are new
+    assert {d["key"] for d in got["discoveries"]} == {"lib:uM", "dz:300"}
     assert got["totals"]["new_artists"] == 1  # Би-2; dz:300 has no local name (no network): «Неизвестный трек»
     assert next(d for d in got["discoveries"] if d["key"] == "dz:300")["title"] == "Неизвестный трек"
 
@@ -530,7 +537,7 @@ PATHS = [
     "/api/admin/users/{u}/listening",
     "/api/admin/users/{u}/taste",
     "/api/admin/users/{u}/taste/tracks",
-    "/api/admin/users/{u}/taste/track?key=lib:ndK",
+    "/api/admin/users/{u}/taste/track?key=lib:uK",
     "/api/admin/taste/matrix",
     "/api/admin/users/{u}/mixes",
     "/api/admin/mixes/1",
@@ -612,13 +619,13 @@ async def test_taste_endpoints_explain_each_weight(hub):
     r = await hub["admin"].get(f"/api/admin/users/{u}/taste/tracks", params={"filter": "liked"})
     rows = r.json()["rows"]
     assert [(x["key"], x["artist"], x["title"], x["owned"], x["liked"]) for x in rows] == [
-        ("lib:ndK", "Кино", "Группа крови", True, True)
+        ("lib:uK", "Кино", "Группа крови", True, True)
     ]
     r = await hub["admin"].get(f"/api/admin/users/{u}/taste/tracks", params={"sort": "title", "q": "АНГЕЛ"})
     assert [x["title"] for x in r.json()["rows"]] == ["Беспечный ангел"]
     r = await hub["admin"].get(f"/api/admin/users/{u}/taste/track", params={"key": "dz:100"})  # an alias
     track = r.json()
-    assert track["key"] == "lib:ndK" and track["formula"].startswith("s = sat(P) − N")
+    assert track["key"] == "lib:uK" and track["formula"].startswith("s = sat(P) − N")
     p = sum(c["value"] for c in track["contributions"] if c["side"] == "P")
     assert p == pytest.approx(track["p"]) and track["s"] == pytest.approx(saturation(p) - track["n"])
     assert [c["kind"] for c in track["contributions"]][:2] == ["like", "finish"] or {
@@ -635,7 +642,7 @@ async def test_matrix_joins_verified_aliases_only_and_leaves_out_the_qa_user(hub
     # anna knows the song only by the catalog ref, boris by a verified pair (an event with both ids)
     await add(
         attempt(ids["anna"], at, "dz:500", context="search"),
-        attempt(ids["boris"], at, "dz:500", "ndQ", context="search"),
+        attempt(ids["boris"], at, "dz:500", "uQ", context="search"),
         # the same «artist|title» on another ref stays a separate row
         attempt(
             ids["boris"],
@@ -655,10 +662,10 @@ async def test_matrix_joins_verified_aliases_only_and_leaves_out_the_qa_user(hub
     m = r.json()
     assert [u["username"] for u in m["users"]] == ["admin", "anna", "boris"]
     rows = {x["key"]: x for x in m["rows"]}
-    assert set(rows["lib:ndQ"]["cells"]) == {str(ids["anna"]), str(ids["boris"])}
+    assert set(rows["lib:uQ"]["cells"]) == {str(ids["anna"]), str(ids["boris"])}
     assert "dz:501" in rows and rows["dz:501"]["title"] == "Песня"
     shared = (await hub["admin"].get("/api/admin/taste/matrix", params={"filter": "shared_liked"})).json()
-    assert [x["key"] for x in shared["rows"]] == ["lib:ndQ"]
+    assert [x["key"] for x in shared["rows"]] == ["lib:uQ"]
     single = (await hub["admin"].get("/api/admin/taste/matrix", params={"filter": "single"})).json()
     assert {x["key"] for x in single["rows"]} == {"dz:501"}
     by_boris = (await hub["admin"].get("/api/admin/taste/matrix", params={"sort": f"user:{ids['boris']}"})).json()
@@ -675,7 +682,7 @@ async def test_mix_detail_funnel_items_and_old_mixes(hub):
     await listeners(hub["ids"])
     await add(
         mix_row(m, 2, NOW - timedelta(days=10), closed=NOW - timedelta(days=9), old=True),
-        mix_item(2, 0, ref="dz:100", nd="ndK", parts=False),
+        mix_item(2, 0, ref="dz:100", parts=False),
     )
     r = await hub["admin"].get("/api/admin/mixes/1")
     assert r.status_code == 200, r.text
@@ -723,7 +730,7 @@ async def test_wave_list_and_detail(hub):
 
 async def test_overview_rows_and_family_totals(hub):
     await listeners(hub["ids"])
-    await add(attempt(hub["ids"]["qa"], NOW - timedelta(hours=3), "dz:100", "ndK", context="album"))
+    await add(attempt(hub["ids"]["qa"], NOW - timedelta(hours=3), "dz:100", "uK", context="album"))
     r = await hub["admin"].get("/api/admin/insights/overview", params={"from": "2026-03-01", "to": "2026-03-15"})
     assert r.status_code == 200, r.text
     o = r.json()

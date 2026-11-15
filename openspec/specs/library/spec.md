@@ -10,7 +10,7 @@ Hub SHALL отдавать пользователю список альбомо�
 
 #### Scenario: Список альбомов
 - **WHEN** пользователь вызывает `GET /api/library/albums`
-- **THEN** Hub возвращает альбомы в порядке `sort` (по умолчанию до этапа 6 — `updated_at`; значение `updated_at` доступно явно)
+- **THEN** Hub возвращает альбомы в порядке `sort` (по умолчанию — `updated_at`; значение `updated_at` доступно явно)
 - **AND** с `track_count` и `has_cover`
 
 #### Scenario: Поиск по названию
@@ -155,7 +155,7 @@ Hub SHALL создавать, читать, изменять и удалять �
 - **THEN** Hub создаёт плейлист Hub с `uid` и возвращает его
 
 #### Scenario: Добавление треков
-- **WHEN** пользователь передаёт `uids`, `song_ids` (deprecated) или `library_track_ids`
+- **WHEN** пользователь передаёт `uids` или `library_track_ids`
 - **THEN** Hub добавляет существующие треки в плейлист
 - **AND** если ни один трек ещё не импортирован, возвращает `400`
 
@@ -235,7 +235,7 @@ Hub SHALL отдавать каталог библиотеки по `/api/librar
 - **WHEN** пользователь вызывает `GET /api/library/albums?sort=alphabeticalByName`
 - **THEN** Hub возвращает альбомы в запрошенном порядке
 - **AND** поддерживает пагинацию с лимитом 200
-- **AND** дефолт до этапа 6 — `updated_at`
+- **AND** дефолт — `updated_at`
 - **AND** deprecated `type` MAY приниматься как алиас `sort`
 
 #### Scenario: Артист и альбом

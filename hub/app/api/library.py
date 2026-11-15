@@ -178,7 +178,7 @@ def _int_or_none(ref: str) -> int | None:
 
 
 async def _album(s: AsyncSession, ref: str | int) -> Album:
-    """Dual lookup: a public `uid` or the legacy deprecated int id (until stage 7)."""
+    """Dual lookup: a public `uid` or the deprecated int id."""
     value = str(ref)
     legacy = _int_or_none(value)
     if legacy is not None:
