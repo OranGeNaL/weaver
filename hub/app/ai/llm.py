@@ -4,8 +4,8 @@ Structured output is obtained by a forced tool call. Providers that ignore tool 
 fallbacks: `response_format=json_schema`, then a plain "return only JSON" instruction with the first JSON object
 extracted from the text. The working mode is remembered per (base_url, model) so later calls skip failed attempts.
 
-The openai SDK talks through a legacy `httpx.AsyncClient` (accepted by the SDK), so the outbound proxy can be mounted
-the same way as in `app.net` and tests can mock the endpoint with respx.
+The openai SDK talks through its own `httpx2.AsyncClient`, so the outbound proxy is mounted the same way as in
+`app.net` and the SDK types match the client the Hub builds.
 """
 
 from __future__ import annotations
@@ -13,10 +13,10 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from typing import Any, Literal, cast
+from typing import Any, Literal
 from urllib.parse import urlparse
 
-import httpx
+import httpx2
 import openai
 from openai import AsyncOpenAI
 from pydantic import BaseModel
@@ -132,8 +132,8 @@ class LLMClient:
         self.model = s.llm_model
         host = _host(self.base_url)
         proxy = s.outbound_proxy if s.outbound_proxy and host in s.proxy_hosts else None
-        self._http = httpx.AsyncClient(
-            timeout=httpx.Timeout(s.llm_timeout_s, connect=15),
+        self._http = httpx2.AsyncClient(
+            timeout=httpx2.Timeout(s.llm_timeout_s, connect=15),
             proxy=proxy,
             follow_redirects=True,
         )
@@ -142,7 +142,7 @@ class LLMClient:
             api_key=s.llm_api_key.strip() or "not-needed",
             timeout=s.llm_timeout_s,
             max_retries=2,
-            http_client=cast(Any, self._http),  # the SDK's own client is httpx2; httpx is API-compatible here
+            http_client=self._http,
             default_headers=OPENROUTER_HEADERS if is_openrouter(self.base_url) else None,
         )
 

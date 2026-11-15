@@ -2,10 +2,10 @@ import base64
 import io
 import itertools
 import json
+from collections.abc import Iterator
 
-import httpx
+import httpx2
 import pytest
-import respx
 from PIL import Image
 
 import app.ai.llm as llm_mod
@@ -26,6 +26,7 @@ from app.ai.extract import (
 )
 from app.ai.llm import LLMClient, LLMError, LLMUsage, configured, extract_json_object, image_part
 from app.config import Settings
+from tests.support import MockLLMHttp, mock_llm_http
 
 BASE = "https://openrouter.ai/api/v1"
 URL = f"{BASE}/chat/completions"
@@ -55,6 +56,13 @@ def _clear_mode_cache():
     llm_mod._mode_cache.clear()
     yield
     llm_mod._mode_cache.clear()
+
+
+@pytest.fixture
+def llm_http() -> Iterator[MockLLMHttp]:
+    """The LLM endpoint answered in-process; `answer` is the response or a function of the request."""
+    with mock_llm_http() as mock:
+        yield mock
 
 
 def completion(
@@ -250,14 +258,13 @@ def test_usage_add() -> None:
     assert (u.tokens_in, u.tokens_out) == (4, 6) and u.cost_usd == pytest.approx(0.3)
 
 
-@respx.mock
-async def test_extract_from_images_request_shape_and_merge() -> None:
-    route = respx.post(URL).mock(return_value=httpx.Response(200, json=completion(tool_args=TRACKS_ARGS)))
+async def test_extract_from_images_request_shape_and_merge(llm_http) -> None:
+    llm_http.answer = httpx2.Response(200, json=completion(tool_args=TRACKS_ARGS))
     async with LLMClient(settings()) as llm:
         ex, usage = await extract_from_images([png(1080, 2000), png(1080, 2000)], llm)
 
-    assert route.call_count == 2
-    req = route.calls[0].request
+    assert len(llm_http.requests) == 2
+    req = llm_http.requests[0]
     body = json.loads(req.content)
     assert body["model"] == "anthropic/claude-haiku-5.5"
     assert body["temperature"] == 0
@@ -282,80 +289,80 @@ async def test_extract_from_images_request_shape_and_merge() -> None:
     assert usage.cost_usd == pytest.approx(2 * (3400 * 0.10 + 200 * 0.50) / 1e6)
 
 
-@respx.mock
-async def test_tall_screenshot_is_tiled() -> None:
-    route = respx.post(URL).mock(return_value=httpx.Response(200, json=completion(tool_args=TRACKS_ARGS)))
+async def test_tall_screenshot_is_tiled(llm_http) -> None:
+    llm_http.answer = httpx2.Response(200, json=completion(tool_args=TRACKS_ARGS))
     async with LLMClient(settings()) as llm:
         ex, _ = await extract_from_images([png(1080, 5000)], llm)
-    assert route.call_count == 3
+    assert len(llm_http.requests) == 3
     assert len(ex.items) == 2
 
 
-@respx.mock
-async def test_openrouter_cost_is_preferred() -> None:
+async def test_openrouter_cost_is_preferred(llm_http) -> None:
     usage = {"prompt_tokens": 1000, "completion_tokens": 100, "total_tokens": 1100, "cost": 0.00042}
-    respx.post(URL).mock(return_value=httpx.Response(200, json=completion(tool_args=TRACKS_ARGS, usage=usage)))
+    llm_http.answer = httpx2.Response(200, json=completion(tool_args=TRACKS_ARGS, usage=usage))
     async with LLMClient(settings()) as llm:
         _, u = await extract_from_images([png(100, 100)], llm)
     assert u.cost_usd == pytest.approx(0.00042)
 
 
-@respx.mock
-async def test_fallback_to_json_schema_then_cached() -> None:
-    calls: list[dict] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
+async def test_fallback_to_json_schema_then_cached(llm_http) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content)
-        calls.append(body)
         if "tools" in body:
-            return httpx.Response(400, json={"error": {"message": "this model does not support tools"}})
-        return httpx.Response(200, json=completion(content=json.dumps(TRACKS_ARGS), finish="stop"))
+            return httpx2.Response(400, json={"error": {"message": "this model does not support tools"}})
+        return httpx2.Response(200, json=completion(content=json.dumps(TRACKS_ARGS), finish="stop"))
 
-    respx.post(URL).mock(side_effect=handler)
+    llm_http.answer = handler
     async with LLMClient(settings()) as llm:
         ex, _ = await extract_from_images([png(100, 100)], llm)
         assert len(ex.items) == 2
+        calls = llm_http.bodies()
         assert calls[1]["response_format"]["type"] == "json_schema"
         assert calls[1]["response_format"]["json_schema"]["schema"] == REPORT_TRACKS_SCHEMA
         await extract_from_images([png(100, 100)], llm)
+    calls = llm_http.bodies()
     assert len(calls) == 3  # second run starts directly with json_schema
     assert "tools" not in calls[2]
 
 
-@respx.mock
-async def test_fallback_to_plain_json_text() -> None:
-    calls: list[dict] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
+async def test_fallback_to_plain_json_text(llm_http) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content)
-        calls.append(body)
         if "tools" in body or "response_format" in body:
-            return httpx.Response(400, json={"error": {"message": "unsupported"}})
+            return httpx2.Response(400, json={"error": {"message": "unsupported"}})
         text = "Here you go:\n```json\n" + json.dumps(TRACKS_ARGS, ensure_ascii=False) + "\n```"
-        return httpx.Response(200, json=completion(content=text, finish="stop"))
+        return httpx2.Response(200, json=completion(content=text, finish="stop"))
 
-    respx.post(URL).mock(side_effect=handler)
+    llm_http.answer = handler
     async with LLMClient(settings()) as llm:
         ex, _ = await extract_from_images([png(100, 100)], llm)
+    calls = llm_http.bodies()
     assert len(calls) == 3
     assert "Respond with ONLY one JSON object" in calls[2]["messages"][0]["content"]
     assert [i.artist_raw for i in ex.items] == ["Кино", "Сплин"]
 
 
-@respx.mock
-async def test_tool_ignored_but_json_in_content() -> None:
-    respx.post(URL).mock(return_value=httpx.Response(200, json=completion(content=json.dumps(TRACKS_ARGS))))
+async def test_tool_ignored_but_json_in_content(llm_http) -> None:
+    llm_http.answer = httpx2.Response(200, json=completion(content=json.dumps(TRACKS_ARGS)))
     async with LLMClient(settings()) as llm:
         ex, _ = await extract_from_images([png(100, 100)], llm)
     assert len(ex.items) == 2
 
 
-@respx.mock
-async def test_auth_error_is_llm_error() -> None:
-    respx.post(URL).mock(return_value=httpx.Response(401, json={"error": {"message": "No auth"}}))
+async def test_auth_error_is_llm_error(llm_http) -> None:
+    llm_http.answer = httpx2.Response(401, json={"error": {"message": "No auth"}})
     async with LLMClient(settings()) as llm:
         with pytest.raises(LLMError):
             await extract_from_images([png(100, 100)], llm)
+
+
+async def test_sdk_sends_through_the_httpx2_client_the_hub_builds(llm_http) -> None:
+    llm_http.answer = httpx2.Response(200, json=completion(content=json.dumps(TRACKS_ARGS)))
+    async with LLMClient(settings()) as llm:
+        assert isinstance(llm._http, httpx2.AsyncClient)
+        assert llm._client._client is llm._http  # the SDK holds exactly the client built here
+        await extract_from_images([png(100, 100)], llm)
+    assert [str(r.url) for r in llm_http.requests] == [URL]
 
 
 async def test_not_configured() -> None:
@@ -379,18 +386,15 @@ def test_track_list_fast_path() -> None:
     assert parse_track_list("привет\nкак дела\nKino - Blood type") is None
 
 
-@respx.mock
-async def test_parse_text_fast_path_no_llm() -> None:
-    route = respx.post(URL)
+async def test_parse_text_fast_path_no_llm(llm_http) -> None:
     async with LLMClient(settings()) as llm:
         intent, usage = await parse_text_request("Кино - Группа крови\nСплин - Романс", llm)
-    assert route.call_count == 0
+    assert llm_http.requests == []
     assert intent.kind == "tracks" and len(intent.tracks) == 2
     assert usage == LLMUsage()
 
 
-@respx.mock
-async def test_parse_text_latest_album() -> None:
+async def test_parse_text_latest_album(llm_http) -> None:
     args = {
         "kind": "latest_album",
         "artist": "«Скриптонит»",
@@ -399,32 +403,26 @@ async def test_parse_text_latest_album() -> None:
         "playlist_name": None,
         "record_types": ["album", "bogus"],
     }
-    route = respx.post(URL).mock(
-        return_value=httpx.Response(200, json=completion(tool_args=args, tool_name="report_intent"))
-    )
+    llm_http.answer = httpx2.Response(200, json=completion(tool_args=args, tool_name="report_intent"))
     async with LLMClient(settings()) as llm:
         intent, usage = await parse_text_request("скачай последний альбом Скриптонита", llm)
-    body = json.loads(route.calls[0].request.content)
+    body = llm_http.bodies()[0]
     assert body["tool_choice"]["function"]["name"] == "report_intent"
     assert "скачай последний альбом Скриптонита" in body["messages"][1]["content"]
     assert intent == TextIntent(kind="latest_album", artist="Скриптонит", record_types=["album"])
     assert usage.tokens_in == 3400
 
 
-@respx.mock
-async def test_parse_text_sends_all_5000_characters_to_model() -> None:
-    route = respx.post(URL).mock(
-        return_value=httpx.Response(200, json=completion(tool_args={"kind": "unknown"}, tool_name="report_intent"))
-    )
+async def test_parse_text_sends_all_5000_characters_to_model(llm_http) -> None:
+    llm_http.answer = httpx2.Response(200, json=completion(tool_args={"kind": "unknown"}, tool_name="report_intent"))
     text = "Ж" * 4997 + "END"
     async with LLMClient(settings()) as llm:
         await parse_text_request(text, llm)
-    body = json.loads(route.calls[0].request.content)
+    body = llm_http.bodies()[0]
     assert body["messages"][1]["content"] == f"User request:\n<<<\n{text}\n>>>"
 
 
-@respx.mock
-async def test_parse_text_tracks_and_playlist() -> None:
+async def test_parse_text_tracks_and_playlist(llm_http) -> None:
     args = {
         "kind": "tracks",
         "tracks": [
@@ -433,7 +431,7 @@ async def test_parse_text_tracks_and_playlist() -> None:
         ],
         "playlist_name": "Рок",
     }
-    respx.post(URL).mock(return_value=httpx.Response(200, json=completion(tool_args=args, tool_name="report_intent")))
+    llm_http.answer = httpx2.Response(200, json=completion(tool_args=args, tool_name="report_intent"))
     async with LLMClient(settings()) as llm:
         intent, _ = await parse_text_request("добавь Кино — Группа крови и Пачка сигарет в плейлист Рок", llm)
     assert intent.kind == "tracks" and intent.playlist_name == "Рок"
@@ -443,12 +441,9 @@ async def test_parse_text_tracks_and_playlist() -> None:
     ]
 
 
-@respx.mock
-async def test_parse_text_garbage_kind() -> None:
-    respx.post(URL).mock(
-        return_value=httpx.Response(
-            200, json=completion(tool_args={"kind": "hack_the_planet"}, tool_name="report_intent")
-        )
+async def test_parse_text_garbage_kind(llm_http) -> None:
+    llm_http.answer = httpx2.Response(
+        200, json=completion(tool_args={"kind": "hack_the_planet"}, tool_name="report_intent")
     )
     async with LLMClient(settings()) as llm:
         intent, _ = await parse_text_request("что-то непонятное", llm)

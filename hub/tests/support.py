@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import shutil
-from collections.abc import AsyncIterator, Callable, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 import httpx
+import httpx2
 
 
 @asynccontextmanager
@@ -23,6 +25,45 @@ async def app_client(
             r = await client.post("/api/auth/login", json={"username": login[0], "password": login[1]})
             assert r.status_code == 200, r.text
         yield client
+
+
+class MockLLMHttp:
+    """The LLM requests that were sent (`requests`, `bodies`) and what to answer them: `answer` is a response
+    for every request or a function of the request."""
+
+    def __init__(self) -> None:
+        self.requests: list[httpx2.Request] = []
+        self.answer: httpx2.Response | Callable[[httpx2.Request], httpx2.Response] | None = None
+
+    def bodies(self) -> list[dict]:
+        return [json.loads(r.content) for r in self.requests]
+
+    def handle(self, request: httpx2.Request) -> httpx2.Response:
+        self.requests.append(request)
+        if self.answer is None:
+            raise AssertionError(f"unexpected LLM request: {request.method} {request.url}")
+        return self.answer(request) if callable(self.answer) else self.answer
+
+
+@contextmanager
+def mock_llm_http() -> Iterator[MockLLMHttp]:
+    """Answer the OpenAI SDK's HTTP client in-process instead of the network.
+
+    The SDK builds its requests with `httpx2` (not with the legacy `httpx` that `respx` intercepts), so every
+    `httpx2` transport of the process is replaced: the client under test stays the real one.
+    """
+    mock = MockLLMHttp()
+    transport = httpx2.MockTransport(mock.handle)
+    original = httpx2.AsyncHTTPTransport.handle_async_request
+
+    async def handle_async_request(self, request: httpx2.Request, *args: Any, **kwargs: Any) -> httpx2.Response:
+        return await transport.handle_async_request(request)
+
+    httpx2.AsyncHTTPTransport.handle_async_request = handle_async_request
+    try:
+        yield mock
+    finally:
+        httpx2.AsyncHTTPTransport.handle_async_request = original
 
 
 def cand(pid: str, url: str, *, title: str = "Группа крови", bitrate: int | None = 320, provider: str = "hitmoz"):
