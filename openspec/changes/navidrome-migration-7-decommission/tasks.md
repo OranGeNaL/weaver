@@ -24,7 +24,7 @@
 ## 4. Инфраструктура и конфигурация
 - [ ] 4.1 Удалить сервис `navidrome`, том `navidrome-data`, mount `navidrome.toml` и `depends_on`; проверить `docker compose config`.
 - [ ] 4.2 Удалить `ND_*`/`NAVIDROME_*` и `PUBLIC_MUSIC_URL` из `.env`, `.env.example`, `config.py`, `config.yaml`, `config.example.yaml`; проверить `rg`.
-- [ ] 4.3 Удалить каталог `navidrome/`, ND-слой `web/src` (страницы/типы) и поднять версию shell/`BUILD_ID`, чтобы закешированная PWA перезагрузилась; проверить `rg "navidrome"` (пусто, кроме архива).
+- [x] 4.3 Удалить каталог `navidrome/`, ND-слой `web/src` (страницы/типы) и поднять версию shell/`BUILD_ID`, чтобы закешированная PWA перезагрузилась; проверить `rg "navidrome"` (пусто, кроме архива).
 
 ## 5. Тесты и документация
 
@@ -42,4 +42,4 @@
 - [ ] 6.5 Проверить `rg -i "navidrome|nd_song_id|nd_album_id|nd_artist_id|nd_playlist_id|navidrome_sync|mirror_pending"` по репозиторию; допустимы архивные changes, Purpose-строки и `hub/migrations/versions/` (историю не переписываем).
 - [ ] 6.6 Проверить вручную: вход, каталог, плейлист, воспроизведение, ♥, «Микс дня», история.
 - [ ] 6.7 Удалить `nd:`/`lib:<int>`-резолв после 6.6, вернуть `404`; проверить `rg "nd:|lib:<int>" hub/app/mixes hub/app/ai` (пусто).
-- [ ] 6.8 Убрать `{song_id}`-ветку WebView-моста (`playQueue` и legacy `play(idsJson)`), оставить `{ref:"lib:<uid>"}`; проверить `web/src/lib/player.ts` и typecheck.
+- [x] 6.8 Убрать `{song_id}`-ветку WebView-моста (`playQueue` и legacy `play(idsJson)`), оставить `{ref:"lib:<uid>"}`; проверить `web/src/lib/player.ts` и typecheck.
