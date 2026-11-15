@@ -1,4 +1,4 @@
-# HomeMusic: Navidrome + Hub (search, downloads, uploads, AI).
+# HomeMusic: Hub (каталог, поиск, загрузки, загрузки файлов, AI) + embedder.
 # Linux host: Docker Engine with the Compose plugin and the NVIDIA Container
 # Toolkit for the embedder.
 # External access is handled outside this stack (NetBird or another VPN/mesh).
@@ -15,39 +15,6 @@ x-logging: &logging
     max-file: "3"
 
 services:
-  navidrome:
-    image: deluan/navidrome:0.64.2
-    container_name: homemusic_navidrome
-    restart: unless-stopped
-    ports:
-      - "4533:4533"
-    environment:
-      ND_CONFIGFILE: /config/navidrome.toml
-      ND_MUSICFOLDER: /music
-      ND_DATAFOLDER: /data
-      ND_DEFAULTLANGUAGE: ru
-      ND_LASTFM_LANGUAGE: ru  # artist bios from Last.fm in Russian where they exist
-      # the Hub calls startScan after every import; the hourly scan is a safety
-      # net for external changes
-      ND_SCANSCHEDULE: 1h
-      ND_SCANNER_WATCHERENABLED: "false"
-      ND_AUTOIMPORTPLAYLISTS: "false"
-      ND_ENABLEINSIGHTSCOLLECTOR: "false"
-      ND_ENABLESHARING: "true"
-      ND_LOGLEVEL: info
-      # the Hub links its files to Navidrome song ids by path
-      ND_SUBSONIC_DEFAULTREPORTREALPATH: "true"
-      ND_BACKUP_PATH: /backups
-      ND_BACKUP_SCHEDULE: "30 4 * * *"
-      ND_BACKUP_COUNT: "7"
-      ND_PASSWORDENCRYPTIONKEY: ${ND_PASSWORDENCRYPTIONKEY:?set ND_PASSWORDENCRYPTIONKEY in .env}
-    volumes:
-      - navidrome-data:/data
-      - ./navidrome/navidrome.toml:/config/navidrome.toml:ro
-      - ${MUSIC_ROOT:?set MUSIC_ROOT in .env}/library:/music:ro
-      - ${MUSIC_ROOT}/.backups/navidrome:/backups
-    logging: *logging
-
   # The Hub's database. Credentials come from .env; the Hub reaches
   # it over the compose network as postgres:5432.
   # External Postgres: point DATABASE_URL in .env at it
@@ -111,8 +78,6 @@ services:
     container_name: homemusic_hub
     restart: unless-stopped
     depends_on:
-      navidrome:
-        condition: service_started
       youtube-pot:
         condition: service_healthy
       postgres:
@@ -131,7 +96,6 @@ services:
       DATA_DIR: /data
       CONFIG_FILE: /config/config.yaml
       # from .env (default: postgres://hub@postgres/hub)
-      NAVIDROME_URL: http://navidrome:4533
       YTDLP_POT_BASE_URL: http://youtube-pot:4416
       YTDLP_CACHE_DIR: /data/yt-dlp-cache
       # production refuses the dev-only fs backend: library bytes live in the bucket
@@ -253,7 +217,6 @@ volumes:
   # The Hub writes daily pg_dump backups into MUSIC_ROOT/.backups.
   postgres-data:
   rustfs-data:
-  navidrome-data:
   hub-data:
   embedder-data:
   embedder-models:

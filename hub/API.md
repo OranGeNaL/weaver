@@ -7,7 +7,7 @@ Errors: `{"detail": "<Russian message>"}` with 4xx/5xx.
 ## Auth
 Accounts are local to the Hub (stage 4): `users.username` + an argon2id `password_hash`. The Hub issues its own
 tokens: a 15-minute access JWT in the HttpOnly cookie `hm_session` and a rotating refresh token in `hm_refresh`
-(path `/api/auth`); `hm_device` names the device (a session is a `family_id`). Sign-in never asks Navidrome.
+(path `/api/auth`); `hm_device` names the device (a session is a `family_id`). Sign-in never asks an external server.
 `401` wrong credentials/expired token, `403` not an admin or `must_change_password` is set, `409` a taken
 name/link conflict, `429` the attempt limiter of that name (with `Retry-After`). Every error is `{"detail": "<Russian>"}`.
 
@@ -21,19 +21,19 @@ name/link conflict, `429` the attempt limiter of that name (with `Retry-After`).
 | POST | `/api/auth/password` | `PasswordIn {current_password?, new_password}` → `MeOut`. The current password is required unless the account is OIDC-only. Revokes every other session; clears `must_change_password`. `401` wrong current password, `400` weak password |
 | GET | `/api/auth/me` | → `MeOut` |
 | POST | `/api/auth/bootstrap` | `BootstrapIn {token, username, password}` → `MeOut` (+ cookies) — the first administrator from the one-time `ADMIN_BOOTSTRAP_TOKEN`; sets `must_change_password`. `404` no token configured, `409` an admin exists/the token is spent, `401` wrong token, `400` weak password, `429` (`Retry-After`) after 3 wrong tokens in 30 s (the same Postgres limiter as sign-in) |
-| GET | `/api/auth/options` | → `AuthOptionsOut` (no auth): `invites`, `email_signup` (SMTP configured), `google_client_id` (null — no Google), `music_url`, `oidc_providers: [OidcProviderOut {name, title}]` |
-| POST | `/api/auth/register` | `RegisterIn {code, username, password}` → `MeOut` (+ cookies). A local account for an unused invite (no Navidrome user). `400` bad/used code or name/password, `409` name taken, `429` too many wrong codes |
+| GET | `/api/auth/options` | → `AuthOptionsOut` (no auth): `invites`, `email_signup` (SMTP configured), `google_client_id` (null — no Google), `oidc_providers: [OidcProviderOut {name, title}]` |
+| POST | `/api/auth/register` | `RegisterIn {code, username, password}` → `MeOut` (+ cookies). A local account for an unused invite. `400` bad/used code or name/password, `409` name taken, `429` too many wrong codes |
 | POST | `/api/auth/email/code` | `EmailCodeIn {email}` → `EmailCodeOut {resend_in}`. 6-digit code (valid `EMAIL_CODE_MINUTES`, 15); only the latest letter of an address counts. `400` not an address, `409` the address has an account, `429` less than a minute ago or 5 in an hour, `503` `EMAIL_DAILY_LIMIT` in 24 h, `502` the letter did not go out, `404` SMTP not configured |
 | POST | `/api/auth/email/register` | `EmailRegisterIn {email, code, username, password}` → `MeOut` (+ cookies; `email` set). A local account, no invite. `400`/`409`/`429` as above |
 | GET | `/api/auth/oidc/{provider}/start` | `?mode=login\|link&invite=<code>` → `302` to the provider (Authorization Code + PKCE, `state`/`nonce` in the encrypted HttpOnly `hm_oidc` cookie). `404` unknown/disabled provider, `502` discovery is unavailable, `401` `mode=link` without a session |
 | GET | `/api/auth/oidc/{provider}/callback` | `?code&state` → `303` back to the PWA (+ cookies). Linked identity → session; a new identity needs a valid invite, otherwise `409`; `400` `state`/`nonce`/token error. Never links by email |
 | POST | `/api/auth/oidc/link/{provider}` | `OidcLinkIn {code, state}` → `MeOut` — links `iss`+`sub` to the signed-in user (`409` linked to someone else) |
 | DELETE | `/api/auth/oidc/link/{provider}` | → `MeOut` — unlinks; `409` when it is the only way into the account, `404` not linked |
-| POST | `/api/auth/google` | `GoogleIn {id_token, code?, username?}` → `MeOut` (+ cookies) — the app's Credential Manager flow; the Navidrome password is no longer returned. `404` Google not configured, `401` token rejected, `409` not linked and no `code` |
+| POST | `/api/auth/google` | `GoogleIn {id_token, code?, username?}` → `MeOut` (+ cookies) — the app's Credential Manager flow. `404` Google not configured, `401` token rejected, `409` not linked and no `code` |
 | POST | `/api/auth/google/link` | `GoogleLinkIn {id_token}` → `MeOut` — links the Google identity (`409` linked to someone else) |
 | DELETE | `/api/auth/google/link` | → `MeOut` — unlinks Google |
 
-`MeOut`: `id`, `username`, `is_admin`, `public_music_url`, `public_hub_url`, `google_email`, `email`,
+`MeOut`: `id`, `username`, `is_admin`, `public_hub_url`, `google_email`, `email`,
 `must_change_password`, `oidc_links`. A set `must_change_password` makes every endpoint except login, refresh,
 logout, `/api/auth/me` and `POST /api/auth/password` answer `403` (the OIDC start is not in that allowlist: a
 signed-in account must change the password before it starts a new external sign-in or link).
@@ -46,7 +46,7 @@ described in `config.yaml` (`oidc.providers`: `issuer`, `client_id`, `client_sec
 ## Admin (only `is_admin`, otherwise `403`)
 | Method | Path | Body → Response |
 |---|---|---|
-| GET | `/api/admin/users` | → `AdminUsersOut {users: [AdminUserOut], ai_cost_usd, ai_cost_30d_usd, library_tracks}` — the local Hub accounts only (no Navidrome users): AI spending (all time, 30 days, requests), downloads, tracks added, uploads, `last_seen_at` from access/refresh, invite note. ♥ and playlists come from the Hub in stage 5; until then they are `0` |
+| GET | `/api/admin/users` | → `AdminUsersOut {users: [AdminUserOut], ai_cost_usd, ai_cost_30d_usd, library_tracks}` — the local Hub accounts: AI spending (all time, 30 days, requests), downloads, tracks added, uploads, `last_seen_at` from access/refresh, invite note. ♥ and playlist counts come from the Hub |
 | GET | `/api/admin/users/{id}` | → `AdminUserDetailOut` (+ `ai_months`, `ai_recent`, `recent_downloads`) |
 | GET | `/api/admin/invites` | → `[InviteOut]` (`code` as «ABCD-EFGH», `status` active/used/expired, `used_by`) |
 | POST | `/api/admin/invites` | `InviteIn {note, days?}` → `InviteOut` (`days` 1–90, default `INVITE_DAYS`) |
@@ -62,7 +62,7 @@ answer `Cache-Control: no-store`. Weights are the production taste code (`load_s
 `cfg.mixes.taste_model`); `model=v1` is the **local** v1 baseline (`calculate_baseline`, no catalog enrichment),
 labelled in `model_note`. `from`/`to` — local dates (`Settings.timezone`), inclusive, default the last 30 days, at most
 3 years; a reversed/too long period or a bad date → `422`. Unknown user/mix/wave/track → `404`. Times are UTC, naive.
-Track keys (`nd:<song>`, `dz:…`, `file:…`) go only in the query string (`key=`), URL-encoded. Test traffic (clients
+Track keys (`lib:<uid>`, `dz:…`, `file:…`) go only in the query string (`key=`), URL-encoded. Test traffic (clients
 `qa`, `import`, `*-debug`), imported ♥, `favorite:bootstrap/reconcile` and events after `now` are left out, as in the
 profile.
 
@@ -71,16 +71,16 @@ profile.
 | GET | `/api/admin/insights/overview?from=&to=&include_excluded=` | `InsightsOverviewOut {period, users: [row], totals}` — a row per user: `counted_listens`, `heard_events`, `listened_ms`, `active_days`, `mixes_built`, `mix_launches`, `wave_launches`, `wave_restarts`, `likes`, `dislikes`, `new_tracks`, `new_artists`, `last_activity_at`, `app_version`, `last_seen_at`, `user {id, username, is_admin, excluded}`. Users of `config.yaml` `analytics.exclude_users` (default none) are left out unless `include_excluded=true`, and never in `totals` |
 | GET | `/api/admin/users/{id}/listening?from=&to=` | `InsightsListeningOut` (below) |
 | GET | `/api/admin/users/{id}/taste?model=` | `InsightsTasteOut`: `model`, `model_note`, `now`, `timezone`, `evidence`, `maturity`, `active_units`, `active_days`, `counts {total, positive (s>0), strong (s≥1), negative, liked, downloaded, album_liked, explicit_dislikes, disliked_artists}`, `facets` (`[{id, weight, artists[2], size, top_members[5]}]`; `null` when the embedder is off/down — `embedder` says `"off"`/`"down"`/`"timeout"`/`"v1"` or `{space_id, model}`), `seeds_today` (`select_profile_seeds`: no cold start, no network — what a mix really took is in the mix), `onboarding_reserve` (`round((1−m)·n)`), `onboarding_artists`, `seeds_note`, `top_artists` (50: `key, name, score` = `A_artist`, `listens, liked, disliked`), `limitations` |
-| GET | `/api/admin/users/{id}/taste/tracks?model=&filter=&q=&sort=&limit=&offset=` | `{model, now, embedder, total, offset, rows}`; `filter` `all`/`positive`/`seed`/`negative`/`liked`/`disliked`/`downloaded`, `sort` `s`/`p`/`n`/`last_heard`/`plays`/`title` (descending; `title` ascending), `limit` ≤ 200. Row: `key, ref, nd_song_id, artist, title, owned, s, p` (`positive_raw`), `sat_p, n, liked, disliked, downloaded, album_liked, heard30, familiar, seed_eligible` (in the 30-day seed pool), `last_heard, last_positive, positive_age, plays` (finish / skip ≥ 30 s), `early_skips, facet_id` |
+| GET | `/api/admin/users/{id}/taste/tracks?model=&filter=&q=&sort=&limit=&offset=` | `{model, now, embedder, total, offset, rows}`; `filter` `all`/`positive`/`seed`/`negative`/`liked`/`disliked`/`downloaded`, `sort` `s`/`p`/`n`/`last_heard`/`plays`/`title` (descending; `title` ascending), `limit` ≤ 200. Row: `key, ref, uid, artist, title, owned, s, p` (`positive_raw`), `sat_p, n, liked, disliked, downloaded, album_liked, heard30, familiar, seed_eligible` (in the 30-day seed pool), `last_heard, last_positive, positive_age, plays` (finish / skip ≥ 30 s), `early_skips, facet_id` |
 | GET | `/api/admin/users/{id}/taste/track?key=&model=` | `InsightsTasteTrackOut`: the row (any alias of the track as `key`) + `starts, finishes, late_skips`, `contributions` (newest first: `kind` finish/skip/start/like/dislike/dislike_legacy/download/album_like, `ts, event_id, side` P/N/0, `base` (M4 weight before decay), `age` (active units after the event's day), `w, value` (added to P, or to N as a positive amount: Σ P = `p`, Σ N = `n`), `context, client, position_s, duration_s, note` — why a row counts 0: «start — вес 0», «w < 0.01», «старше 3 лет», «импорт — не свой», «♥ снят — вклад 0», «загрузка — вес 0»…), `formula` with the numbers, `artist {key, name, score, positive_sum, negative_sum, tracks_part, likes_part, tracks, this_track, listens, liked, disliked, formula}`, `rest {recent_until, favorites_after, stash_after}` (3/7/60 days after `last_heard`), `facet_cos` (facet id → cosine of the track to the facet center, from the embedder's `/v2/project`; `null` without v2 or the embedder), `mixes` (`mix_id, created_at, state, position, generator, generator_title, score` + outcome fields), `waves` (`session_id, first_handed_at, position, generator, score, value` + outcome fields) |
 | GET | `/api/admin/users/{id}/taste/map?model=&basis=global\|user&mix=&wave=&limit=600` | `InsightsMapOut` — the taste map (INSIGHTS.md 8.2). `available` (`false` + `reason`: `model_v1`, `embedder_off`, `embedder_down`, `embedder_timeout`, `embedder_stale_space`; the lists are then empty), `space_id`, `basis` (`global` — the axes of the whole sound space, comparable between users; `user` — fitted on the user's positive tracks, falls back to `global` without any), `explained` (share of the variance of the two axes), `mix_id` / `wave_id` (the lists shown: default the newest active mix and the newest wave session that handed out tracks; a mix/session of the user that does not exist → `404`), `layout_note`, `facets [{id, weight, artists, x, y, fx, fy, color_index}]` (`x, y` the center on the PCA axes; `fx, fy` its anchor of the «Грани» layout; `color_index` the facet's rank by weight), `points [{key, artist, title, layers (profile/mix/wave), x, y, fx, fy, s, p, n, facet_id, facet_cos (in the order of facets), seed, liked, disliked, negative, familiar, generator, generator_title, mix_position, wave_position, outcome}]`, `missing [{key, artist, title, layers}]` (no sound vector: listed, not drawn), `truncated`. Layers: `profile` — songs with `s ≠ 0` or a ♥ / download / 👎, the first `limit` (1…2000) by \|s\| plus today's seeds and every explicit 👎 (`truncated` when more existed); `mix` — the active songs of the mix; `wave` — what the session handed out. `s, p, n` are `null` for a song outside the profile. «Грани» layout (`fx, fy`, x right, y up): the facets sit on the unit circle (heaviest at 12 o'clock, then clockwise), a point is the weighted mean of the anchors with weights `max(0, cos)²`, shrunk to the center by `min(1, max cos / 0.6)`; no positive cosine → `(0, 0)`. `facet_id` — the facet whose `members` hold the song, else the one with the largest cosine. `outcome` as in the mix/wave detail |
-| GET | `/api/admin/taste/matrix?by=track\|artist&filter=&q=&sort=&limit=&offset=&model=&include_excluded=` | `{model, by, now, users [{id, username}], rows, total, offset}`. All profiles at one `now`. Track rows join only verified aliases (`ref` ↔ `nd:<song>` that a profile unified), never by «artist\|title»; the key is `nd:<song>`, else the ref. Row: `key, artist, title, owned, cells {"<user id>": {s, p, n, liked, disliked, heard}}, sum_pos, min, max, users_positive, users_negative`. `filter` `all`, `shared_liked` (s > 0 for ≥ 2), `conflict` (s ≥ 1 and s ≤ −1), `single` (one non-zero), `disliked`; `sort` `sum` (default), `spread`, `title`, `user:<id>`. `by=artist`: `A_artist` by `artist_key`, `heard` = the artist's listens, `p`/`n` null |
+| GET | `/api/admin/taste/matrix?by=track\|artist&filter=&q=&sort=&limit=&offset=&model=&include_excluded=` | `{model, by, now, users [{id, username}], rows, total, offset}`. All profiles at one `now`. Track rows join only verified aliases (`ref` ↔ `lib:<uid>` that a profile unified), never by «artist\|title»; the key is `lib:<uid>`, else the ref. Row: `key, artist, title, owned, cells {"<user id>": {s, p, n, liked, disliked, heard}}, sum_pos, min, max, users_positive, users_negative`. `filter` `all`, `shared_liked` (s > 0 for ≥ 2), `conflict` (s ≥ 1 and s ≤ −1), `single` (one non-zero), `disliked`; `sort` `sum` (default), `spread`, `title`, `user:<id>`. `by=artist`: `A_artist` by `artist_key`, `heard` = the artist's listens, `p`/`n` null |
 | GET | `/api/admin/users/{id}/mixes?limit=30` | `[InsightsMixRow]`: `id, created_at, closed_at, status, title, mode, mode_title, taste_model, size, downloaded, launches, started, heard, finished, early_skips, likes, dislikes, top_generators [{generator, title, songs}]` |
-| GET | `/api/admin/mixes/{id}` | `InsightsMixOut`: the row + `description, nd_playlist_id`, `funnel {generators [{generator, title, tracks, used, seconds, error, off}], candidates, rejected` (`null` for mixes before 2026-10-31), `kept, sound_scored, active, familiar, new, reserve, failed, launches, started, heard, finished, early_skips, liked, disliked}`, `seeds` (from `stats_json.seed_keys`, with names and `facet_id`), `seed_labels, facets, maturity, embedder, build_seconds`, `items` (active, reserve, failed: name fields + `position, state, familiar, generator, generator_title, gens, score, score_parts` (`null` for old mixes — never recounted), `sim, rank, profile, downloaded_for_mix, cleanup`, outcome fields, `heard_outside` — heard outside this mix while it was in effect), `launch_list`, `artists` |
-| GET | `/api/admin/users/{id}/waves?from=&to=&origin=&seed_kind=&limit=&offset=` | `InsightsWavesOut {total, offset, rows, launches, restarts, by_origin, by_seed_kind}` (newest first; the summaries cover the filtered sessions, restarts are not launches). Row: `session_id, created_at, last_activity_at, origin, client, restart_of, restart, seed_kind, seed {title, artist, ref, nd_song_id, artist_ref, nd_artist_id}, mode, taste_model, next_calls, handed, tracks_started, started, heard, finished, early_skips, late_skips, likes, dislikes, listened_ms, downloads, cleared, reconstructed`. `origin=not_recorded` selects sessions without one |
+| GET | `/api/admin/mixes/{id}` | `InsightsMixOut`: the row + `description`, `funnel {generators [{generator, title, tracks, used, seconds, error, off}], candidates, rejected` (`null` for mixes before 2026-10-31), `kept, sound_scored, active, familiar, new, reserve, failed, launches, started, heard, finished, early_skips, liked, disliked}`, `seeds` (from `stats_json.seed_keys`, with names and `facet_id`), `seed_labels, facets, maturity, embedder, build_seconds`, `items` (active, reserve, failed: name fields + `position, state, familiar, generator, generator_title, gens, score, score_parts` (`null` for old mixes — never recounted), `sim, rank, profile, downloaded_for_mix, cleanup`, outcome fields, `heard_outside` — heard outside this mix while it was in effect), `launch_list`, `artists` |
+| GET | `/api/admin/users/{id}/waves?from=&to=&origin=&seed_kind=&limit=&offset=` | `InsightsWavesOut {total, offset, rows, launches, restarts, by_origin, by_seed_kind}` (newest first; the summaries cover the filtered sessions, restarts are not launches). Row: `session_id, created_at, last_activity_at, origin, client, restart_of, restart, seed_kind, seed {title, artist, ref, song_uid, artist_ref, artist_uid}, mode, taste_model, next_calls, handed, tracks_started, started, heard, finished, early_skips, late_skips, likes, dislikes, listened_ms, downloads, cleared, reconstructed`. `origin=not_recorded` selects sessions without one |
 | GET | `/api/admin/waves/{sid}` | `InsightsWaveOut`: the row + `gens` (generator → `{tracks, seconds, error?, off?, title}`), `seeds_used`, `items` (`wave_items` by `position`: name fields + `first_handed_at, last_handed_at, handed_count, generator, generator_title, gens, familiar, score, sim, value` + outcome fields), `events` (`ts, kind, track, position_s, client`) |
 
-Name fields: `key, ref, nd_song_id, artist, title, owned` — local only (library, profile, the latest event metadata,
+Name fields: `key, ref, uid, artist, title, owned` — local only (library, profile, the latest event metadata,
 `catalog_cache`, mix and wave items), else «Неизвестный трек». Outcome fields: `outcome` — `not_played`, `started`,
 `heard`, `finished`, `early_skip`, `liked`, `disliked` (the strongest, by that mix's/session's own launches),
 `early_skip_at` (seconds), `listened_ms`.
@@ -96,7 +96,7 @@ Codes (labels are the PWA's):
   `inferred_playlist` (≥ 60 % of an old `playlist` launch's tracks are active songs of the mix in effect).
 
 **`/listening`** — `period {from, to, timezone}`; `totals {counted_listens` (exactly `/api/plays/summary`: measured
-`listened_ms` crossing 30 s / half a short track, plus Navidrome scrobbles), `heard_events` (finish or skip ≥ 30 s,
+`listened_ms` crossing 30 s / half a short track, plus client scrobbles), `heard_events` (finish or skip ≥ 30 s,
 «по событиям»), `starts, finished, early_skips, late_skips` (player attempts started in the period), `listened_ms`
 (checkpoint deltas in the period), `unique_tracks, unique_artists, new_tracks, new_artists` (first heard ever in the
 period), `active_days, likes, unlikes, dislikes_track, dislikes_artist, downloads}`. A track is «heard» by the counted
@@ -134,7 +134,7 @@ The old unscoped `hm.recentSearches` localStorage key is not imported into an ac
 | GET | `/api/search/tracks?q=&offset=&limit=25` | `SearchTracksOut` `{tracks, next_offset}` — further tracks of the same search from `offset` (`tracks_next`, then `next_offset`; `null` — the end). Offsets count Deezer's results, so a page may hold fewer tracks than `limit` (repeats are dropped) and may repeat a track of an earlier page: the client drops those by `ref`. `502` if Deezer fails |
 | GET | `/api/search/providers?q=&provider=&group=` | `ProviderSearchOut`: raw downloadable files from hitmoz / hitmos_fm / ytdlp and re-uploads by small channels: `yt_reupload` (plain YouTube without official copies) and `soundcloud` (for a Russian track both are regular sources of downloads and listening, ahead of YouTube Music). `provider` — one source; `group=sources` — only the regular ones, `group=reuploads` — only re-uploads (slower: SoundCloud takes seconds, so the PWA asks for the two groups separately); no `group` — all but Soulseek (`provider=soulseek` only by name: seconds per search). A re-upload has `extra.reupload=true`, `extra.channel`, `extra.original_title` (its own title; `artist`/`title` are parsed from it, either order of "Artist - Title"), `extra.uncensored` — the uploader's word: `true` for "(без цензуры)"/"(правильная версия)", `false` for "(без мата)"/clean, absent otherwise. The Hub remembers every file it returns (30 days): it can be listened to (`/api/listen*`) and downloaded (`track_refs`) by its ref `file:<provider>:<provider_id>` |
 | GET | `/api/catalog/artist/{ref}` | `ArtistPageOut` — `ref` like `dz:4505880` or `hm:123`; albums/singles/compilations sorted newest first |
-| GET | `/api/catalog/album/{ref}` | `AlbumOut` with `tracks: TrackOut[]` (`owned`, `nd_song_id`, `downloading`, `star_pending`) |
+| GET | `/api/catalog/album/{ref}` | `AlbumOut` with `tracks: TrackOut[]` (`owned`, `uid`, `downloading`, `star_pending`) |
 
 `AlbumOut.owned_status`: `full` / `partial` / `none` (badge «в библиотеке» / «частично» / «нет»).
 `TrackOut.explicit` → badge `E`. `TrackOut.cover_small_url` — the cover for lists (Deezer `cover_medium`, 250 px, ~10× fewer bytes than `cover_url`, the 1000 px `cover_xl`); null when the source has only one size, then `cover_url` is used. Same for `CatalogAlbum` (`cover_small_url`) and `CatalogArtist` (`picture_small_url`), the PWA shows `cover_url` only on the screen of the track or album itself. `TrackOut.downloading` — a download of the track is under way (not counting ones
@@ -144,8 +144,8 @@ is under way: show the ♥ filled.
 ## Downloads
 | Method | Path | Body → Response |
 |---|---|---|
-| POST | `/api/downloads` | `DownloadIn` → `DownloadBatchOut`. One of: `items[]` (artist/title or a picked `candidate`), `track_refs[]`, `album_ref`, `artist_ref` (+`record_types`). Optional `playlist_id` or `new_playlist_name`: tracks are added to that Navidrome playlist once imported. `star=true` (♥ on a track that isn't downloaded): the songs are starred in Navidrome for this user once imported (event `library` `{kind:"starred", song_ids}`); an owned track is starred at once; a ♥ request ignores `playlist_id`/`new_playlist_name` (the song is in «Понравившиеся» anyway). A file ref (`file:<provider>:<provider_id>`, a file the provider search showed) downloads that very file, as if picked in `items[].candidate`; `404` if the Hub doesn't know it. A picked file (or a file ref) of a song the library has from another file (an uncensored re-upload of a censored copy) is not «already owned»: it is downloaded next to the old version (`… [v2]`), with `star` the ♥ moves from the old version to it (event `library` `{kind:"unstarred", song_ids}`), and from then on the catalog track (`nd_song_id`, listening) is the newest version. A track ref this user is downloading already (an active item with the same `track_ref`) gets no second download unless `force`: ♥ makes that download star the song, a plain request makes a download queued only for ♥ a visible one (`star` → false; event `download`); such refs count in `queued`. Refs are expanded by a background job: then `expanding=true` and `queued` counts only `items[]` |
-| GET | `/api/downloads?status=&limit=100` | `DownloadItemOut[]` (newest first; `status` may be a comma list; `nd_song_id` once scanned, `playlist_id` = the batch's target playlist, `track_ref` = the catalog track it came from, or the file ref of a picked file, `star` = queued only for ♥, by an import (`import_id`) or for a «Микс дня» and not asked for explicitly: the Hub's own business — clients don't show it as a download, don't notify about it, the app doesn't download it to the phone; it turns false if the track is then downloaded explicitly (an import's download then also goes first in the queue), the song is still starred, and when a download queued only for ♥ fails (`failed`/`needs_review`): from then on it is the user's download (listed, notified) that still stars the song once a file is picked; `liked` = queued with ♥, the song is starred once imported) |
+| POST | `/api/downloads` | `DownloadIn` → `DownloadBatchOut`. One of: `items[]` (artist/title or a picked `candidate`), `track_refs[]`, `album_ref`, `artist_ref` (+`record_types`). Optional `playlist_id` or `new_playlist_name`: tracks are added to that Hub playlist once imported. `star=true` (♥ on a track that isn't downloaded): the songs are ♥ in the Hub once imported (event `library` `{kind:"starred"}`); an owned track is starred at once; a ♥ request ignores `playlist_id`/`new_playlist_name` (the song is in «Понравившиеся» anyway). A file ref (`file:<provider>:<provider_id>`, a file the provider search showed) downloads that very file, as if picked in `items[].candidate`; `404` if the Hub doesn't know it. A picked file (or a file ref) of a song the library has from another file (an uncensored re-upload of a censored copy) is not «already owned»: it is downloaded next to the old version (`… [v2]`), with `star` the ♥ moves from the old version to it (event `library` `{kind:"unstarred"}`), and from then on the catalog track (`uid`, listening) is the newest version. A track ref this user is downloading already (an active item with the same `track_ref`) gets no second download unless `force`: ♥ makes that download star the song, a plain request makes a download queued only for ♥ a visible one (`star` → false; event `download`); such refs count in `queued`. Refs are expanded by a background job: then `expanding=true` and `queued` counts only `items[]` |
+| GET | `/api/downloads?status=&limit=100` | `DownloadItemOut[]` (newest first; `status` may be a comma list; `uid` once imported, `playlist_id` = the batch's target playlist, `track_ref` = the catalog track it came from, or the file ref of a picked file, `star` = queued only for ♥, by an import (`import_id`) or for a «Микс дня» and not asked for explicitly: the Hub's own business — clients don't show it as a download, don't notify about it, the app doesn't download it to the phone; it turns false if the track is then downloaded explicitly (an import's download then also goes first in the queue), the song is still starred, and when a download queued only for ♥ fails (`failed`/`needs_review`): from then on it is the user's download (listed, notified) that still stars the song once a file is picked; `liked` = queued with ♥, the song is starred once imported) |
 | GET | `/api/downloads/{id}` | `DownloadItemOut` with `candidates` |
 | POST | `/api/downloads/items/{id}/retry` | `RetryIn` (`candidate_index` from `candidates`, or a page `url`) → `DownloadItemOut` |
 
@@ -168,7 +168,7 @@ Playlist additions keep the request order, including songs already in the librar
 ones, but `needs_review` does not block later ready songs. The pending row and subsequent applied-song anchors are
 kept so a reviewed song can be inserted back into its requested place after retry, including across restarts.
 Pending additions are also processed at startup and every 30 seconds to recover old blocked batches and retry
-Navidrome failures without requiring another download or scan. Separate batches follow submission order.
+failed downloads without requiring another download or scan. Separate batches follow submission order.
 
 Statuses: `queued, searching, downloading, tagging, importing, done, failed, needs_review, cancelled`.
 `needs_review`: show `candidates` so the user can pick one (retry with `candidate_index`) or paste a URL
@@ -183,13 +183,13 @@ A picked re-upload (`items[].candidate` with `extra.reupload`) is looked up in D
 ## Listening before download
 | Method | Path | Response |
 |---|---|---|
-| GET | `/api/listen?ref=` | `ListenOut` — `ref` of a catalog track (`dz:…`, `hm:…`), of a library track (`lib:<uid>`, the primary form since stage 6: its own file, `kind` `library`, `uid` set; the legacy `lib:<int>` and the deprecated `nd:<song>` are resolved to the same track until stage 7; `404` if the library has no such track) or of a file the provider search showed (`file:<provider>:<provider_id>`: that file itself, no pick; `404` «повторите поиск» if unknown, `502` if it doesn't open). The remembered pick, or a new one: the way a download picks (Cyrillic original, source order, ranking) with a shorter search (4 results) and no track pages; all sources are searched at once, the first in source order that has the track wins. The file is not opened here: the stream opens it, and a file that doesn't open gives way to the next candidate (then to a new pick whose files are opened first). `404` if nothing at all. Ready picks answer at once |
+| GET | `/api/listen?ref=` | `ListenOut` — `ref` of a catalog track (`dz:…`, `hm:…`), of a library track (`lib:<uid>`, the only form: its own file, `kind` `library`, `uid` set; a legacy integer ref answers `404`, as does a uid the library lacks) or of a file the provider search showed (`file:<provider>:<provider_id>`: that file itself, no pick; `404` «повторите поиск» if unknown, `502` if it doesn't open). The remembered pick, or a new one: the way a download picks (Cyrillic original, source order, ranking) with a shorter search (4 results) and no track pages; all sources are searched at once, the first in source order that has the track wins. The file is not opened here: the stream opens it, and a file that doesn't open gives way to the next candidate (then to a new pick whose files are opened first). `404` if nothing at all. Ready picks answer at once |
 | POST | `/api/listen/prefetch` | `{refs: [...]}` → `{queued}` — the catalog tracks (and files) on the user's screen, top first (≤ 100); replaces the user's previous list (tracks that scrolled away are dropped). The Hub picks their files in the background (3 at a time, each opened once) and remembers them; this work yields to taps and downloads (hitmoz requests, yt-dlp slots). `queued` — how many were not ready yet |
-| GET | `/api/listen/stream?ref=&q=` | audio, `Range` → `206` (unsatisfiable → `416`); the library file, or the server copy of the picked file: the Hub downloads the whole file from the source (googlevideo links are bound to the Hub's IP) to `DATA_DIR/cache/listen`, resuming a connection the source drops, and serves the request from the copy as it grows (a range more than 2 MB past what it has comes straight from the source); for a source without plain HTTP audio (SoundCloud: HLS) — a copy the Hub downloads first (the prefetch downloads it in the background); copies are kept ~3 h, ≤ 500 MB. A preview is proxied. A request from the start (no `Range` or `bytes=0-`) counts as a listen (an economy import downloads the track) unless it carries `X-HomeMusic-Prefetch: 1` — the app loading the start of the next tracks of its queue ahead; the server copy of such a track downloads only while no copy of a played track does. **`q=mobile`** — the light variant for a metered network (`app/light.py`; without `q`, or with any other value, the stream is as above, so older apps are unaffected): a file above 192 kbps (mp3 320, flac, heavy aac) is answered with its Ogg Opus 160 kbps VBR copy (`audio/ogg`, ~half the bytes; `Content-Length` and `Range` as for any file, the copy is bit-exact so a re-made one has the same bytes), a file at or below 192 kbps (opus ~141, YouTube m4a ~128) as it is. Works for every ref: a catalog track (the copy is made from its server copy), a library song (`nd:<song>`, also an owned catalog track) or a file ref. The copies are made ahead (a mix's songs when it syncs, a wave's tracks when handed out) and kept on disk (`DATA_DIR/cache/listen-light`, ≤ 2.5 GB, least recently used out, ≤ 3 ffmpeg at a time, background ones at low priority and yielding to users' requests). A request that finds no copy ready waits ~1.5 s (a track loaded ahead, `X-HomeMusic-Prefetch: 1`, up to 25 s), then serves the original while the copy is finished in the background. Header **`X-HomeMusic-Variant`** (only with `q=mobile`): `light` — the Opus copy; `original` — the file as it is because it is light already (always the same for that file); `original-pending` — the copy is not ready (or ffmpeg failed): the original, which a client must not keep in the cache of the light variant. For 10 min after such an answer the same source keeps getting the original (one cache entry never holds bytes of both variants) |
+| GET | `/api/listen/stream?ref=&q=` | audio, `Range` → `206` (unsatisfiable → `416`); the library file, or the server copy of the picked file: the Hub downloads the whole file from the source (googlevideo links are bound to the Hub's IP) to `DATA_DIR/cache/listen`, resuming a connection the source drops, and serves the request from the copy as it grows (a range more than 2 MB past what it has comes straight from the source); for a source without plain HTTP audio (SoundCloud: HLS) — a copy the Hub downloads first (the prefetch downloads it in the background); copies are kept ~3 h, ≤ 500 MB. A preview is proxied. A request from the start (no `Range` or `bytes=0-`) counts as a listen (an economy import downloads the track) unless it carries `X-HomeMusic-Prefetch: 1` — the app loading the start of the next tracks of its queue ahead; the server copy of such a track downloads only while no copy of a played track does. **`q=mobile`** — the light variant for a metered network (`app/light.py`; without `q`, or with any other value, the stream is as above, so older apps are unaffected): a file above 192 kbps (mp3 320, flac, heavy aac) is answered with its Ogg Opus 160 kbps VBR copy (`audio/ogg`, ~half the bytes; `Content-Length` and `Range` as for any file, the copy is bit-exact so a re-made one has the same bytes), a file at or below 192 kbps (opus ~141, YouTube m4a ~128) as it is. Works for every ref: a catalog track (the copy is made from its server copy), a library song (`lib:<uid>`, also an owned catalog track) or a file ref. The copies are made ahead (a mix's songs when it syncs, a wave's tracks when handed out) and kept on disk (`DATA_DIR/cache/listen-light`, ≤ 2.5 GB, least recently used out, ≤ 3 ffmpeg at a time, background ones at low priority and yielding to users' requests). A request that finds no copy ready waits ~1.5 s (a track loaded ahead, `X-HomeMusic-Prefetch: 1`, up to 25 s), then serves the original while the copy is finished in the background. Header **`X-HomeMusic-Variant`** (only with `q=mobile`): `light` — the Opus copy; `original` — the file as it is because it is light already (always the same for that file); `original-pending` — the copy is not ready (or ffmpeg failed): the original, which a client must not keep in the cache of the light variant. For 10 min after such an answer the same source keeps getting the original (one cache entry never holds bytes of both variants) |
 
 `ListenOut.kind`: `full` (the file a download takes: `provider`, `bitrate_kbps`, `page_url`), `preview` (no source has it —
 Deezer's 30 s preview, show «превью 30 сек»), `library` (already owned: the own file; `uid` is its Hub track uid and
-`nd_song_id` is the deprecated alias, filled once Navidrome has scanned it).
+`uid` is the Hub track uid).
 The PWA asks for the light variant itself: `lib/listen.ts` adds `q=mobile` when `navigator.connection` reports
 `saveData` or `effectiveType` `2g`/`3g`, and sends no `q` on a fast or unknown network. `X-HomeMusic-Variant` in the
 answer says which variant it got.
@@ -219,11 +219,11 @@ stays that file).
 | Method | Path | Body → Response |
 |---|---|---|
 | POST | `/api/plays/events` | `{events: PlayEventIn[], expected_user_id?: number}` (≤ 500); mismatch with the authenticated user → `409` → `PlayEventsOut` `{accepted, duplicates, rejected: [{index, event_id, detail}]}`. Always `200` for a well-formed body: a malformed event is rejected alone; clients retain rejected events with diagnostics; an `event_id` the user sent before counts as `duplicates` (send a batch again freely). A `start` with a catalog `ref` is a listen of it (an economy import downloads the track: the app may play it from its precache, which never asked the stream as a listen) |
-| POST | `/api/plays/scrobble` | A scrobble of a Hub client: `{event_id, track_uid? , ref?, nd_song_id?, ts, duration_s?, position_s?, client, context?, track_metadata?}` → `ScrobbleOut {ok, duplicate, counted}`. Stored as `finish` with `scrobble=true`/`origin=client` and the Hub `track_uid`; a repeated `event_id` is `duplicate=true` (no second row). Near a measured app event of the same listen (`DEDUP_WINDOW + duration`) the scrobble is stored with `superseded_scrobble=true` and `counted=false`: the measured event wins. An un-superseded scrobble counts in `/api/plays/summary` |
+| POST | `/api/plays/scrobble` | A scrobble of a Hub client: `{event_id, track_uid?, ref?, ts, duration_s?, position_s?, client, context?, track_metadata?}` → `ScrobbleOut {ok, duplicate, counted}`. Stored as `finish` with `scrobble=true`/`origin=client` and the Hub `track_uid`; a repeated `event_id` is `duplicate=true` (no second row). Near a measured app event of the same listen (`DEDUP_WINDOW + duration`) the scrobble is stored with `superseded_scrobble=true` and `counted=false`: the measured event wins. An un-superseded scrobble counts in `/api/plays/summary` |
 | GET | `/api/plays/summary?start=YYYY-MM-DD&end=YYYY-MM-DD&timezone=Europe/Moscow` | Inclusive calendar dates in an IANA timezone → measured attempts, cumulative milliseconds, counted listens, scrobble and legacy evidence, track snapshots and coverage. Checkpoint deltas belong to the day they were recorded; `first_observed_at` is only the earliest stored evidence. Invalid period/timezone → `422` |
-| GET | `/api/dislikes` | `DislikeOut[]` `{id, ref, nd_song_id, artist_ref, artist, title, source, created_at}`, newest first; `source`: `app`, `pwa`, `yandex_import` |
-| POST | `/api/dislikes` | `DislikeIn` `{ref?, nd_song_id?, artist_ref?, artist?, title?, context?, client?}` → `DislikeOut`. A track (`ref` and/or `nd_song_id`) **or** an artist (`artist_ref`), else `422`; the same target again is the same row (missing ids filled in). A track also gets a `dislike` event |
-| DELETE | `/api/dislikes?ref=&nd_song_id=&artist_ref=` | → `{removed}`; nothing named → `400`. A track also gets an `undislike` event |
+| GET | `/api/dislikes` | `DislikeOut[]` `{id, ref, artist_ref, artist, title, source, created_at}`, newest first; `source`: `app`, `pwa`, `yandex_import` |
+| POST | `/api/dislikes` | `DislikeIn` `{ref?, artist_ref?, artist?, title?, context?, client?}` → `DislikeOut`. A track (`ref`) **or** an artist (`artist_ref`), else `422`; the same target again is the same row (missing ids filled in). A track also gets a `dislike` event |
+| DELETE | `/api/dislikes?ref=&uid=&artist_ref=` | → `{removed}`; nothing named → `400`. A track also gets an `undislike` event |
 | DELETE | `/api/dislikes/{id}` | → `{removed: 1}`; another user's or unknown → `404` |
 
 `PlayEventIn` — the contract of every player (the app, T3; the PWA's own player):
@@ -233,20 +233,20 @@ stays that file).
 | `event_id` | string ≤ 64, unique per user (a UUID): the key that makes resending harmless |
 | `ts` | when it happened, ISO 8601 with a zone (`2026-10-22T12:00:00Z`; epoch seconds/ms are accepted too). More than 1 h in the future or older than three calendar years → the time it came in. Admitted future events do not affect state/profile before their timestamp |
 | `kind` | `start` (sound began), `progress`, `interrupted`, `error`, `skip`, `finish`, `like`, `unlike`, `dislike`, `undislike` |
-| `ref` / `uid` / `nd_song_id` | the track: catalog ref (`dz:…`, `hm:…`, `file:…`), `lib:<uid>`/a bare Hub track uid and/or the deprecated Navidrome song id — at least one, else rejected. The Hub fills in the other where it knows it (the library file's Deezer id, the download or import that brought it) |
+| `ref` / `uid` | the track: catalog ref (`dz:…`, `hm:…`, `file:…`) and/or `lib:<uid>`/a bare Hub track uid — at least one, else rejected. The Hub fills in the other where it knows it (the library file's Deezer id, the download or import that brought it) |
 | `playback_id`, `device_id`, `listened_ms` | Optional pair of IDs identifies one attempt on one installation; cumulative measured milliseconds are never summed across checkpoints. `progress`/`interrupted`/`error` require all three. `listening_checkpoints_v1` advertises support |
-| `track_metadata` | Optional snapshot of title, album, artist credit and explicit artists with IDs, duration, ISRC, year and genre. Hub fills missing values from library or catalog cache and records field-level provenance. `primary_nd_artist_id` preserves the primary Navidrome artist ID independently of a possibly composite credit. Unknown fields remain unknown |
+| `track_metadata` | Optional snapshot of title, album, artist credit and explicit artists with IDs, duration, ISRC, year and genre. Hub fills missing values from library or catalog cache and records field-level provenance. `artists[].ref` preserves a catalog artist ref independently of a possibly composite credit. Unknown fields remain unknown |
 | `position_s`, `duration_s` | seconds (0…86400): where the player was and the track's length (for `skip`/`finish`) |
 | `context` | ≤ 128: `mix:<id>`, `wave:<session>`, `smart:<session>` (a recommendation of the smart shuffle), `album`, `playlist`, `search`, `liked`, `artist`, `queue`, `other` |
-| `client` | 1…32 chars: `app/<versionName>`, `pwa` (`navidrome` is the Hub's own import) |
+| `client` | 1…32 chars: `app/<versionName>`, `pwa` |
 | `target_type` | `track` (default), `album`, `artist`; start/skip/finish require track; dislikes support track/artist |
-| `nd_album_id`, `nd_artist_id` | optional ND identifier matching `target_type`; `ref` is interpreted within that type. At least ref or the matching ND identifier is required; identifiers of another type are rejected |
+| `ref` | catalog ref of the target; the target type comes from `target_type`. At least `ref` or `uid` is required |
 | `target_data` | optional metadata snapshot (JSON object ≤8192 characters, e.g. name, artist, title); missing metadata does not discard a decision |
 | `launch_id`, `launch_origin` | optional, analytics only (INSIGHTS.md 6.5; the taste profile, mixes and waves never read them): `launch_id` 1…64 — the same on every event of one launched list (a new one for every new list or queue; `wave:<session_id>` for a wave), `launch_origin` ≤ 32, `^[a-z][a-z0-9_]*$` — where it was launched (below); an unknown code is stored as sent, a malformed one rejects the event. Clients send them when `/healthz` has `launch_events_v1` |
 | `reverts_event_id` | optional id ≤64 of the exact failed like/unlike decision. A compensation removes that decision, including when delivered first; with `favorite_compensation_chains_v1` it may also retract another compensation, restoring the original decision/date. Only same-user canonical typed targets match. Parallel active retractions all need retraction; unknown targets/cycles are inert. Chains cannot override a newer independent decision |
 
 `launch_origin` codes: `mix_page` («Слушать всё» on a mix's page), `mix_page_track` (a tap on a mix's track),
-`mix_card` (▶ of the «Микс дня» card), `nd_playlist` (a Navidrome playlist in the app, «Микс дня» too), `album`,
+`mix_card` (▶ of the «Микс дня» card), `mix_card` is the «Микс дня» card; `playlist` is a Hub playlist, `album`,
 `artist`, `playlist`, `liked`, `search`, `queue`, `library` (a tap or «Слушать всё» on that screen), `wave` (a wave's
 queue). The PWA sends them since 2026-10-31 (its own player and the `playQueue` items of the app bridge).
 
@@ -259,12 +259,12 @@ through all `/api/dislikes` routes, including deletion by id, are journaled too.
 earlier (next, another track, the player closed); a skip «before 30 s» is `skip` with `position_s < 30`. Pause and
 seeking are no events. `dislike`/`undislike` events also set/clear the track's row of `/api/dislikes` (`source` `app`
 for `app/…` clients). Clients send their own scrobbles to `POST /api/plays/scrobble`; the Hub imports nothing from
-Navidrome. A scrobble within 5 min + the track's length of the same track as a measured app/PWA attempt is the same
+Hub. A scrobble within 5 min + the track's length of the same track as a measured app/PWA attempt is the same
 listen: the scrobble is marked superseded, whichever came first, and the raw row remains stored. Only a measured
 attempt that crosses the listen threshold supersedes a scrobble; a shorter start/skip/checkpoint does not.
 
 The summary counts an attempt when measured listening reaches 30 seconds, or half the track for tracks shorter
-than one minute. A non-superseded Navidrome scrobble is separately labelled threshold evidence and contributes one
+than one minute. A non-superseded client scrobble is separately labelled threshold evidence and contributes one
 count, never measured milliseconds. Old clients and old scrobbles do not supply precise milliseconds; legacy finish
 is reported separately. Stored events are not deleted after three years: the three-year rule above is an intake
 clock-sanity check, not a retention period. Checkpoints are cumulative, so aggregate the maximum per `(user, device,
@@ -274,7 +274,7 @@ playback_id)`, never their sum. On a crash the last unsaved interval can be miss
 
 The current `PlayEventIn`, `/api/star`, `/api/starred` and `/healthz` contracts above/below remain in force.
 The taste v2 target contract (MIXES.md, taste v2) plans additive fields: `target_type` (`track` by default,
-`album`, `artist`), matching Navidrome ids, bounded `target_data` metadata and `reverts_event_id` for a causal
+`album`, `artist`), `uid`, bounded `target_data` metadata and `reverts_event_id` for a causal
 compensation. `ref` is interpreted by target type; `start`/`skip`/`finish` remain track-only. Existing track
 payloads, per-user `event_id` deduplication, batch limits and `accepted`/`duplicates`/`rejected` semantics stay valid;
 the same event schema will apply to `WaveNextIn.played`.
@@ -290,28 +290,28 @@ must publish the exact schema together with server support. This extension does 
 |---|---|---|
 | GET | `/api/mixes/today` | `MixTodayOut` `{mix: MixOut \| null, building, settings: MixSettingsOut, onboarding}`. `mix` — the user's current mix (lives until the next one); `null` — none yet. `building` — a build is queued or running. `onboarding` — no history, no picked artists and no mix: show «Что вы слушаете?» |
 | GET | `/api/mixes/{id}` | `MixOut`; another user's (not admin) or unknown → `404` |
-| GET | `/api/mixes/settings` | `MixSettingsOut` `{mode, mix_hour, timezone, next_build_at, nd_playlist_id, artists}` |
+| GET | `/api/mixes/settings` | `MixSettingsOut` `{mode, mix_hour, timezone, next_build_at, playlist_uid, artists}` |
 | PUT | `/api/mixes/settings` | `MixSettingsIn` `{mode?: normal\|favorites\|discover, mix_hour?: 0…23}` → `MixSettingsOut` (else `422`). A new mode makes the next mix, a new hour — from the next day |
 | POST | `/api/mixes/rebuild` | `{user_id?}` → `{queued}` — build the mix again now (admin only, else `403`; `user_id` — another user's). `queued: false` — a build is under way already. The new mix replaces the current one when ready |
 | GET | `/api/taste/onboarding?q=` | `TasteOnboardingOut` `{needed, selected: [{ref, name}], suggestions: CatalogArtist[]}` — artists to pick: the library's most present ones and Deezer's chart, or found by `q` |
 | POST | `/api/taste/artists` | `{artist_refs: ["dz:…"]}` (1…20) → `MixSettingsOut`; not a Deezer artist → `400`, unknown → `404`. The user's first pick queues the first build at once |
 
-`MixOut`: `{id, title, description, mode, mode_title, created_at, nd_playlist_id, ready, total, tracks, generators}`.
+`MixOut`: `{id, title, description, mode, mode_title, created_at, playlist_uid, ready, total, tracks, generators}`.
 `tracks` — the 50 songs in order, `MixTrackOut` = `TrackOut` (`ref` `dz:…`; a song only the library has: `source`
-`nd`, `ref` `nd:<song>`; `owned`/`nd_song_id` — in the library already, play it by `nd_song_id`; `downloading`) +
+`lib`, `ref` `lib:<uid>`; `owned`/`uid` — in the library already, play it as `lib:<uid>`; `downloading`) +
 `{position, generator, generator_title, generators, familiar, score, sim}`: `generator` — the strongest source of the
 song (`favorites` «Любимое», `stash` «Тайник», `ytm_radio`, `lastfm_similar`, `deezer_radio`, `yandex_similar`,
 `similar_artists`, `new_releases`, `yandex_wave`), `familiar` — familiar to the user or new, `sim` — closeness to
 the taste by sound (`null` without the embedder). `ready` — songs in the library (the rest download quietly: not in
 `/api/downloads` lists as visible, `star: true`). `generators` — per generator `{tracks, used, seconds, error?, off?}`.
-`nd_playlist_id` — the user's Navidrome playlist «Микс дня» (the same id every day; its songs are replaced).
+`playlist_uid` — the user's Hub playlist «Микс дня» (the same uid every day; its songs are replaced).
 Events of songs played from a mix: `context` `mix:<id>`.
 
 ## «Моя волна» (MIXES.md 7)
 An endless stream for the user's taste: the Hub hands out 5 tracks at a time and picks again after every action.
 | Method | Path | Body → Response |
 |---|---|---|
-| POST | `/api/wave/start` | `WaveStartIn` `{seed?: {ref? \| nd_song_id? \| artist_ref? \| nd_artist_id?}, mode?: normal\|favorites\|discover, origin?, client?, restart_of?}` → `WaveOut`. No `seed` — the user's own wave from the taste profile (no history and no picked artists → `409`); `seed.ref` (`dz:…` or `nd:<song>`) / `seed.nd_song_id` — «Волна по треку»: that track is `tracks[0]`; `seed.artist_ref` (`dz:…`) — a wave by the artist; `seed.nd_artist_id` — a wave by a Navidrome artist (the app's «Радиостанции»): the artist's library songs (generator `artist_songs`) with the radios of its Deezer artist (found by a song's catalog record or the exact name; none — the radios of its songs). The artist of a wave by an artist plays at most once in 3 tracks. Unknown seed → `404`, none of them → `422`. `mode` — the familiar share as a mix's (default: the user's mix mode). May take up to ~10 s (the sources are asked; the profile is made) |
+| POST | `/api/wave/start` | `WaveStartIn` `{seed?: {ref? \| song_uid? \| artist_uid? \| artist_ref?}, mode?: normal\|favorites\|discover, origin?, client?, restart_of?}` → `WaveOut`. No `seed` — the user's own wave from the taste profile (no history and no picked artists → `409`); `seed.ref` (`dz:…` or `lib:<uid>`) / `seed.song_uid` — «Волна по треку»: that track is `tracks[0]`; `seed.artist_ref` (`dz:…`) — a wave by the artist; `seed.artist_uid` — a wave by a library artist (the app's «Радиостанции»): the artist's library songs (generator `artist_songs`) with the radios of its Deezer artist (found by a song's catalog record or the exact name; none — the radios of its songs). The artist of a wave by an artist plays at most once in 3 tracks. Unknown seed → `404`, none of them → `422`. `mode` — the familiar share as a mix's (default: the user's mix mode). May take up to ~10 s (the sources are asked; the profile is made) |
 | POST | `/api/wave/{session_id}/next` | `WaveNextIn` `{played: PlayEventIn[] (≤ 500), queued: [ref] (≤ 50)}` → `WaveOut` with `recorded` (`PlayEventsOut` of `played`). Unknown session, another user's, or not asked for 24 h → `404` «Волна закончилась» (start a new one) |
 
 `origin`, `client`, `restart_of` — optional, analytics only (INSIGHTS.md 6.3; the wave never reads them; clients send
@@ -328,7 +328,7 @@ session the app makes again after a `404`. The Hub keeps them with the session, 
 | `artist_menu` | «Волна по исполнителю» in a track's menu |
 | `player` | from a player: «Моя волна по треку» on `/player`, the menu of the mini player and the queue, the app's player menu |
 | `artist_page` | «Волна по исполнителю» on an artist's page |
-| `radio` | the app's «Радиостанции», the PWA's library artists (`nd_artist_id`) |
+| `radio` | the app's «Радиостанции», the PWA's library artists (`artist_uid`) |
 | `search_file` | the ⋯ menu of a Files search result (`file:<provider>:<id>`) |
 | `restart` | the app made the session again after a `404` (with `restart_of`) |
 
@@ -339,12 +339,12 @@ A session's row is kept for the history: one not asked for 7 days has its state 
 when returning search results; arbitrary URLs or unknown/expired file refs are rejected with `404`
 «Файл не найден: повторите поиск». The exact file is `tracks[0]` (`source: "file"`, `generator: "seed"`), with
 its original ref, artist and title; radios use that metadata even when no catalog record exists. The file is not
-substituted with a library or catalog version. `by_artist` is supported for `dz:` and `nd:` tracks as before.
+substituted with a library or catalog version. `by_artist` is supported for `dz:` and `lib:` tracks.
 
 `WaveOut`: `{session_id, title, mode, seed, tracks, pending, recorded}`. `title` — «Моя волна», «Волна по треку
-«<название>»», «Волна: <исполнитель>»; `seed` — `{ref, artist, title}` or `{artist_ref?, artist, nd_artist_id?}`, `null` for the
+«<название>»», «Волна: <исполнитель>»; `seed` — `{ref, artist, title}` or `{artist_ref?, artist, artist_uid?}`, `null` for the
 user's own. `tracks` — up to 5 `WaveTrackOut` = `TrackOut` + `{generator, generator_title, familiar, sim}`: play a track
-by `nd_song_id` when `owned` (a library song), else stream its `ref` (`GET /api/listen/stream?ref=`; the Hub has started
+as `lib:<uid>` when `owned` (a library song), else stream its `ref` (`GET /api/listen/stream?ref=`; the Hub has started
 picking these files already, `/api/listen/prefetch`). `generator` — as a mix's, plus `seed` (the wave's own track) and
 `session_radio` (the radio of a track liked or played to its end in this session). `pending` — sources still answer
 in the background: the pool grows; an empty `tracks` with `pending` — ask `next` again in a few seconds; empty without
@@ -376,10 +376,10 @@ Smart Shuffle). The Hub keeps the order and the picks; a client shows them and p
 `/healthz`. The playlist itself is never changed.
 | Method | Path | Body → Response |
 |---|---|---|
-| POST | `/api/smart-shuffle/start` | `SmartStartIn` `{context, songs, current?, title?, origin?, client?}` → `SmartOut`. `context` — `liked` or `playlist:<Navidrome id>` (else `422`). `songs` (1…5000) — the list's songs in its order (a playlist: new ones at the end; «Понравившиеся»: the newest first): a Navidrome song id, or a catalog ref (it has a colon) for a ♥ that has no file yet. `current` — the song tapped or playing now: it is first in `own`. `title` — the playlist's name (kept for the analytics), `origin` ≤ 32 `^[a-z][a-z0-9_]*$` (`playlist_page`, `liked_page`, `player`), `client` ≤ 32. May take up to ~10 s (the sources are asked) |
+| POST | `/api/smart-shuffle/start` | `SmartStartIn` `{context, songs, current?, title?, origin?, client?}` → `SmartOut`. `context` — `liked` or `playlist:<uid>` (else `422`). `songs` (1…5000) — the list's songs in its order (a playlist: new ones at the end; «Понравившиеся»: the newest first): a library track uid/`lib:<uid>`, or a catalog ref (it has a colon) for a ♥ that has no file yet. `current` — the song tapped or playing now: it is first in `own`. `title` — the playlist's name (kept for the analytics), `origin` ≤ 32 `^[a-z][a-z0-9_]*$` (`playlist_page`, `liked_page`, `player`), `client` ≤ 32. May take up to ~10 s (the sources are asked) |
 | POST | `/api/smart-shuffle/{id}/next` | `SmartNextIn` `{played: PlayEventIn[] (≤ 500), at?}` → `SmartOut` with `recorded` and `own: []`. Unknown session, another user's, or not asked for 24 h → `404` «Умное перемешивание закончилось» |
-| POST | `/api/smart-shuffle/{id}/hide` | `{ref? \| track_uid? \| nd_song_id?}` → `{ok}`. «−»: the track is not recommended in this context («Понравившиеся» or this playlist) any more — by its «artist — title» too, not only its id; it stays everywhere else (this is not `/api/dislikes`). The track must be one this session recommended (`404`) |
-| POST | `/api/smart-shuffle/{id}/add` | `{ref? \| track_uid? \| nd_song_id?}` → `SmartAddOut` `{ok, status, playlist_id?}`. «+»: a playlist — `added` (a library song is put in the playlist) or `downloading` (a catalog track is downloaded and put in the playlist after the import: a visible download of the batch `origin` `smart-shuffle`, `POST /api/downloads` with `playlist_id`); «Понравившиеся» — `liked`: the Hub only notes it, the client puts the ♥ itself by its usual way (`/api/star`, the ♥ download for a catalog track). Either way the track counts as taken in the session (what sounds like it goes up) |
+| POST | `/api/smart-shuffle/{id}/hide` | `{ref? \| track_uid?}` (a library song as `lib:<uid>`) → `{ok}`. «−»: the track is not recommended in this context («Понравившиеся» or this playlist) any more — by its «artist — title» too, not only its id; it stays everywhere else (this is not `/api/dislikes`). The track must be one this session recommended (`404`) |
+| POST | `/api/smart-shuffle/{id}/add` | `{ref? \| track_uid?}` (a library song as `lib:<uid>`) → `SmartAddOut` `{ok, status, playlist_id?}`. «+»: a playlist — `added` (a library song is put in the playlist) or `downloading` (a catalog track is downloaded and put in the playlist after the import: a visible download of the batch `origin` `smart-shuffle`, `POST /api/downloads` with `playlist_id`); «Понравившиеся» — `liked`: the Hub only notes it, the client puts the ♥ itself by its usual way (`/api/star`, the ♥ download for a catalog track). Either way the track counts as taken in the session (what sounds like it goes up) |
 
 `SmartOut`: `{session_id, context, title, own, recs, pending, own_per_rec, recorded}`.
 - `own` (start only) — the own songs in the order to play, as the ids the client sent, all of them. «Fewer repeats»: the
@@ -387,7 +387,7 @@ Smart Shuffle). The Hub keeps the order and the picks; a client shows them and p
   `1/(1+days since the user last heard it, in any context)` divided by `1 + position/12`.
 - `recs` — `SmartRecOut` = `WaveTrackOut` (`TrackOut` + `generator, generator_title, familiar, sim`; `sim` — closeness by
   sound to the center of the list's songs) + `{after, slot}`: put the track right after the own song `after` (an id from
-  `own`); `slot` — the number of its place among the recommendations. Play a track as `lib:<uid>` when `owned` (the deprecated `nd_song_id` still works until stage 7), else stream its `ref`
+  `own`); `slot` — the number of its place among the recommendations. Play a track as `lib:<uid>` when `owned`, else stream its `ref`
   (`GET /api/listen/stream?ref=`, the Hub has started picking the files, `/api/listen/prefetch`).
   **Places:** one recommendation after every 3 own songs in a list of more than 15 songs, after every 2 in a list of up to
   15; a list of 1–2 songs has one (`own_per_rec` — 3 or 2). `start` fills the first 3 places; `next` fills the places not
@@ -413,21 +413,19 @@ like the track, a play to its end, a ♥ or «+» raises what sounds like it (a 
 unlike the wave). The rows are kept for the analytics: `smart_sessions`, `smart_items` (`state` `handed`/`added`/`hidden`),
 `smart_hidden`.
 
-## Stage 6: the PWA on the Hub catalog
-The browser PWA (and the WebView of the app) is switched to this section: `Home`, `MediaLibrary`, `Library`,
-`LibraryAlbum`, `Playlists` and the player. `web/src/api/library.ts` picks `/api/library/*` when `/healthz` lists
-`hub_library_v1` and otherwise normalizes the deprecated `/api/nd/*` shapes (id ↔ `uid`, `tracks`/`songs`,
-`cover_url`, `song_count`/`track_count`, `type`/`sort`, `song_ids`/`track_uids`, `nd:`/`lib:` refs); the fallback
-also covers `/healthz` timing out. The queue and the WebView bridge name a library track `lib:<uid>`; the app is
-handed `{ref: "lib:<uid>"}` (the deprecated `{song_id: nd_song_id}` stays until stage 7), so the app streams it
-through the Hub as `/api/listen/stream` does. The «Navidrome» button is gone from «Ещё» and the PWA no longer renders
-`PUBLIC_MUSIC_URL` (the setting itself is removed at stage 7).
+## The PWA on the Hub catalog
+The browser PWA (and the WebView of the app) works on this section: `Home`, `MediaLibrary`, `Library`,
+`LibraryAlbum`, `Playlists` and the player. `web/src/api/library.ts` talks to `/api/library/*` only: there is no
+transitional proxy and no foreign shape to normalize (an album/track `uid`, `cover_url`, `song_count`/`track_count`,
+`type`/`sort`, `track_uids`). The queue and the WebView bridge name a library track
+`lib:<uid>`; the app is handed `{ref: "lib:<uid>"}`, so the app streams it through the Hub as
+`/api/listen/stream` does.
 
 ## Library (own files, albums, artists)
 The Hub owns the catalog: `/api/library/*` is its public surface. The public identifier of an album, track and artist
 is `uid` (UUID); the legacy `int` `id`/`album_id`/`track_id` fields and path values are deprecated legacy aliases
 accepted and returned until stage 7 (`GET`, `PATCH`, `DELETE`, cover, merge and move accept either form). The
-`hub_library_v1` capability in `/healthz` tells a client to use this section instead of `/api/nd/*`.
+`hub_library_v1` capability in `/healthz` tells a client to use this section.
 
 | Method | Path | Body → Response |
 |---|---|---|
@@ -437,7 +435,7 @@ accepted and returned until stage 7 (`GET`, `PATCH`, `DELETE`, cover, merge and 
 | GET | `/api/library/artists/{uid}` | `LibArtistPageOut {artist, albums}` — albums by year, newest first, those without a year last; `404` unknown |
 | POST | `/api/library/artists/{uid}/merge` | `ArtistMergeIn {target_uid}` → `LibArtistPageOut`; albums and matching track credits move to the target, the source row is deleted |
 | POST | `/api/library/albums` | `AlbumCreateIn` → `LibAlbumOut` (empty custom album / compilation; lazily creates the artist) |
-| GET | `/api/library/track-source?nd_song_id=` | `TrackSourceOut` `{source, source_url, acquired_at}` — where the file came from (`source`: `hitmoz`, `hitmos_fm`, `ytdlp`, `upload`, `manual`); `404` — not a Hub library track (the app's track info) |
+| GET | `/api/library/track-source?uid=` | `TrackSourceOut` `{source, source_url, acquired_at}` — where the file came from (`source`: `hitmoz`, `hitmos_fm`, `ytdlp`, `upload`, `manual`); `404` — not a Hub library track (the app's track info) |
 | GET | `/api/library/albums/{uid}` | `LibAlbumOut` with `tracks` (order: disc, track number); `404` unknown |
 | PATCH | `/api/library/albums/{uid}` | `AlbumPatchIn` → `LibAlbumOut` (rename, album artist, year, genre, type) |
 | PUT | `/api/library/albums/{uid}/cover` | multipart `file` (image, ≤20 MB) → `LibAlbumOut` (`413` too big) |
@@ -451,7 +449,7 @@ accepted and returned until stage 7 (`GET`, `PATCH`, `DELETE`, cover, merge and 
 | GET | `/api/library/tracks/{uid}/download` | tagged temp copy of the immutable blob (export/materialization) |
 | POST | `/api/library/import` | admin only: `LibraryImportIn {paths: string[]}` — bootstrap import of files under `MUSIC_ROOT` through the shared importer and upload limits → `LibraryImportOut {imported, failed, tracks}`; `400` path outside `MUSIC_ROOT` |
 
-`LibTrackOut` has `uid`, `album_uid`, `artist_uid` plus the deprecated `id`, `album_id` and `nd_song_id`;
+`LibTrackOut` has `uid`, `album_uid`, `artist_uid` plus the deprecated `id`, `album_id`;
 `LibAlbumOut` has `uid`, `artist_uid`, `track_count`, `has_cover`, `integrity_issue` plus the deprecated `id`.
 `LibArtistOut {uid, name, sort_name, album_count, has_cover}`.
 
@@ -461,7 +459,7 @@ separating them is a manual operation; `tracks.artist` and `albums.album_artist`
 
 `catalog_commit` (downloads, uploads, bootstrap) writes the blob, the track and the item's `done` with
 `library_track_id`/`uid` in one transaction; `download_items.blob_sha256` with `(download_item_id, blob_sha256)` is
-its idempotency key. Navidrome linking and the Hub-side `imports_done`/`mixes_done` effects are a coalesced,
+its idempotency key. The Hub-side `imports_done`/`mixes_done` effects are a coalesced,
 best-effort `nd_sync`; ND-only records are inert until stage 5 and never fail a job. `catalog_reconcile`
 (housekeeping) sets/clears `tracks.integrity_issue = missing_blob` and `albums.integrity_issue = missing_cover`,
 reports `orphan_blob` to the log and `/healthz.catalog`, does not index bucket objects and does not delete blobs —
@@ -470,7 +468,7 @@ the storage GC does.
 `library` SSE events keep their names and payload keys: `kind`, `album_id`, `track_id`, `uid`. `album_id`/`track_id`
 stay deprecated ints until stage 7; new consumers read `uid`.
 | GET | `/api/media/blob/{sha256}` | service-only blob read: `Authorization: Bearer $MEDIA_BLOB_TOKEN`, supports `Range`; `401` without the token |
-| POST | `/api/star` | `StarIn`: `uids` (Hub track uids), `targets: [{target_type, ref?, uid?, nd_song_id?, nd_album_id?, nd_artist_id?, target_data?}]` (≤500), `song_ids`/`album_ids`/`artist_ids` (deprecated ND aliases until stage 7), `catalog_album_ref`, `refs`, `unstar`, `event_id?`, `ts?`, `client?` (default pwa), `context?`. The Hub is the only owner of ♥: no Navidrome call is made. Successful objects are journaled; response `{ok:true,event_ids:[…]}`. A retry with the same `event_id` is idempotent and does not replay an old decision. `refs + unstar` also clears own pending ♥; explicit/import/mix/wave downloads survive; refs without unstar →400. Typed album/artist targets need no ND ids and do not download their songs |
+| POST | `/api/star` | `StarIn`: `uids` (Hub track uids), `targets: [{target_type, ref?, uid?, target_data?}]` (≤500), `catalog_album_ref`, `refs`, `unstar`, `event_id?`, `ts?`, `client?` (default pwa), `context?`. The Hub is the only owner of ♥: no external media server is called. Successful objects are journaled; response `{ok:true,event_ids:[…]}`. A retry with the same `event_id` is idempotent and does not replay an old decision. `refs + unstar` also clears own pending ♥; explicit/import/mix/wave downloads survive; refs without unstar →400. Typed album/artist targets need no download of their songs |
 | GET | `/api/starred` | `StarredOut {song_ids, album_ids, artist_ids, track_uids, refs, subjects}` served by the Hub only (capability `hub_liked_v1`). `song_ids`/`album_ids`/`artist_ids` are deprecated ND aliases that stay until stage 7; new clients use `track_uids`. `refs` also include own pending track likes and catalog-only likes. Subjects include `{target_type,key,ref,uid,nd_id,liked,liked_since,event_id,aliases,target_data,provenance:"own"\|"import"}`. Use type plus aliases for button state |
 | GET | `/api/library/liked` | `LibLikedOut {tracks: LibTrackOut[], albums: LibAlbumOut[], artists: LibArtistOut[]}`: own ♥ and imported provenance, own decision overrides the imported one, newest first. No external service is called |
 
@@ -479,7 +477,7 @@ older than the effective decision land in history without overwriting the live s
 assistant/API operation remain journaled if a later chunk fails. For a wave buffer, reuse the returned per-object
 event_id and the same typed target so `/api/plays/events` returns duplicate.
 
-There is no reconciliation with Navidrome: the journal of `favorites` is the only source of ♥, imported likes keep
+There is no reconciliation with an external server: the journal of `favorites` is the only source of ♥, imported likes keep
 `provenance: "import"` and are not treated as the user's own choice for the taste profile.
 
 ## Uploads (FR-5)
@@ -502,45 +500,11 @@ Hub playlists (capability `hub_liked_v1` covers ♥ only; playlists are Hub-owne
 |---|---|---|
 | GET | `/api/playlists` | `PlaylistOut[] {id (uid), name, song_count, duration_s, cover_art}` |
 | POST | `/api/playlists` | `PlaylistCreateIn {name}` → `PlaylistOut`; empty name → `400` |
-| POST | `/api/playlists/{uid}/add` | `PlaylistAddIn {uids?, song_ids?, library_track_ids?, anchor_uid?}` → `{ok, added, uids}`. `uids` are Hub track uids; `song_ids` (deprecated ND ids) and `library_track_ids` are resolved to them. `anchor_uid` is a playlist item uid: the track goes right after it (the end by default). No resolvable track → `400`. Duplicates are allowed |
+| POST | `/api/playlists/{uid}/add` | `PlaylistAddIn {uids?, library_track_ids?, anchor_uid?}` → `{ok, added, uids}`. `uids` are Hub track uids; `library_track_ids` are resolved to them. `anchor_uid` is a playlist item uid: the track goes right after it (the end by default). No resolvable track → `400`. Duplicates are allowed |
 | POST | `/api/playlists/{uid}/reorder` | `PlaylistReorderIn {item_uids}` → `{ok}`: the named items first in that order, then the rest |
-| GET | `/api/playlists/{uid}` | → `PlaylistPageOut` (`PlaylistOut` + `tracks: NdSongOut[]` in playlist order, `uid` = the Hub track uid, `nd_song_id` may be `null`); `404` unknown or not the user's |
+| GET | `/api/playlists/{uid}` | → `PlaylistPageOut` (`PlaylistOut` + `tracks: PlaylistTrackOut[]` in playlist order, `uid` = the Hub track uid); `404` unknown or not the user's |
 | POST | `/api/playlists/{uid}/remove` | `PlaylistRemoveIn {indexes}` (1–500 positions from 0; a song may be in a playlist twice) → `{ok, removed}`; `404` unknown |
 | DELETE | `/api/playlists/{uid}` | → `{ok}`; `404` unknown |
-
-## Navidrome library (the PWA in a browser) — DEPRECATED
-Deprecated transitional proxy. Since stage 6 the PWA takes its catalog from `/api/library/*` when `/healthz` lists
-`hub_library_v1` and only falls back to these routes (normalizing their shapes in `web/src/api/library.ts`) when the
-capability is absent or `/healthz` times out — the same routes an older, cached PWA of stage 5 and earlier still uses.
-Removed at stage 7. New clients must use `/api/library/*` (capability `hub_library_v1`) and must not depend on these
-routes.
-
-The library as the user's player sees it — the app has these as native (Tempus) screens, the PWA in a plain browser
-(`STANDALONE`) shows them from here (`app/api/medialib.py`). For an account with Navidrome credentials everything is
-asked of Navidrome as that user, so the stars and play counts are theirs; Navidrome «not found» (Subsonic code 70) →
-`404`, «not authorized» (50) → `403`, any other Navidrome error or no answer from it → `502`.
-
-**Stage-4 transition:** an account created after stage 4 has no Navidrome credentials. For it these routes answer
-the same shapes from the Hub catalog (`albums.uid`/`artists.uid` as ids, `cover_url: null`, an empty ♥ row and an
-empty `/liked` until stage 5) and never call Navidrome — not `409`. A Navidrome-only playlist operation on such an
-account answers `409` with a Russian message instead of proxying.
-
-| Method | Path | Response |
-|---|---|---|
-| GET | `/api/nd/home` | `NdHomeOut {recent, frequent, newest, starred: NdAlbumOut[] (15 each), radio: NdArtistOut[]}` — the rows of «Главная»; `radio` («Радиостанции», 30): liked artists first, then by album count |
-| GET | `/api/nd/albums?type=alphabeticalByName&offset=0&size=50` | `NdAlbumOut[]` — Subsonic `getAlbumList2`; `type` one of `recent`, `frequent`, `newest`, `starred`, `alphabeticalByName`, `alphabeticalByArtist`, `random` (else `422`); `size` 1–500 |
-| GET | `/api/nd/albums/{id}` | `NdAlbumOut` with `tracks: NdSongOut[]`; `404` unknown |
-| GET | `/api/nd/artists` | `NdArtistOut[]` — every artist (the alphabetical index flattened) |
-| GET | `/api/nd/artists/{id}` | `NdArtistPageOut {artist, albums}` — albums by year, newest first, those without a year last, ties by title; `404` unknown |
-| GET | `/api/nd/liked` | `NdLikedOut {songs, albums, artists}` built from the Hub's ♥ journal (`favorites.snapshot`) — Navidrome is not asked. Own decisions override imported; aliases deduplicate songs. Catalog-only songs have `owned=false`, nullable `nd_song_id` and remain playable by `ref`; listing never starts downloads or catalog requests. Stored subject/import/playback metadata supplies names (ref fallback when unavailable). Newest ♥ first; unknown import dates last. |
-| GET | `/api/nd/cover/{cover_id}?size=` | the Navidrome cover (`getCoverArt`, `size` 32–1500) proxied, so the page needs no Navidrome credentials; `Cache-Control: private, max-age=86400`; `404` no image, `502` no answer from Navidrome |
-
-`NdAlbumOut {id, title, artist, artist_id, year, song_count, duration_s, cover_url, starred, tracks?}`,
-`NdArtistOut {id, name, album_count, cover_url, starred}` — Navidrome ids. `NdSongOut` is a `TrackOut` plus
-`nd_album_id`, `nd_artist_id`: `ref` is `dz:…` when the Hub's own `Track` record of the file has a Deezer id (mixes,
-«Моя волна» and listening data know the song by it), else `nd:<song>` (`source` `dz`/`nd`); always `owned`, `nd_song_id`;
-`library_track_id` when the Hub keeps the file. Covers are `/api/nd/cover/…` (`cover_small_url` 300 px, `cover_url`
-1000 px; an album's `cover_url` 300 px).
 
 ## Assistant (FR-6)
 
@@ -598,12 +562,12 @@ What a service id turned out to be is shared by all users (`source_map`); a miss
 Row `status`: `pending` (not matched yet), `waiting` (economy: matched, downloaded once listened to), `queued`
 (`download_item_id`, `download_status`), `done`, `failed`, `not_found`, `skipped`.
 
-Modes: `economy` — ♥ and Navidrome playlists at once from what the library has; the rest plays from the sources
+Modes: `economy` — ♥ and Hub playlists at once from what the library has; the rest plays from the sources
 (`ref` → `/api/listen/stream`, the app's `playQueue`), and a track is downloaded once it is listened to (the first
 request of its stream); `full` — everything is downloaded in the background. Import downloads are quiet
 (`DownloadItemOut.star`, `import_id`) and run below the user's work: queue `priority` < 0, they never take the last
 worker and their catalog/source requests yield to the user's. Playlists are rewritten whole in the service's order
-(at most every 30 s while downloads come in). ♥ follow the service's order too: Navidrome orders «Понравившиеся» by
+(at most every 30 s while downloads come in). ♥ follow the service's order too: the Hub orders «Понравившиеся» by
 the time of the star, so the Hub stars an import's liked songs one by one from the oldest like, and a song that arrives
 later is starred together with the likes newer than it again (likes are downloaded oldest first, so mostly it is one
 star). Import downloads carry no ♥ of their own; a song the user has unstarred since is left alone. When the import is
@@ -684,7 +648,7 @@ the endpoint is absent or unavailable. This is not a complete policy comparison.
 See `MIXES.md` 4.2 for deterministic clustering, snapshot invalidation and consumer rollout.
 
 
-Волна по исполнителю трека: `seed` принимает `ref` или `nd_song_id` вместе с `by_artist: true`. Хаб разрешает исполнителя и сохраняет в ответе `artist_ref` / `nd_artist_id`; если исполнитель не найден, возвращает 404. Личная волна запускается без `seed`.
+Волна по исполнителю трека: `seed` принимает `ref`, `song_uid` или `artist_uid` вместе с `by_artist: true`. Хаб разрешает исполнителя и сохраняет в ответе `artist_ref` / `artist_uid`; если исполнитель не найден, возвращает 404. Личная волна запускается без `seed`.
 
 
 ### Android application updates

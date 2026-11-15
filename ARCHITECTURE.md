@@ -8,12 +8,11 @@
 
 ## 0. Краткое резюме
 
-HomeMusic — это персональный музыкальный сервис, развёрнутый на домашнем ПК в Docker Compose. Он объединяет три крупные подсистемы:
+HomeMusic — это персональный музыкальный сервис, развёрнутый на домашнем ПК в Docker Compose. Он объединяет две крупные подсистемы:
 
 | Подсистема | Технологии | Назначение |
 |---|---|---|
-| **Navidrome** | готовый образ `deluan/navidrome` | библиотека, стриминг, пользователи, плейлисты, Subsonic API |
-| **Hub** | Python 3.12, FastAPI, SQLAlchemy async, Postgres, Alembic | поиск, загрузки, импорт, теги, прослушивание, ИИ-ассистент, рекомендации, аналитика |
+| **Hub** | Python 3.12, FastAPI, SQLAlchemy async, Postgres, Alembic | библиотека и каталог, стриминг, учётные записи, ♥, плейлисты, история, поиск, загрузки, импорт, теги, ИИ-ассистент, рекомендации, аналитика |
 | **Embedder** | Python, FastAPI, PyTorch, MuQ-MuLan | аудио- и текстовые векторы для «Микса дня», «Моей волны», карт вкуса |
 
 Доступ из интернета обеспечивает внешняя VPN/mesh-сеть — **NetBird** или аналог; собственного шлюза в проекте нет.
@@ -44,13 +43,12 @@ HomeMusic — это персональный музыкальный серви�
 ┌─────────────────────────────────────────────────────────────┐
 │ Linux-хост, Docker Engine + Compose, docker compose          │
 │                                                             │
-│  navidrome:4533 ◄──► hub:8080                               │
-│         ▲                │                                  │
-│         │                ├──► embedder                       │
-│         │                ├──► youtube-pot (PO tokens yt-dlp) │
-│         │                ├──► slskd (опционально, Soulseek)  │
-│         │                └──► внешние сервисы                │
-│         │                                                   │
+│  hub:8080                                                    │
+│         ├──► embedder                                        │
+│         ├──► youtube-pot (PO tokens yt-dlp)                  │
+│         ├──► slskd (опционально, Soulseek)                   │
+│         └──► внешние сервисы                                 │
+│                                                              │
 │  MUSIC_ROOT = /srv/music (staging/, .backups/)              │
 │  S3/RustFS = audio/ + covers/ (blobs sha256), версии        │
 └─────────────────────────────────────────────────────────────┘
@@ -60,8 +58,7 @@ HomeMusic — это персональный музыкальный серви�
 
 | Сервис | Используется для |
 |---|---|
-| NetBird / VPN/mesh | доступ к Hub и Navidrome из интернета |
-| Navidrome / Subsonic API | пользователи, звёзды, плейлисты, история скробблов, сканы, обложки |
+| NetBird / VPN/mesh | доступ к Hub из интернета |
 | Deezer | каталог: исполнители, альбомы, треки, превью |
 | hitmoz, hitmos.fm | русские треки, прямые файлы |
 | YouTube / YouTube Music через yt-dlp | поиск и загрузка аудио |
@@ -84,7 +81,6 @@ HomeMusic — это персональный музыкальный серви�
 
 | Сервис | Роль | Порты | Тома / особенности |
 |---|---|---|---|
-| `navidrome` | медиасервер | `4533:4533` | `navidrome-data`, `library` read-only, `.backups/navidrome` |
 | `hub` | основной backend + PWA | `8080:8080` | `hub-data`, `MUSIC_ROOT`, `S3_*`, `config.yaml` read-only, `soulseek-downloads` |
 | `rustfs` | S3-хранилище библиотеки (по умолчанию) | только `expose: 9000` | `rustfs-data`; внешний S3 — через `.env` |
 | `youtube-pot` | выдача PO-токенов для yt-dlp | только `expose: 4416` | изолирован, без пользовательских данных |
@@ -97,8 +93,8 @@ HomeMusic — это персональный музыкальный серви�
 2. **Аудио и обложки библиотеки — S3-совместимый бакет** (RustFS в compose или внешний S3): иммутабельные
    content-addressed блобы `audio/<sha256>`, `covers/<sha256>`, `manifests/<sha256>/<uid>.json`. `/srv/music`
    (`MUSIC_ROOT`) — только staging, hot-cache и бэкапы.
-3. **Navidrome не использует watcher**: сканирование выполняет Hub (`startScan`) после импорта, плюс раз в час по расписанию.
-4. **Navidrome и Hub публикуют порты** `4533` и `8080`; embedder, slskd и youtube-pot доступны только внутри compose-сети.
+3. **Hub — единственный источник истины** для каталога, учётных записей, ♥, плейлистов и истории; внешнего медиасервера нет.
+4. **Публикуется только порт Hub** `8080`; embedder, slskd и youtube-pot доступны только внутри compose-сети.
 5. **Внешний доступ — вне проекта**: туннель, reverse proxy, DNS и TLS обеспечивает NetBird или аналогичная VPN/mesh-сеть.
 6. **PWA собирается в образ Hub**: `web/` → `hub/app/static/`, оттуда FastAPI отдаёт SPA.
 
@@ -123,7 +119,7 @@ HomeMusic — это персональный музыкальный серви�
                             │
 ┌───────────────────────────▼──────────────────────────────────┐
 │ Infrastructure / adapters                                     │
-│  providers/*, catalog/*, library/navidrome.py, net.py,       │
+│  providers/*, catalog/*, net.py,                             │
 │  jobs/queue.py, db.py, models.py, config.py, security.py,    │
 │  events.py, mailer.py, google_auth.py, oidc.py, tokens.py,    │
 │  passwords.py, bootstrap.py, housekeeping.py                  │
@@ -158,10 +154,9 @@ HomeMusic — это персональный музыкальный серви�
 | `api/catalog.py` | `/api/catalog` | страницы артиста и альбома |
 | `api/downloads.py` | `/api/downloads` | очередь загрузок, retry, cancel |
 | `api/listen.py` | `/api/listen` | прослушивание до загрузки, prefetch, stream |
-| `api/playlists.py` | `/api/playlists` | плейлисты Navidrome |
+| `api/playlists.py` | `/api/playlists` | плейлисты Hub |
 | `api/library.py` | `/api/library`, `/api/starred`, `/api/star` | собственная библиотека, редактор, звёзды |
 | `api/uploads.py` | `/api/uploads` | загрузка своих файлов |
-| `api/medialib.py` | `/api/nd` | прокси-представление библиотеки Navidrome |
 | `api/plays.py` | `/api/plays`, `/api/dislikes` | события прослушивания, сводка, дизлайки |
 | `api/mixes.py` | `/api/mixes`, `/api/taste` | «Микс дня», настройки, онбординг |
 | `api/wave.py` | `/api/wave` | «Моя волна» |
@@ -189,10 +184,10 @@ HomeMusic — это персональный музыкальный серви�
 | **Аккаунты** | `accounts.py`, `auth.py`, `tokens.py`, `passwords.py`, `bootstrap.py`, `oidc.py`, `security.py`, `mailer.py`, `google_auth.py`, `api/auth.py` | локальные учётки (argon2id), access JWT + rotating refresh, bootstrap администратора, инвайты, email-коды, OIDC RP (`iss`+`sub`), Fernet-шифрование секретов |
 | **Каталог** | `catalog/models.py`, `deezer.py`, `hitmoz_catalog.py`, `musicbrainz.py`, `yandex.py`, `cache.py` | единый `ref` вида `dz:…`, `hm:…`; TTL-кэш в `catalog_cache` |
 | **Загрузки** | `jobs/downloads.py`, `providers/*`, `matching/*`, `library/*` | полный конвейер: каталог → дедупликация → поиск → выбор → скачивание → проверка → импорт (блобы; теги — только при экспорте) |
-| **Библиотека** | `library/importer.py`, `editor.py`, `export.py`, `covers.py`, `owned.py`, `artists.py`, `catalog.py`, `reconcile.py`, `api/library.py`, `storage/*` | каталог Hub: блобы в S3, двуфазная запись, логические пути, теги только при экспорте, ленивые артисты, публичные `uid`, правки, сверка; `/api/nd/*` — deprecated до этапа 6 |
+| **Библиотека** | `library/importer.py`, `editor.py`, `export.py`, `covers.py`, `owned.py`, `artists.py`, `catalog.py`, `reconcile.py`, `api/library.py`, `storage/*` | каталог Hub: блобы в S3, двуфазная запись, логические пути, теги только при экспорте, ленивые артисты, публичные `uid`, правки, сверка |
 | **Хранилище** | `storage/base.py`, `local.py`, `s3.py`, `cache.py`, `blobs.py`, `gc.py` | контракт `StorageBackend`, hot-cache с LRU, дедупликация по `sha256`, GC осиротевших объектов |
 | **Прослушивание** | `listen.py`, `light.py`, `api/listen.py` | выбор файла, серверные копии, Range-стриминг, лёгкий Opus-вариант |
-| **История** | `plays.py`, `listening_summary.py`, `favorites.py`, `api/plays.py` | события, скробблы Navidrome, дедупликация, звёзды, дизлайки |
+| **История** | `plays.py`, `listening_summary.py`, `favorites.py`, `api/plays.py` | события, скробблы клиентов, дедупликация, звёзды, дизлайки |
 | **Рекомендации** | `mixes/*`, `api/mixes.py`, `api/wave.py`, `api/smart_shuffle.py` | вкус, генераторы, отбор, порядок, волна, умный шаффл |
 | **Импорт** | `imports/*`, `api/imports.py` | Yandex Music, Spotify export; snapshot → resolve → apply |
 | **ИИ** | `ai/llm.py`, `extract.py`, `links.py`, `pipeline.py`, `agent.py`, `limits.py` | распознавание скриншотов/текста/ссылок, чат с инструментами |
@@ -230,14 +225,15 @@ HomeMusic — это персональный музыкальный серви�
 | Фоновые задачи | `jobs` | персистентная очередь |
 | Ассистент | `assistant_tasks`, `assistant_chats` | задачи распознавания и сохранённые чаты |
 | Импорт | `imports`, `import_collections`, `import_items`, `source_map` | перенос коллекций и общий кэш соответствий |
-| История | `play_events`, `dislikes`, `favorite_subjects`, `navidrome_sync`, `search_history` | события, дизлайки, алиасы, синхронизация |
+| История | `play_events`, `dislikes`, `favorite_subjects`, `search_history` | события, дизлайки, алиасы |
 | Рекомендации | `mix_settings`, `mixes`, `mix_items`, `wave_sessions`, `wave_items`, `smart_sessions`, `smart_items`, `smart_hidden` | состояние и аналитика рекомендаций |
 
 ### Ключевые идентификаторы
 
-- **`ref`** — каталожный идентификатор: `dz:<id>`, `hm:<id>`.
-- **`nd_song_id`** — ID песни в Navidrome.
-- **`uid`** — UUID трека, альбома и артиста, публичный идентификатор каталога; `int`-иды и `nd_*` — deprecated до этапа 7; в legacy-файлы и при экспорте/материализации пишется как `HOMEMUSIC_TRACK_ID` / `HOMEMUSIC_ALBUM_ID`. Для новых импортов это только идентификатор БД: Navidrome-ID появятся после этапа 6.
+- **`ref`** — каталожный идентификатор: `dz:<id>`, `hm:<id>`, `file:<provider>:<id>`; библиотечный трек адресуется
+  `lib:<uid>`.
+- **`uid`** — UUID трека, альбома и артиста, публичный и единственный идентификатор каталога; в legacy-файлы и при
+  экспорте/материализации пишется как `HOMEMUSIC_TRACK_ID` / `HOMEMUSIC_ALBUM_ID`.
 - **`fingerprint`** — нормализованный `artist|title` для дедупликации.
 - **`event_id`** — клиентский ID события; повторная отправка не создаёт дубль.
 - **`mix_id` / `session_id`** — контекст рекомендаций.
@@ -246,7 +242,7 @@ HomeMusic — это персональный музыкальный серви�
 
 1. **Названия и ID не смешиваются без проверки**: `source_map` хранит подтверждённые соответствия внешних ID каталогу.
 2. **Порядок плейлиста восстанавливается** через `pending_playlist_adds`, включая `needs_review` и рестарты.
-3. **Скробблы Navidrome дедуплицируются** с собственными событиями приложения.
+3. **Клиентские скробблы дедуплицируются** с собственными событиями приложения.
 4. **Импортированные ♥ не считаются «своими»** для профиля вкуса.
 5. **Миксы и волны не читают аналитические поля** `origin`, `client`, `restart_of` — это только телеметрия.
 
@@ -356,10 +352,8 @@ POST /api/downloads
       7. postcheck: ffprobe, длительность, тишина
       8. tagger + importer → staging → блоб
       9. catalog_commit в одной транзакции: блоб → track → download item `done` (+ `library_track_id`/`uid`)
-     10. job nd_sync (коалесцируется, best-effort)
-          → Navidrome startScan и link nd_song_id (переходный период)
-          → imports_done / mixes_done
-          → ND-записи инертны до этапа 5
+     10. committed_effects (best-effort, побочные эффекты Hub)
+          → imports_done / mixes_done: перезапись плейлистов импорта, синк микса
      11. catalog_reconcile в housekeeping: missing_blob/missing_cover, orphan_blob — без индексации бакета
 ```
 
@@ -394,8 +388,8 @@ GET /api/listen/stream?ref=…
 POST /api/plays/events
   → PlayEvent (start/skip/finish/like/unlike/dislike/undislike)
   → дедупликация по event_id
-  → заполнение ref ↔ nd_song_id
-  → скробблы Navidrome импортируются раз в час
+  → заполнение ref ↔ uid из каталога Hub
+  → клиентские скробблы (POST /api/plays/scrobble)
 ```
 
 Профиль вкуса:
@@ -423,7 +417,7 @@ schedule_loop
       → name_mix
       → save Mix + MixItem
       → quiet downloads
-      → Navidrome playlist «Микс дня»
+      → плейлист Hub «Микс дня»
   → mix_sync после завершения загрузок
       → замена неудачных песен резервом
       → обновление плейлиста
@@ -447,7 +441,7 @@ schedule_loop
   - без seed — от профиля вкуса;
   - по треку;
   - по исполнителю;
-  - по артисту Navidrome.
+  - по артисту Hub («Радиостанции»).
 - `next` принимает события с последнего вызова и выдаёт до 5 треков.
 - Скип < 30 секунд или дизлайк понижают исполнителя и похожие по звуку треки.
 - ♥ или дослушанный трек добавляют радио YouTube Music в пул.
@@ -477,7 +471,7 @@ schedule_loop
   → import_resolve: owned / exact / probable / not_found
   → apply:
       ♥ в порядке сервиса
-      плейлисты Navidrome
+      плейлисты Hub
       загрузки с низким приоритетом
   → import_finish
 ```
@@ -657,13 +651,12 @@ web/src/
 В проекте **нет** собственного шлюза, обратного SSH-туннеля, reverse proxy или скриптов настройки VPS.
 Компонент `gateway/` удалён. Доступ из интернета обеспечивает **NetBird** или аналогичная VPN/mesh-сеть:
 
-- Hub и Navidrome слушают локальные порты `8080` и `4533`;
-- адреса клиентов задаются в `.env`: `PUBLIC_HUB_URL` и `PUBLIC_MUSIC_URL`;
-- эти адреса используются для приглашений, QR-кодов и кнопки «Navidrome»;
+- Hub слушает локальный порт `8080`;
+- адрес клиентов задаётся в `.env`: `PUBLIC_HUB_URL`;
+- этот адрес используется для приглашений и QR-кодов;
 - DNS, TLS, маршрутизация и проверка доступа — на стороне выбранного VPN/mesh-решения.
 
-Проверка после настройки: клиент VPN подключён, `http://<hub-host>:8080/healthz` отвечает,
-Navidrome доступен по `http://<navidrome-host>:4533`.
+Проверка после настройки: клиент VPN подключён, `http://<hub-host>:8080/healthz` отвечает.
 
 ---
 
@@ -677,8 +670,8 @@ Navidrome доступен по `http://<navidrome-host>:4533`.
   - каждый тест получает копию БД;
   - поднимает приложение in-process через `httpx.ASGITransport`;
   - отключает фоновые задачи;
-  - подменяет Navidrome, LLM, SMTP, embedder, Last.fm.
-- `hub/tests/support.py` — `FakeProvider`, фейковый Navidrome и помощники.
+  - подменяет LLM, SMTP, embedder, Last.fm, внешние источники.
+- `hub/tests/support.py` — `FakeProvider`, `FakeDeezer` и помощники.
 - Отдельный маркер `network` для тестов с реальной сетью.
 - `ruff` — линтер.
 
@@ -703,8 +696,8 @@ Navidrome доступен по `http://<navidrome-host>:4533`.
 
 ## 11. Архитектурные инварианты и сквозные решения
 
-1. **Navidrome — источник истины для пользователей, звёзд и плейлистов.**
-   Hub хранит зашифрованный пароль и действует от имени пользователя через Subsonic API.
+1. **Hub — источник истины для пользователей, ♥, плейлистов и каталога.**
+   Отдельного медиасервера нет: учётные записи, ♥, плейлисты, история и файлы библиотеки принадлежат Hub.
 
 2. **Стабильные ID важнее путей.**
    `HOMEMUSIC_TRACK_ID` и `HOMEMUSIC_ALBUM_ID` пишутся только при экспорте/материализации (и остаются в legacy-файлах), поэтому правка метаданных и логического пути не перезаписывает блоб.
@@ -740,8 +733,9 @@ Navidrome доступен по `http://<navidrome-host>:4533`.
 2. **Postgres как единственная БД.**
    Параллельная запись масштабируется, но требует обслуживания: миграции только через Alembic, бэкапы — `pg_dump --format=custom` с проверкой восстановления в отдельную базу.
 
-3. **Тесная связка с Navidrome.**
-   Многие функции (звёзды, плейлисты, сканы, история) зависят от Subsonic API и поведения Navidrome.
+3. **Единственный источник истины и единственная БД.**
+   Собственного медиасервера нет, поэтому нет и расхождения состояний между Hub и внешним сервером;
+   цена — Hub отвечает за каталог, стриминг и пользовательские данные целиком.
 
 4. **Bind mount медиатеки и права доступа.**
    Каталоги `/srv/music` должны быть доступны контейнерам на чтение и запись; файлы, созданные Hub’ом,
@@ -793,37 +787,37 @@ Navidrome доступен по `http://<navidrome-host>:4533`.
         ┌────────────────────────────▼────────────────────────────┐
         │                    Docker Compose                       │
         │                                                        │
-        │  ┌────────────┐      ┌─────────────────────────────┐   │
-        │  │ Navidrome  │◄────►│            Hub              │   │
-        │  │ Subsonic   │      │                             │   │
-        │  └────────────┘      │  API routers                │   │
-        │        ▲             │  Auth / Accounts            │   │
-        │        │             │  Catalog                    │   │
-        │        │             │  Providers + Matching       │   │
-        │        │             │  Downloads + Job queue      │   │
-        │        │             │  Library + Tagger           │   │
-        │        │             │  Listen + Light             │   │
-        │        │             │  Plays + Favorites          │   │
-        │        │             │  Mixes / Wave / Smart       │   │
-        │        │             │  Imports                   │   │
-        │        │             │  AI Assistant              │   │
-        │        │             │  Insights                  │   │
-        │        │             │  SSE EventBus              │   │
-        │        │             └──────┬──────────┬──────────┘   │
-        │        │                    │          │              │
-        │        │             ┌──────▼───┐  ┌───▼──────────┐   │
-        │        │             │ Embedder │  │ youtube-pot  │   │
-        │        │             │ MuQ-MuLan│  │ yt-dlp PO    │   │
-        │        │             └──────────┘  └──────────────┘   │
-        │        │                                               │
-        │        └────────────── slskd (опционально) ────────────┘
-        │                                                        │
+        │  ┌────────────────────────────────────────────────┐   │
+        │  │                      Hub                       │   │
+        │  │                                                │   │
+        │  │  API routers                                   │   │
+        │  │  Auth / Accounts                               │   │
+        │  │  Catalog                                       │   │
+        │  │  Providers + Matching                          │   │
+        │  │  Downloads + Job queue                         │   │
+        │  │  Library + Tagger                              │   │
+        │  │  Listen + Light                                │   │
+        │  │  Plays + Favorites                             │   │
+        │  │  Mixes / Wave / Smart                          │   │
+        │  │  Imports                                       │   │
+        │  │  AI Assistant                                  │   │
+        │  │  Insights                                      │   │
+        │  │  SSE EventBus                                  │   │
+        │  └────────────┬──────────────┬──────────────────┘   │
+        │               │              │                       │
+        │        ┌──────▼───┐   ┌──────▼───────┐               │
+        │        │ Embedder │   │ youtube-pot  │               │
+        │        │ MuQ-MuLan│   │ yt-dlp PO    │               │
+        │        └──────────┘   └──────────────┘               │
+        │                                                      │
+        │  slskd (опционально)                                 │
+        │                                                      │
         │  MUSIC_ROOT: staging/ .backups/                        │
         │  S3: audio/ covers/ manifests/ (blobs sha256)          │
         └────────────────────────────────────────────────────────┘
 ```
 
-Ключевая идея архитектуры: **Hub — это оркестратор**, который соединяет внешние источники музыки, каталог, Navidrome, объектное хранилище библиотеки (S3/блобы), историю прослушивания и рекомендательную систему. Navidrome отвечает за воспроизведение и пользовательские данные, embedder — за звуковую близость, а PWA/Android — за интерфейс.
+Ключевая идея архитектуры: **Hub — это и есть сервис**, который соединяет внешние источники музыки, собственный каталог, объектное хранилище библиотеки (S3/блобы), историю прослушивания, пользовательские данные и рекомендательную систему. Внешнего медиасервера нет: Hub отвечает и за воспроизведение, и за каталог, и за учётные записи. Embedder — за звуковую близость, PWA/Android — за интерфейс.
 
 ### S3 capability checklist (RustFS / external S3)
 

@@ -1,6 +1,6 @@
 ## Purpose
 
-Домен описывает системные контракты HomeMusic: health и capabilities, SSE-события, Share Target, обновления Android-приложения, административную аналитику, housekeeping и раздачу PWA. iOS сейчас не поддерживается; клиентские возможности определяются через `/healthz`.
+Домен описывает системные контракты HomeMusic: health и capabilities, SSE-события, Share Target, обновления Android-приложения, административную аналитику, housekeeping и раздачу PWA. Признак внешнего медиасервера в health отсутствует. iOS сейчас не поддерживается; клиентские возможности определяются через `/healthz`.
 
 ## Requirements
 
