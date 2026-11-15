@@ -368,6 +368,18 @@ async def test_sdk_sends_through_the_httpx2_client_the_hub_builds(llm_http) -> N
     assert [str(r.url) for r in llm_http.requests] == [URL]
 
 
+async def test_llm_client_keeps_proxy_timeouts_and_redirects() -> None:
+    """The settings design.md promised to keep: read/connect timeouts, redirects, and the outbound proxy per host."""
+    async with LLMClient(settings()) as llm:
+        assert (llm._http.timeout.read, llm._http.timeout.connect) == (10, 15)
+        assert llm._http.follow_redirects is True
+        assert not llm._http._mounts  # host not in proxy_hosts: the SDK talks directly
+
+    proxied = settings(outbound_proxy="http://proxy.test:8080", outbound_proxy_hosts="openrouter.ai")
+    async with LLMClient(proxied) as llm:
+        assert llm._http._mounts  # a matching host is routed through the outbound proxy
+
+
 async def test_not_configured() -> None:
     async with LLMClient(settings(llm_api_key="")) as llm:
         with pytest.raises(LLMError):
