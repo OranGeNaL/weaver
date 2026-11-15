@@ -487,7 +487,7 @@ There is no reconciliation with an external server: the journal of `favorites` i
 | GET | `/api/uploads?status=uploaded` | `UploadOut[]` |
 | GET | `/api/uploads/{id}/cover` | embedded cover image (404 if none) |
 | DELETE | `/api/uploads/{id}` | → `{ok}` |
-| POST | `/api/uploads/commit` | multipart: field `payload` = JSON `UploadCommitIn`, optional file `cover` → `UploadCommitOut` |
+| POST | `/api/uploads/commit` | multipart: field `payload` = JSON `UploadCommitIn` (`playlist_id` = `uid` of the user's Hub playlist: the imported tracks are added to it in the `tracks` order; `404` before any import when it is not theirs), optional file `cover` → `UploadCommitOut` |
 
 ## Playlists
 | Method | Path | Body → Response |

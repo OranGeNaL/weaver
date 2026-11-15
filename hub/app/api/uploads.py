@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import playlists as playlists_lib
 from app.api.schemas import UploadCommitIn, UploadCommitOut, UploadOut
 from app.auth import current_user
 from app.config import get_settings
@@ -23,7 +24,7 @@ from app.events import bus
 from app.jobs.queue import notify
 from app.library import probe, tagger
 from app.library.importer import ImportSpec, import_file
-from app.models import Album, Upload, User
+from app.models import Album, Playlist, Upload, User
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/uploads", tags=["uploads"])
@@ -161,6 +162,14 @@ async def commit(
     if not body.tracks:
         raise HTTPException(400, "Не выбраны файлы")
 
+    playlist: Playlist | None = None
+    if body.playlist_id:
+        playlist = await playlists_lib.get_owned(s, user.id, body.playlist_id)
+        if playlist is None:
+            raise HTTPException(404, "Плейлист не найден")
+        # the row stays until this transaction ends: a concurrent delete can't fail the commit after the import
+        await playlists_lib.lock(s, playlist.id)
+
     if body.album.mode == "existing":
         album = await s.get(Album, body.album.album_id or 0)
         if album is None:
@@ -186,6 +195,7 @@ async def commit(
         cover_bytes = await asyncio.to_thread(tagger.read_cover, _abs(cu))
 
     imported = 0
+    imported_uids: list[str] = []
     for i, tr in enumerate(body.tracks):
         u = await _own(s, user, tr.upload_id)
         if u.status != "uploaded":
@@ -225,7 +235,11 @@ async def commit(
             # the bytes live in the object store now; staging keeps no copy of an upload
             src.unlink(missing_ok=True)
         u.status, u.track_id = "imported", track.id
+        imported_uids.append(track.uid)
         imported += 1
+    if playlist is not None and imported_uids:
+        # one call keeps the request order; `uid` is known right after the synchronous import_file
+        await playlists_lib.add_tracks(s, playlist, imported_uids, added_by=user.id)
     await s.commit()
     notify()
     bus.publish(user.id, "library", {"kind": "imported", "album_id": album.id, "uid": album.uid})

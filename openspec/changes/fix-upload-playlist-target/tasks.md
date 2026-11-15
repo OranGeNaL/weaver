@@ -1,30 +1,24 @@
-## 1. Данные и миграция
+## 1. Код
 
-- [ ] 1.1 Добавить Alembic-миграцию: `pending_playlist_adds.download_item_id` nullable, новый `pending_playlist_adds.upload_id` nullable.
-- [ ] 1.2 Обновить модель `PendingPlaylistAdd` и инвариант «ровно один источник».
-- [ ] 1.3 Проверить `alembic upgrade head` и откат миграции.
+- [x] 1.1 В `hub/app/api/uploads.py::commit` читать `UploadCommitIn.playlist_id` как `uid` плейлиста Hub.
+- [x] 1.2 Проверять владельца через `playlists.get_owned` до импорта; неизвестный или чужой плейлист → `404` с русским `detail`.
+- [x] 1.3 Блокировать строку плейлиста до конца транзакции (`playlists.lock`).
+- [x] 1.4 Собирать `uid` успешно импортированных треков в порядке `tracks` и добавлять их одним вызовом `playlists.add_tracks` после импорта.
+- [x] 1.5 Не создавать отложенные добавления и не менять схему БД.
 
-## 2. Обработка commit
+## 2. Тесты
 
-- [ ] 2.1 В `POST /api/uploads/commit` читать `playlist_id`.
-- [ ] 2.2 После успешного импорта создавать `PendingPlaylistAdd` для каждого трека с сохранением `position`.
-- [ ] 2.3 Не создавать запись при ошибке импорта или отсутствии `playlist_id`.
+- [x] 2.1 `hub/tests/test_uploads.py`: commit с `playlist_id` кладёт треки в плейлист в порядке `tracks`.
+- [x] 2.2 Тест: без `playlist_id` плейлисты не меняются.
+- [x] 2.3 Тест: неизвестный `playlist_id` даёт `404`, файлы остаются в staging.
+- [x] 2.4 Тест: чужой плейлист даёт `404`.
+- [x] 2.5 Тест: потерянный staging-файл не добавляется, остальные треки попадают в плейлист в порядке запроса.
 
-## 3. Отложенное добавление в плейлист
+## 3. Документация и проверка
 
-- [ ] 3.1 Расширить `process_playlist_adds` на строки с `upload_id`.
-- [ ] 3.2 Резолвить `nd_song_id` через `Upload.track_id` → `Track.nd_song_id`, ждать `nd_scan` при необходимости.
-- [ ] 3.3 Обеспечить идемпотентность: повторный проход не добавляет трек дважды.
-
-## 4. Тесты
-
-- [ ] 4.1 Тест: commit с `playlist_id` добавляет импортированные треки в плейлист.
-- [ ] 4.2 Тест: commit без `playlist_id` не создаёт отложенных добавлений.
-- [ ] 4.3 Тест: ошибка импорта одного трека не ломает остальные и не создаёт для него запись.
-- [ ] 4.4 Тест: порядок нескольких треков сохраняется.
-- [ ] 4.5 Тест: повторная обработка не создаёт дубликат.
-
-## 5. Документация
-
-- [ ] 5.1 Обновить `hub/API.md` для `UploadCommitIn.playlist_id`.
-- [ ] 5.2 Убедиться, что PWA-контракт не требует изменений.
+- [x] 3.1 Обновить `hub/API.md` для `UploadCommitIn.playlist_id`.
+- [x] 3.2 `openspec validate fix-upload-playlist-target`.
+- [x] 3.3 `cd hub && uv run ruff check && uv run ruff format --check`.
+- [x] 3.4 `cd hub && uv run pyright`.
+- [x] 3.5 `cd hub && TEST_DATABASE_URL=... uv run pytest -q tests/ -k "upload or playlist"`.
+- [x] 3.6 Полный `pytest -q -n 8` не хуже эталона (1124 passed / 74 skipped до правок).
