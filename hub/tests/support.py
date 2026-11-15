@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import shutil
-from collections.abc import AsyncIterator, Callable, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,42 @@ async def app_client(
             r = await client.post("/api/auth/login", json={"username": login[0], "password": login[1]})
             assert r.status_code == 200, r.text
         yield client
+
+
+class MockLLMHttp:
+    """The LLM requests that were sent (`requests`, `bodies`) and what to answer them: `answer` is a response
+    for every request or a function of the request."""
+
+    def __init__(self) -> None:
+        self.requests: list[httpx.Request] = []
+        self.answer: httpx.Response | Callable[[httpx.Request], httpx.Response] | None = None
+
+    def bodies(self) -> list[dict]:
+        return [json.loads(r.content) for r in self.requests]
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if self.answer is None:
+            raise AssertionError(f"unexpected LLM request: {request.method} {request.url}")
+        return self.answer(request) if callable(self.answer) else self.answer
+
+
+@contextmanager
+def mock_llm_http() -> Iterator[MockLLMHttp]:
+    """Answer the LLM's HTTP client in-process instead of the network. `respx` intercepts `httpx` only, so the
+    transport of every client the process builds is replaced: the client under test stays the real one."""
+    mock = MockLLMHttp()
+    transport = httpx.MockTransport(mock.handle)
+    original = httpx.AsyncHTTPTransport.handle_async_request
+
+    async def handle_async_request(self, request: httpx.Request, *args: Any, **kwargs: Any) -> httpx.Response:
+        return await transport.handle_async_request(request)
+
+    httpx.AsyncHTTPTransport.handle_async_request = handle_async_request
+    try:
+        yield mock
+    finally:
+        httpx.AsyncHTTPTransport.handle_async_request = original
 
 
 def cand(pid: str, url: str, *, title: str = "Группа крови", bitrate: int | None = 320, provider: str = "hitmoz"):

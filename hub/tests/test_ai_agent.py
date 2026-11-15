@@ -9,10 +9,9 @@ import uuid
 
 import httpx
 import pytest
-import respx
 from sqlalchemy import select
 
-from tests.support import app_client
+from tests.support import app_client, mock_llm_http
 
 LLM = "https://llm.test/v1"
 
@@ -58,13 +57,12 @@ async def env(hub_env, monkeypatch):
         return httpx.Response(200, json=state["script"].pop(0))
 
     app = create_app()
-    async with app.router.lifespan_context(app):
-        with respx.mock(assert_all_called=False) as mock:
-            mock.post(f"{LLM}/chat/completions").mock(side_effect=llm_handler)
-            async with app_client(app) as client:
-                info = await yandex_import()
-                await seed_local(info)
-                yield {"client": client, "state": state, "yandex": info}
+    with mock_llm_http() as llm:
+        llm.answer = llm_handler
+        async with app.router.lifespan_context(app), app_client(app) as client:
+            info = await yandex_import()
+            await seed_local(info)
+            yield {"client": client, "state": state, "yandex": info}
 
 
 async def yandex_import() -> dict:
