@@ -726,11 +726,9 @@ async def test_library_track_is_addressed_by_uid(env):
     r = await c.get(out["stream_url"], headers={"Range": "bytes=0-9"})
     assert r.status_code == 206 and r.content == AUDIO[:10]
 
-    # the legacy `lib:<int>` (until stage 7) names the same track
-    legacy = await c.get("/api/listen", params={"ref": f"lib:{legacy_id}"})
-    assert legacy.status_code == 200, legacy.text
-    assert legacy.json()["uid"] == "u-lib"
-
+    # the old forms answer 404: a legacy int id and an `nd:` ref name no track any more
+    assert (await c.get("/api/listen", params={"ref": f"lib:{legacy_id}"})).status_code == 404
+    assert (await c.get("/api/listen", params={"ref": "nd:1"})).status_code == 404
     assert (await c.get("/api/listen", params={"ref": "lib:nope"})).status_code == 404
     assert (await c.get("/api/listen", params={"ref": "lib:999999"})).status_code == 404
 

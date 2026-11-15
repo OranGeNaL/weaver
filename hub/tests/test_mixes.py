@@ -4,6 +4,7 @@ downloads and the Hub playlist, the reserve, the replacement with its deletion r
 The generators of the build are fakes (`fake_generators`): the songs the library has and new catalog tracks dz:5000… .
 """
 
+# pyright: reportOptionalMemberAccess=false, reportAttributeAccessIssue=false, reportArgumentType=false
 from __future__ import annotations
 
 import uuid

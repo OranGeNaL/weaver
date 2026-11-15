@@ -978,8 +978,8 @@ class SoulseekStatusOut(BaseModel):
 
 
 class MixTrackOut(TrackOut):
-    """A song of a mix: the catalog track (`ref` "dz:…"; a song only the library has — `source` "nd", `ref`
-    "nd:<song>") with the library state, and why it is in the mix."""
+    """A song of a mix: the catalog track (`ref` "dz:…"; a song only the library has — `source` "lib", `ref`
+    "lib:<uid>") with the library state, and why it is in the mix."""
 
     position: int
     generator: str  # the strongest of the generators that gave it: favorites/stash/ytm_radio/...

@@ -5,6 +5,7 @@ has «Кино — Группа крови» (dz:100 / ndK, 245 s) and «Би-2 
 ангел» (dz:300) is a catalog track only.
 """
 
+# pyright: reportOptionalMemberAccess=false, reportAttributeAccessIssue=false, reportArgumentType=false
 from __future__ import annotations
 
 import uuid

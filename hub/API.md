@@ -459,17 +459,17 @@ separating them is a manual operation; `tracks.artist` and `albums.album_artist`
 
 `catalog_commit` (downloads, uploads, bootstrap) writes the blob, the track and the item's `done` with
 `library_track_id`/`uid` in one transaction; `download_items.blob_sha256` with `(download_item_id, blob_sha256)` is
-its idempotency key. The Hub-side `imports_done`/`mixes_done` effects are a coalesced,
-best-effort `nd_sync`; ND-only records are inert until stage 5 and never fail a job. `catalog_reconcile`
+its idempotency key. The Hub-side `imports_done`/`mixes_done` effects run right after the commit
+(`committed_effects`, best-effort: a failure never fails the job). `catalog_reconcile`
 (housekeeping) sets/clears `tracks.integrity_issue = missing_blob` and `albums.integrity_issue = missing_cover`,
 reports `orphan_blob` to the log and `/healthz.catalog`, does not index bucket objects and does not delete blobs —
 the storage GC does.
 
 `library` SSE events keep their names and payload keys: `kind`, `album_id`, `track_id`, `uid`. `album_id`/`track_id`
-stay deprecated ints until stage 7; new consumers read `uid`.
+are deprecated ints; new consumers read `uid`.
 | GET | `/api/media/blob/{sha256}` | service-only blob read: `Authorization: Bearer $MEDIA_BLOB_TOKEN`, supports `Range`; `401` without the token |
 | POST | `/api/star` | `StarIn`: `uids` (Hub track uids), `targets: [{target_type, ref?, uid?, target_data?}]` (≤500), `catalog_album_ref`, `refs`, `unstar`, `event_id?`, `ts?`, `client?` (default pwa), `context?`. The Hub is the only owner of ♥: no external media server is called. Successful objects are journaled; response `{ok:true,event_ids:[…]}`. A retry with the same `event_id` is idempotent and does not replay an old decision. `refs + unstar` also clears own pending ♥; explicit/import/mix/wave downloads survive; refs without unstar →400. Typed album/artist targets need no download of their songs |
-| GET | `/api/starred` | `StarredOut {song_ids, album_ids, artist_ids, track_uids, refs, subjects}` served by the Hub only (capability `hub_liked_v1`). `song_ids`/`album_ids`/`artist_ids` are deprecated ND aliases that stay until stage 7; new clients use `track_uids`. `refs` also include own pending track likes and catalog-only likes. Subjects include `{target_type,key,ref,uid,nd_id,liked,liked_since,event_id,aliases,target_data,provenance:"own"\|"import"}`. Use type plus aliases for button state |
+| GET | `/api/starred` | `StarredOut {track_uids, refs, subjects}` served by the Hub only (capability `hub_liked_v1`). `track_uids` are the Hub track uids of the liked tracks. `refs` also include own pending track likes and catalog-only likes. Subjects include `{target_type,key,ref,uid,liked,liked_since,event_id,aliases,target_data,provenance:"own"\|"import"}`. Use type plus aliases for button state |
 | GET | `/api/library/liked` | `LibLikedOut {tracks: LibTrackOut[], albums: LibAlbumOut[], artists: LibArtistOut[]}`: own ♥ and imported provenance, own decision overrides the imported one, newest first. No external service is called |
 
 An `/api/star` retry with the same event_id is journaled once and never replays an old decision. Delayed commands
@@ -613,7 +613,7 @@ library search, `list_starred` (with the import that starred a song), `get_playl
 `get_downloads`; changes: `create_playlist`, `add_to_playlist`, `remove_from_playlist`, `rename_playlist`, `star`,
 `unstar`, `enqueue_download`, `cancel_downloads`, `retry_downloads`. Many songs are named by a set (`songs_from`):
 `starred`, `starred_from_imports`, `playlist:<id>`, `import_collection:<id>`. SSE `library` `{kind: "unstarred",
-song_ids}` — the assistant took ♥ off.
+track_uids}` — the assistant took ♥ off.
 
 ### Internal embedder geometry v2 (stage E, 2026-10-26)
 

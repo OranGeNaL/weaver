@@ -592,7 +592,7 @@ async def sound(p: Profile, cands: list[Cand], stats: dict[str, Any]) -> dict[st
             await e.embed(await library_items())
             keys = [c.key for c in cands]
             sim = await e.similarity(keys, profile)
-            need = [k for k in profile if k in sim.missing and not k.startswith("nd:")]
+            need = [k for k in profile if k in sim.missing and not k.startswith("lib:")]
             todo = [c for c in cands if c.key in sim.missing and c.track is not None and c.track.source == "dz"]
             by_key = {t.key: t for t in p.tracks.values()}
             urls = await asyncio.gather(

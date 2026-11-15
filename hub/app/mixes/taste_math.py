@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 from app.favorites import AliasIndex, State, fold
 from app.mixes.embedder import GeometryProfile
-from app.mixes.taste import Profile, TasteTrack, artist_key, skip_weight
+from app.mixes.taste import Profile, TasteTrack, artist_key, skip_weight, song_key
 from app.mixes.taste_snapshot import Subject, TasteEvent, TasteSnapshot, calendar_cutoff, utc
 from app.models import PlayEvent
 
@@ -325,7 +325,11 @@ def _calculate(snapshot, *, now, timezone, mode, experiment, version="v2", trace
             )
             p.tracks[key] = t
         for alias in all_aliases:
-            p.by_id[alias[4:] if alias.startswith("ref:") else alias] = key
+            # `Profile.find` looks a library song up by its vector key (`lib:<uid>`), not by the alias form
+            if alias.startswith("ref:"):
+                p.by_id[alias[4:]] = key
+            elif alias.startswith("uid:"):
+                p.by_id[song_key(alias[4:])] = key
         if t.fp:
             p.by_id[t.fp] = key
         return t
@@ -533,7 +537,7 @@ def _calculate(snapshot, *, now, timezone, mode, experiment, version="v2", trace
                 p.disliked_artists.add(artist_key(name))
         elif t := get_track(e.ref, e.track_uid):
             p.explicit_negative_keys.add(t.key)
-            p.disliked_ids.update(k for k in (t.ref, f"uid:{t.uid}" if t.uid else None) if k)
+            p.disliked_ids.update(k for k in (t.ref, song_key(t.uid) if t.uid else None) if k)
             t.negative += 5 * weight(e.ts)
             if trace is not None:
                 w = weight(e.ts)
@@ -568,7 +572,7 @@ def _calculate(snapshot, *, now, timezone, mode, experiment, version="v2", trace
             if not t:
                 continue
             p.explicit_negative_keys.add(t.key)
-            p.disliked_ids.update(k for k in (t.ref, f"uid:{t.uid}" if t.uid else None) if k)
+            p.disliked_ids.update(k for k in (t.ref, song_key(t.uid) if t.uid else None) if k)
             t.negative += 5 * weight(utc(d.at) if d.at else now)
             if trace is not None:
                 at = utc(d.at) if d.at else now

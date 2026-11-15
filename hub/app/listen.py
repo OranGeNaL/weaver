@@ -700,8 +700,11 @@ async def _resolve(ref: str, *, probe: bool, remembered: bool, full_only: bool =
         return await _resolve_file(ref, probe=probe, remembered=remembered)
     if src == "lib":
         return await _resolve_library(ref, id_)
-    if not ((src == "dz" and svc.deezer is not None) or (src == "hm" and "hitmoz" in svc.providers)):
-        raise ListenError(400, "Этот трек нельзя послушать")
+    if src not in ("dz", "hm") or not (
+        (src == "dz" and svc.deezer is not None) or (src == "hm" and "hitmoz" in svc.providers)
+    ):
+        # an unknown scheme (a legacy `nd:` ref, anything else) names no track any more
+        raise ListenError(404, "Трек не найден")
     choice = await _remembered(ref) if remembered else None
     if choice is not None and full_only and choice.kind == "preview":
         choice = None
@@ -750,18 +753,14 @@ async def _resolve_file(ref: str, *, probe: bool, remembered: bool) -> Choice:
 
 
 async def _find_library_track(s, track_ref: str) -> Track | None:
-    """A library track by its `uid`, or by the legacy int id kept until stage 7."""
-    if track_ref.isdigit():
-        return (
-            await s.execute(select(Track).where(Track.id == int(track_ref), Track.deleted_at.is_(None)).limit(1))
-        ).scalar_one_or_none()
+    """A library track by its Hub `uid` (the only form: `lib:<uid>`)."""
     return (
         await s.execute(select(Track).where(Track.uid == track_ref, Track.deleted_at.is_(None)).limit(1))
     ).scalar_one_or_none()
 
 
 async def _resolve_library(ref: str, track_ref: str) -> Choice:
-    """A library track by its Hub `uid` (`lib:<uid>`); the legacy int id is still resolved until stage 7."""
+    """A library track by its Hub `uid` (`lib:<uid>`)."""
     async with session_scope() as s:
         t = await _find_library_track(s, track_ref)
         found = await _library_ref(s, t)

@@ -30,7 +30,7 @@ PARALLEL = 4
 
 
 def library_track(t) -> CatalogTrack:
-    """A library song as a catalog-like track: its Deezer record when it has one, else `nd:<song>`."""
+    """A library song as a catalog-like track: its Deezer record when it has one, else `lib:<uid>`."""
     if t.deezer_track_id:
         return CatalogTrack(
             ref=f"dz:{t.deezer_track_id}",

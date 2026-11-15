@@ -105,7 +105,6 @@ def mock_idp(mock: respx.MockRouter) -> None:
 async def env(hub_env, monkeypatch, tmp_path):
     """The app with the admin created from the environment and one generic OIDC provider (`idp.test`)."""
     monkeypatch.setenv("GOOGLE_CLIENT_ID", CLIENT_ID)
-    monkeypatch.setenv("PUBLIC_MUSIC_URL", "https://music.test:8444")
     config = tmp_path / "config.yaml"
     config.write_text(
         f"""

@@ -36,8 +36,8 @@ async def events(
     # a catalog track the app played from its precache never asked the stream as a listen: its `start` is one
     # (a track of an economy import is downloaded once listened to)
     refs = {e.get("ref") for e in body.events if isinstance(e, dict) and e.get("kind") == "start"}
-    # catalog refs only: `nd:`/`lib:` name a track the library already has
-    if refs := sorted(r for r in refs if isinstance(r, str) and r and not r.startswith(("nd:", "lib:"))):
+    # catalog refs only: a `lib:<uid>` names a track the library already has
+    if refs := sorted(r for r in refs if isinstance(r, str) and r and not r.startswith("lib:")):
         from app.imports.core import listened
 
         await s.commit()

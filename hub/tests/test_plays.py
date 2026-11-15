@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import httpx
 import pytest
@@ -25,8 +26,14 @@ def iso(dt: datetime) -> str:
     return dt.isoformat().replace("+00:00", "Z")
 
 
-def ev(kind: str, *, at: datetime | None = None, **kw) -> dict:
-    return {"event_id": uuid.uuid4().hex, "ts": iso(at or datetime.now(UTC)), "kind": kind, "client": "app/1.5.0", **kw}
+def ev(kind: str, *, when: datetime | None = None, **kw) -> dict:
+    return {
+        "event_id": uuid.uuid4().hex,
+        "ts": iso(when or datetime.now(UTC)),
+        "kind": kind,
+        "client": "app/1.5.0",
+        **kw,
+    }
 
 
 @pytest.fixture
@@ -69,7 +76,7 @@ async def stored() -> list:
         return list((await s.execute(select(PlayEvent).order_by(PlayEvent.ts, PlayEvent.id))).scalars())
 
 
-async def post(c: httpx.AsyncClient, *events: dict) -> dict:
+async def post(c: httpx.AsyncClient, *events: Any) -> dict:
     r = await c.post("/api/plays/events", json={"events": list(events)})
     assert r.status_code == 200, r.text
     return r.json()
@@ -77,11 +84,12 @@ async def post(c: httpx.AsyncClient, *events: dict) -> dict:
 
 async def test_checkpoints_are_cumulative_and_retries_are_idempotent(env):
     c = env["client"]
-    attempt = dict(ref="dz:100", playback_id="attempt-1", device_id="device-1")
-    start = ev("start", listened_ms=0, **attempt)
-    first = ev("progress", listened_ms=10000, **attempt)
-    later = ev("progress", listened_ms=22000, **attempt)
-    terminal = ev("interrupted", listened_ms=25000, **attempt)
+
+    def attempt(ms: int, kind: str) -> dict:
+        return ev(kind, listened_ms=ms, ref="dz:100", playback_id="attempt-1", device_id="device-1")
+
+    start, first = attempt(0, "start"), attempt(10000, "progress")
+    later, terminal = attempt(22000, "progress"), attempt(25000, "interrupted")
     assert (await post(c, start, later, first, terminal, later))["accepted"] == 4
     assert (await post(c, first, terminal))["duplicates"] == 2
     rows = [x for x in await stored() if x.playback_id == "attempt-1"]
@@ -149,10 +157,10 @@ async def test_summary_uses_cumulative_max_and_distinguishes_legacy(env):
     now -= timedelta(seconds=5)
     await post(
         c,
-        ev("start", at=now, listened_ms=0, **target),
-        ev("progress", at=now + timedelta(seconds=1), listened_ms=32000, **target),
-        ev("interrupted", at=now + timedelta(seconds=2), listened_ms=33000, **target),
-        ev("finish", at=now, ref="dz:999", position_s=100),
+        ev("start", when=now, listened_ms=0, **target),
+        ev("progress", when=now + timedelta(seconds=1), listened_ms=32000, **target),
+        ev("interrupted", when=now + timedelta(seconds=2), listened_ms=33000, **target),
+        ev("finish", when=now, ref="dz:999", position_s=100),
     )
     day = now.astimezone(ZoneInfo("Europe/Moscow")).date().isoformat()
     response = await c.get("/api/plays/summary", params={"start": day, "end": day, "timezone": "Europe/Moscow"})
@@ -173,8 +181,8 @@ async def test_summary_excludes_future_checkpoints(env):
     target = {"ref": "dz:100", "device_id": "dev", "playback_id": "future"}
     await post(
         c,
-        ev("start", at=now, listened_ms=0, **target),
-        ev("progress", at=now + timedelta(minutes=30), listened_ms=40000, **target),
+        ev("start", when=now, listened_ms=0, **target),
+        ev("progress", when=now + timedelta(minutes=30), listened_ms=40000, **target),
     )
     day = now.date().isoformat()
     response = await c.get("/api/plays/summary", params={"start": day, "end": day})
@@ -192,8 +200,8 @@ async def test_summary_unifies_verified_aliases_after_library_deletion(env):
     async with session_scope() as s:
         track = (await s.execute(select(Track).where(Track.uid == KROVI))).scalar_one()
         await s.delete(track)
-    await post(c, ev("finish", at=now, ref="dz:100", device_id="dev", playback_id="a", listened_ms=30000))
-    await post(c, ev("finish", at=now, ref="dz:100", uid=KROVI, device_id="dev", playback_id="b", listened_ms=40000))
+    await post(c, ev("finish", when=now, ref="dz:100", device_id="dev", playback_id="a", listened_ms=30000))
+    await post(c, ev("finish", when=now, ref="dz:100", uid=KROVI, device_id="dev", playback_id="b", listened_ms=40000))
     day = now.date().isoformat()
     response = await c.get("/api/plays/summary", params={"start": day, "end": day})
     assert response.status_code == 200, response.text
@@ -209,14 +217,14 @@ async def test_summary_keeps_rich_metadata_when_later_checkpoint_is_sparse(env):
         c,
         ev(
             "start",
-            at=now,
+            when=now,
             listened_ms=0,
             track_metadata={"artists": [{"name": "A", "ref": "dz:1"}, {"name": "B", "ref": "dz:2"}]},
             **target,
         ),
         ev(
             "progress",
-            at=now + timedelta(seconds=1),
+            when=now + timedelta(seconds=1),
             listened_ms=30000,
             track_metadata={"artists": [{"name": "A"}]},
             **target,
@@ -236,10 +244,10 @@ async def test_summary_assigns_checkpoint_deltas_across_midnight(env):
     target = {"ref": "dz:100", "device_id": "dev", "playback_id": "boundary"}
     await post(
         c,
-        ev("start", at=midnight - timedelta(seconds=30), listened_ms=0, **target),
-        ev("progress", at=midnight - timedelta(seconds=15), listened_ms=15000, **target),
-        ev("progress", at=midnight + timedelta(seconds=15), listened_ms=45000, **target),
-        ev("finish", at=midnight + timedelta(seconds=20), listened_ms=50000, **target),
+        ev("start", when=midnight - timedelta(seconds=30), listened_ms=0, **target),
+        ev("progress", when=midnight - timedelta(seconds=15), listened_ms=15000, **target),
+        ev("progress", when=midnight + timedelta(seconds=15), listened_ms=45000, **target),
+        ev("finish", when=midnight + timedelta(seconds=20), listened_ms=50000, **target),
     )
     first = (await c.get("/api/plays/summary", params={"start": str(day), "end": str(day)})).json()
     second_day = day + timedelta(days=1)
@@ -274,6 +282,7 @@ async def test_typed_favorites_and_old_star_payload_share_one_state(env):
     assert out["accepted"] == 2 and len(out["rejected"]) == 1
     async with session_scope() as s:
         user = (await s.execute(select(User))).scalars().first()
+        assert user is not None
         states = await snapshot(s, user.id)
     assert len(states) == 3 and all(x.liked for x in states.values())
     assert "typed_favorites_v1" in (await c.get("/healthz")).json()["capabilities"]
@@ -330,7 +339,7 @@ async def test_late_catalog_like_does_not_enqueue_after_newer_unlike(env):
 
     c = env["client"]
     now = datetime.now(UTC)
-    await post(c, ev("unlike", at=now, event_id="newer", ref="dz:988"))
+    await post(c, ev("unlike", when=now, event_id="newer", ref="dz:988"))
     r = await c.post(
         "/api/downloads",
         json={
@@ -358,6 +367,7 @@ async def test_compensation_before_expansion_cancels_quiet_download(env):
     await post(c, ev("unlike", event_id="undo", ref="dz:990", reverts_event_id="original"))
     async with session_scope() as s:
         batch = await s.get(DownloadBatch, r.json()["batch_id"])
+        assert batch is not None
         await create_items(
             s,
             batch,
@@ -377,6 +387,7 @@ async def test_catalog_like_joins_explicit_download_without_changing_its_visibil
     c = env["client"]
     async with session_scope() as s:
         user = (await s.execute(select(User))).scalars().first()
+        assert user is not None
         batch = DownloadBatch(user_id=user.id, origin="catalog")
         s.add(batch)
         await s.flush()
@@ -397,6 +408,7 @@ async def test_catalog_like_joins_explicit_download_without_changing_its_visibil
     assert r.status_code == 200, r.text
     async with session_scope() as s:
         item = await s.get(DownloadItem, item_id)
+        assert item is not None
         assert item.status == "queued" and item.query_json["requested"]
         assert not item.query_json["star"] and item.query_json["star_cancelled"]
     assert [e.event_id for e in await stored() if e.ref == "dz:991"] == ["joined", "joined-unlike"]
@@ -409,6 +421,7 @@ async def test_compensation_cancels_active_quiet_download(env):
     c = env["client"]
     async with session_scope() as s:
         user = (await s.execute(select(User))).scalars().first()
+        assert user is not None
         batch = DownloadBatch(user_id=user.id, origin="catalog")
         s.add(batch)
         await s.flush()
@@ -426,6 +439,7 @@ async def test_compensation_cancels_active_quiet_download(env):
     await post(c, ev("unlike", event_id="quiet-undo", ref="dz:992", reverts_event_id="quiet"))
     async with session_scope() as s:
         item = await s.get(DownloadItem, item_id)
+        assert item is not None
         assert item.status == "cancelled" and item.query_json["star_cancelled"]
 
 
@@ -449,6 +463,7 @@ async def test_scrobble_dedup_preserves_synthetic_likes_and_bounds_future(env):
     now = utcnow()
     async with session_scope() as s:
         user = (await s.execute(select(User))).scalars().first()
+        assert user is not None
         s.add(
             PlayEvent(
                 user_id=user.id,
@@ -464,8 +479,8 @@ async def test_scrobble_dedup_preserves_synthetic_likes_and_bounds_future(env):
         )
     await post(
         env["client"],
-        ev("finish", uid=KROVI, at=now.replace(tzinfo=UTC)),
-        ev("unlike", uid=KROVI, at=(now + timedelta(minutes=30)).replace(tzinfo=UTC)),
+        ev("finish", uid=KROVI, when=now.replace(tzinfo=UTC)),
+        ev("unlike", uid=KROVI, when=(now + timedelta(minutes=30)).replace(tzinfo=UTC)),
     )
     async with session_scope() as s:
         rows = await user_events(s, user.id, now=now + timedelta(seconds=1))
@@ -555,11 +570,11 @@ async def test_short_attempt_does_not_supersede_a_scrobble(env):
     # 0 ms started, then a 5 s skip: below the 30 s threshold — the scrobble stays the counted listen
     await post(
         c,
-        ev("start", ref="dz:100", at=NOW, listened_ms=0, playback_id="pb-short", device_id="dev-short"),
+        ev("start", ref="dz:100", when=NOW, listened_ms=0, playback_id="pb-short", device_id="dev-short"),
         ev(
             "skip",
             ref="dz:100",
-            at=NOW + timedelta(seconds=5),
+            when=NOW + timedelta(seconds=5),
             listened_ms=5_000,
             playback_id="pb-short",
             device_id="dev-short",
@@ -583,7 +598,7 @@ async def test_progress_only_measured_attempt_supersedes_a_scrobble(env):
         ev(
             "progress",
             ref="dz:100",
-            at=NOW + timedelta(seconds=40),
+            when=NOW + timedelta(seconds=40),
             listened_ms=35_000,
             playback_id="pb-progress",
             device_id="dev-progress",
@@ -630,7 +645,7 @@ async def test_legacy_finish_does_not_supersede_a_scrobble(env):
         json={"event_id": "sc-legacy", "ref": "dz:100", "ts": iso(NOW), "client": "pwa", "duration_s": 245},
     )
     # a finish without checkpoints is legacy evidence: it never counts, so it must not hide the scrobble
-    await post(c, ev("finish", ref="dz:100", at=NOW + timedelta(seconds=20)))
+    await post(c, ev("finish", ref="dz:100", when=NOW + timedelta(seconds=20)))
     scrobbles = [e for e in await stored() if e.scrobble]
     assert len(scrobbles) == 1 and not scrobbles[0].superseded_scrobble
     summary = await c.get("/api/plays/summary", params={"start": "2026-10-22", "end": "2026-10-22"})
@@ -718,9 +733,9 @@ async def test_wrong_client_clock_gets_the_time_the_event_came(env):
     past = datetime.now(UTC) - timedelta(days=3)  # an offline queue: kept as it is
     await post(
         c,
-        ev("finish", ref="dz:100", at=datetime.now(UTC) + timedelta(days=2)),
-        ev("finish", ref="dz:100", at=past),
-        ev("finish", ref="dz:100", at=datetime(2001, 1, 1, tzinfo=UTC)),
+        ev("finish", ref="dz:100", when=datetime.now(UTC) + timedelta(days=2)),
+        ev("finish", ref="dz:100", when=past),
+        ev("finish", ref="dz:100", when=datetime(2001, 1, 1, tzinfo=UTC)),
     )
     now = datetime.now(UTC)
     times = sorted(r.ts for r in await stored())
@@ -791,7 +806,7 @@ async def test_import_likes_do_not_count_unless_liked_again(env):
     await post(
         c,
         ev("like", uid=SVOE),
-        ev("finish", ref="dz:100", at=datetime.now(UTC) - timedelta(days=40)),
+        ev("finish", ref="dz:100", when=datetime.now(UTC) - timedelta(days=40)),
         ev("skip", ref="dz:100", position_s=5),
     )
     async with session_scope() as s:
@@ -813,10 +828,10 @@ async def test_late_accept_chain_has_separate_capability_and_preserves_original_
     capabilities = (await c.get("/healthz")).json()["capabilities"]
     assert {"typed_favorites_v1", "favorite_compensation_chains_v1"} <= set(capabilities)
     at = datetime(2026, 10, 26, 12, tzinfo=UTC)
-    original = ev("like", at=at, event_id="accept-a", target_type="album", ref="dz:500")
+    original = ev("like", when=at, event_id="accept-a", target_type="album", ref="dz:500")
     compensation = ev(
         "unlike",
-        at=at + timedelta(seconds=1),
+        when=at + timedelta(seconds=1),
         event_id="accept-c",
         target_type="album",
         ref="dz:500",
@@ -824,7 +839,7 @@ async def test_late_accept_chain_has_separate_capability_and_preserves_original_
     )
     restoration = ev(
         "like",
-        at=at + timedelta(seconds=2),
+        when=at + timedelta(seconds=2),
         event_id="accept-r",
         target_type="album",
         ref="dz:500",
@@ -855,10 +870,10 @@ async def test_launch_fields_are_stored_and_never_change_the_taste(env):
     at = datetime.now(UTC) - timedelta(days=2)
     launch = dict(launch_id="launch-1", launch_origin="mix_page")
     events = [
-        ev("start", at=at, ref="dz:100", context="mix:7", **launch),
+        ev("start", when=at, ref="dz:100", context="mix:7", **launch),
         ev(
             "finish",
-            at=at + timedelta(minutes=4),
+            when=at + timedelta(minutes=4),
             ref="dz:100",
             position_s=245,
             duration_s=245,
@@ -867,14 +882,14 @@ async def test_launch_fields_are_stored_and_never_change_the_taste(env):
         ),
         ev(
             "skip",
-            at=at + timedelta(minutes=5),
+            when=at + timedelta(minutes=5),
             uid=SVOE,
             position_s=5,
             duration_s=200,
             context="album",
             **launch,
         ),
-        ev("like", at=at + timedelta(minutes=6), ref="dz:100"),
+        ev("like", when=at + timedelta(minutes=6), ref="dz:100"),
     ]
     bad = ev("start", ref="dz:100", launch_origin="Mix page")
     out = await post(c, *events, bad, ev("start", ref="dz:100", launch_id="x" * 65))

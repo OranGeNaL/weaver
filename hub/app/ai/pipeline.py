@@ -216,6 +216,7 @@ async def resolve_row(
                     explicit=lib.explicit,
                     owned=True,
                     library_track_id=lib.id,
+                    uid=lib.uid,
                 )
                 return row, candidates_json
 

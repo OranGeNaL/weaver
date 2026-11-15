@@ -271,7 +271,6 @@ HomeMusic — это персональный музыкальный серви�
 |---|---|
 | `download_item` | `jobs/downloads.py` |
 | `expand_batch` | `jobs/downloads.py` |
-| `nd_scan` | `jobs/downloads.py` |
 | `mix_build`, `mix_sync` | `mixes/core.py` |
 | `import_auth`, `import_fetch`, `import_resolve`, `import_playlists`, `import_finish` | `imports/core.py` |
 | `assistant_task` | `ai/pipeline.py` |

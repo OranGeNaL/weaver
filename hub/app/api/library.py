@@ -275,7 +275,7 @@ async def _starred_artist_ids(s: AsyncSession, user_id: int) -> list[int]:
             continue
         refs = {x for x in (st.ref, *(st.aliases or [])) if x}
         uids = {r.split(":", 1)[1] for r in refs if r.startswith(("artist:", "uid:"))}
-        uids |= {r for r in refs if not r.startswith(("dz:", "ref:", "nd:", "artist:", "uid:"))}
+        uids |= {r for r in refs if not r.startswith(("dz:", "ref:", "artist:", "uid:"))}
         if st.uid:
             uids.add(st.uid)
         when = st.since or st.event.ts
@@ -302,7 +302,7 @@ async def _starred_album_ids(s: AsyncSession, user_id: int) -> list[int]:
         refs = {x for x in (st.ref, *(st.aliases or [])) if x}
         dz |= {r.split(":", 1)[1] for r in refs if r.startswith("dz:")}
         uids |= {r.split(":", 1)[1] for r in refs if r.startswith(("album:", "uid:"))}
-        uids |= {r for r in refs if not r.startswith(("dz:", "ref:", "nd:", "album:", "uid:"))}
+        uids |= {r for r in refs if not r.startswith(("dz:", "ref:", "album:", "uid:"))}
         uids |= {st.uid} if st.uid else set()
     if not dz and not uids:
         return []

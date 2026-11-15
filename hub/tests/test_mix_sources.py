@@ -303,7 +303,7 @@ async def test_resolve_looks_up_a_repeated_hit_once(db) -> None:
         out = await resolve_hits("lastfm", [Hit("Кино", "Группа крови", 245), Hit("Кино", "Группа крови", 245)])
     finally:
         svc.deezer = None
-    assert [t.ref for t in out] == ["dz:100", "dz:100"] and fake.searched == 1
+    assert all(out) and [t.ref for t in out if t] == ["dz:100", "dz:100"] and fake.searched == 1
 
 
 async def test_resolve_prefers_the_library(db) -> None:
@@ -327,6 +327,7 @@ async def test_resolve_prefers_the_library(db) -> None:
 
     [t] = await resolve_hits("lastfm", [Hit("Своя группа", "Песня", 201)])
 
+    assert t is not None
     assert (t.ref, t.source) == (f"lib:{uid}", "lib")
 
 
@@ -349,14 +350,14 @@ async def test_embedder_client(db, respx_mock: respx.MockRouter) -> None:
     )
 
     async with EmbedderClient() as e:
-        assert await e.embed([{"key": "dz:1", "url": "https://p.test/1.mp3"}, {"key": "nd:x", "path": "a/b.mp3"}]) == 1
-        got = await e.similarity(["dz:1", "dz:2"], {"nd:x": 2.0, "nd:y": -5.0})
+        assert await e.embed([{"key": "dz:1", "url": "https://p.test/1.mp3"}, {"key": "lib:x", "path": "a/b.mp3"}]) == 1
+        got = await e.similarity(["dz:1", "dz:2"], {"lib:x": 2.0, "lib:y": -5.0})
         vectors = await e.vectors(["dz:1"])
 
-    assert json.loads(embed.calls.last.request.content)["items"][1] == {"key": "nd:x", "path": "a/b.mp3"}
+    assert json.loads(embed.calls.last.request.content)["items"][1] == {"key": "lib:x", "path": "a/b.mp3"}
     assert json.loads(sim.calls.last.request.content)["profile"] == [
-        {"key": "nd:x", "weight": 2.0},
-        {"key": "nd:y", "weight": -5.0},
+        {"key": "lib:x", "weight": 2.0},
+        {"key": "lib:y", "weight": -5.0},
     ]
     assert (got.scores, got.missing, vectors) == ({"dz:1": 0.7}, {"dz:2"}, {"dz:1": [1, 0]})
 
@@ -368,4 +369,4 @@ async def test_embedder_down(db, respx_mock: respx.MockRouter) -> None:
 
     async with EmbedderClient() as e:
         with pytest.raises(EmbedderDown):
-            await e.similarity(["dz:1"], {"nd:x": 1.0})
+            await e.similarity(["dz:1"], {"lib:x": 1.0})
