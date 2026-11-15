@@ -278,6 +278,7 @@ def test_retag_from_scratch_drops_old_fields(audio_file: Path) -> None:
     assert r["has_cover"] is False and r["artists"] == []
     # ffmpeg's own encoder tags are gone too
     f = mutagen.File(audio_file)
+    assert f is not None
     keys = {str(k).upper() for k in (f.tags.keys() if f.tags else [])}
     assert not keys & {"TSSE", "ENCODER", "©TOO"}
 

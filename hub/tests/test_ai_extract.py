@@ -223,7 +223,9 @@ def test_merge_context_from_first_tile_with_it() -> None:
         context=ExtractionContext(playlist_name="Рок"),
         items=[item("Кино", "Группа крови"), item("Сплин", "Романс")],
     )
-    c = Extraction(source_app="spotify", context=ExtractionContext(playlist_name="Другой"), items=[item("ДДТ", "Осень")])
+    c = Extraction(
+        source_app="spotify", context=ExtractionContext(playlist_name="Другой"), items=[item("ДДТ", "Осень")]
+    )
     m = merge_extractions([a, b, c])
     assert m.source_app == "vk" and m.page_type == "playlist" and m.context.playlist_name == "Рок"
     assert [i.title_raw for i in m.items] == ["Группа крови", "Романс", "Осень"]

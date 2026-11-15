@@ -25,13 +25,13 @@
 
 ## 5. Снятие подавлений
 
-- [ ] 5.1 Снять `# pyright: reportOptionalMemberAccess=false, reportAttributeAccessIssue=false, reportArgumentType=false` в `tests/test_mixes.py`, добиться локального нуля.
-- [ ] 5.2 Снять ту же директиву в `tests/test_insights.py`; проверить, что `include: ["app"]` пока не сломан.
+- [x] 5.1 Снять `# pyright: reportOptionalMemberAccess=false, reportAttributeAccessIssue=false, reportArgumentType=false` в `tests/test_mixes.py`, добиться локального нуля.
+- [x] 5.2 Снять ту же директиву в `tests/test_insights.py`; проверить, что `include: ["app"]` пока не сломан.
 
 ## 6. Гейт
 
-- [ ] 6.1 `hub/pyrightconfig.json`: `include: ["app", "tests"]`, убрать `tests` из `exclude`.
-- [ ] 6.2 Удалить временный `hub/pyright.tests.json`.
-- [ ] 6.3 Прогнать `cd hub && uv run pyright` (0 ошибок), `uv run ruff check`, `uv run ruff format --check`.
+- [x] 6.1 `hub/pyrightconfig.json`: `include: ["app", "tests"]`, убрать `tests` из `exclude`.
+- [x] 6.2 Удалить временный `hub/pyright.tests.json`.
+- [x] 6.3 Прогнать `cd hub && uv run pyright` (0 ошибок), `uv run ruff check`, `uv run ruff format --check`.
 - [ ] 6.4 Прогнать полный `pytest`; число `passed`/`skipped` MUST совпасть с базовой линией (1.2), кроме тестов, добавленных этим change'ем (их нет).
 - [ ] 6.5 Проверить, что ни один assert не удалён: `git diff` по `hub/tests` не содержит удалённых строк с `assert` без замены; расхождения объяснить в отчёте.

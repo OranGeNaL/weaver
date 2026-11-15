@@ -5,7 +5,6 @@ has «Кино — Группа крови» (dz:100 / uK, 245 s) and «Би-2 �
 ангел» (dz:300) is a catalog track only.
 """
 
-# pyright: reportOptionalMemberAccess=false, reportAttributeAccessIssue=false, reportArgumentType=false
 from __future__ import annotations
 
 import uuid
@@ -483,6 +482,7 @@ async def test_counted_listens_match_the_summary_and_hours_are_local(hub):
     start, end = date(2026, 3, 1), date(2026, 3, 15)
     async with session_scope() as s:
         user = await s.get(User, m)
+        assert user is not None
         got = await analytics.listening(s, user, start, end, TZ, NOW)
         want = await summary(s, m, start, end, TZ)
     assert got["totals"]["counted_listens"] == want["counted_listens"] == 3
@@ -511,7 +511,9 @@ async def test_listening_counts_mix_and_wave_recommendations_and_adoption(hub):
         attempt(m, NOW - timedelta(hours=5), "dz:300", context="album", device="dev2"),
     )
     async with session_scope() as s:
-        got = await analytics.listening(s, await s.get(User, m), date(2026, 3, 1), date(2026, 3, 15), TZ, NOW)
+        user = await s.get(User, m)
+        assert user is not None
+        got = await analytics.listening(s, user, date(2026, 3, 1), date(2026, 3, 15), TZ, NOW)
     mix, wave = got["recommendations"]["mix"], got["recommendations"]["wave"]
     assert (mix["built"], mix["launched_mixes"], mix["launches"], mix["started"], mix["heard"]) == (1, 1, 1, 2, 1)
     assert mix["likes"] == 1 and mix["familiar"] == {"started": 0, "heard": 0} and mix["new"]["started"] == 2
@@ -603,6 +605,7 @@ async def test_admin_profile_is_the_mix_build_profile(hub):
     await listeners(hub["ids"])
     async with session_scope() as s:
         user = await s.get(User, hub["ids"]["anna"])
+        assert user is not None
         mine = await admin_profile(s, user.id, model=None, now=NOW)
         built = await build_profile(s, user, now=NOW, model="v2")
     assert mine == built and mine.tracks
