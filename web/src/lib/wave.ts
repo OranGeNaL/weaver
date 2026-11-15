@@ -98,12 +98,20 @@ export function useWave() {
   return useSyncExternalStore(subscribe, () => snapshot);
 }
 
-export const seedKey = (seed?: WaveSeedIn | null) => (seed?.by_artist ? 'artist:' : '') + (seed?.ref ?? seed?.nd_song_id ?? seed?.artist_ref ?? seed?.nd_artist_id ?? '');
+export { artistRadioSeed, seedKey } from './waveSeed';
+import { seedKey } from './waveSeed';
 
-type SeedTrack = { ref?: string | null; nd_song_id?: string | null; artist_ref?: string | null };
+type SeedTrack = {
+  ref?: string | null;
+  uid?: string | null;
+  nd_song_id?: string | null;
+  artist_ref?: string | null;
+};
 export function trackSeed(t: SeedTrack): WaveSeedIn | null {
   const ref = t.ref?.trim();
-  if (ref && /^(dz|nd):.+/.test(ref)) return { ref };
+  if (ref && /^(dz|nd|lib):.+/.test(ref)) return { ref };
+  const uid = t.uid?.trim();
+  if (uid) return { song_uid: uid };
   const id = t.nd_song_id?.trim();
   if (id) return { nd_song_id: id };
   return ref && /^file:[^:]+:.+/.test(ref) ? { ref } : null;

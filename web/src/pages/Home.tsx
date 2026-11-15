@@ -1,4 +1,4 @@
-import { api } from '../api/client';
+import { libHome } from '../api/library';
 import { Icon, type IconName } from '../components/Icon';
 import { WaveCard } from '../components/Wave';
 import { WaveHero } from '../components/WaveHero';
@@ -12,11 +12,12 @@ import { AlbumRow, ArtistRow } from './MediaLibrary';
 import { MixCard } from './Mix';
 
 /** «Главная» of the PWA in a plain browser (`STANDALONE`), like the app's: «Микс дня», «Моя волна», shortcuts to
- * the library, «Радиостанции» (a wave by a library artist, liked ones first) and rows of albums Navidrome knows the
- * user plays. Inside the app this is its native home screen. */
+ * the library, «Радиостанции» (a wave by a library artist, liked ones first) and rows of albums of the Hub catalog
+ * (`/api/library/home`; the deprecated `/api/nd/home` answers when the Hub lacks `hub_library_v1`). Inside the app
+ * this is its native home screen. */
 export function HomePage() {
   const { me } = useSession();
-  const res = useAsync((s) => api.ndHome(s), []);
+  const res = useAsync((s) => libHome(s), []);
   useHubEvent('library', () => res.reload(true));
   const d = res.data;
   const desktop = useDesktop();

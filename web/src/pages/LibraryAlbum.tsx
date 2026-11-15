@@ -16,7 +16,7 @@ import { ReleaseTypeSelect } from './Library';
 
 const RELEASE_TYPES: ReleaseType[] = ['album', 'single', 'ep', 'compilation'];
 
-export function LibraryAlbumPage({ id }: { id: number }) {
+export function LibraryAlbumPage({ id }: { id: string }) {
   const res = useAsync((s) => api.libAlbum(id, s), [id]);
   const [coverRev, setCoverRev] = useState(() => Date.now());
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -43,15 +43,20 @@ export function LibraryAlbumPage({ id }: { id: number }) {
   const tracks = [...(album.tracks ?? [])].sort((a, b) => (a.disc_no ?? 1) - (b.disc_no ?? 1) || (a.track_no ?? 0) - (b.track_no ?? 0));
   const total = tracks.reduce((s, t) => s + (t.duration_s ?? 0), 0);
   const allSelected = tracks.length > 0 && selected.size === tracks.length;
-  // Tracks Navidrome has scanned play in album order: in the app's player, in a browser in the page's own one.
-  const playable = tracks.filter((t) => t.nd_song_id);
+  // The album's tracks play as `lib:<uid>` in album order: in the app's player, in a browser in the page's own one.
+  const playable = tracks.filter((t) => t.uid);
   const asListen = (t: LibTrackOut): ListenTrack => ({
-    ref: `nd:${t.nd_song_id}`, title: t.title, artist: t.artist, album: t.album ?? undefined, duration_s: t.duration_s,
-    cover_url: album.has_cover ? libraryCoverUrl(album.id, 600, coverRev) : null,
-    cover_small_url: album.has_cover ? libraryCoverUrl(album.id, 120, coverRev) : null,
+    ref: `lib:${t.uid}`, uid: t.uid, nd_song_id: t.nd_song_id,
+    title: t.title, artist: t.artist, album: t.album ?? undefined, duration_s: t.duration_s,
+    cover_url: album.has_cover ? libraryCoverUrl(album.uid, 600, coverRev) : null,
+    cover_small_url: album.has_cover ? libraryCoverUrl(album.uid, 120, coverRev) : null,
   });
   const playFrom = (from?: LibTrackOut) => {
-    if (canPlay()) return playList(playable, (x) => x.nd_song_id, from);
+    // apps before `playQueue` play library songs by their deprecated Navidrome id
+    const scanned = playable.filter((t) => t.nd_song_id);
+    if (canPlay() && scanned.length === playable.length) {
+      return playList(scanned, (x) => x.nd_song_id, from && scanned.includes(from) ? from : undefined);
+    }
     const list = playable.map(asListen);
     if (from) listen(list[playable.indexOf(from)], list, 'album');
     else listenAll(list, { context: 'album' });
@@ -116,8 +121,9 @@ export function LibraryAlbumPage({ id }: { id: number }) {
         back="/library"
         right={
           <>
-            <LikeButton targetType="album" ndId={album.nd_album_id}
-              refId={album.deezer_album_id ? `dz:${album.deezer_album_id}` : null}
+            {/* the same ♥ target as the catalog album page: `dz:…` when known, else the Hub uid as a bare ref */}
+            <LikeButton targetType="album" ndId={album.deezer_album_id ? null : album.nd_album_id}
+              refId={album.deezer_album_id ? `dz:${album.deezer_album_id}` : album.uid}
               title={album.title} data={{ name: album.title, artist: album.album_artist }} />
             <IconButton icon="merge" label="Объединить с другим альбомом" onClick={() => setPicker('merge')} />
           </>
@@ -126,7 +132,7 @@ export function LibraryAlbumPage({ id }: { id: number }) {
 
       <AlbumForm
         album={album}
-        coverSrc={album.has_cover ? libraryCoverUrl(album.id, 600, coverRev) : null}
+        coverSrc={album.has_cover ? libraryCoverUrl(album.uid, 600, coverRev) : null}
         onSaved={(a) => res.setData((prev) => ({ ...a, tracks: a.tracks ?? prev?.tracks }))}
         onCover={(a) => {
           res.setData((prev) => ({ ...a, tracks: a.tracks ?? prev?.tracks }));
@@ -188,12 +194,12 @@ export function LibraryAlbumPage({ id }: { id: number }) {
                 </span>
                 <span className="shrink-0 text-xs tabular-nums text-dim">{fmtDuration(t.duration_s)}</span>
               </button>
-              <LikeButton songId={t.nd_song_id} title={t.title} className="w-10" />
+              <LikeButton songId={t.nd_song_id} refId={`lib:${t.uid}`} title={t.title} className="w-10" />
               {playable.includes(t) && (
                 <IconButton icon="play" label={`Слушать «${t.title}»`} className="!text-accent" size={20} onClick={() => playFrom(t)} />
               )}
               <IconButton icon="trash" label={`Удалить «${t.title}»`} className="text-dim hover:text-danger" size={20} onClick={() => deleteTrack(t)} />
-              {t.nd_song_id && <TrackMenuButton track={{ title: t.title, artist: t.artist, nd_song_id: t.nd_song_id }} className="-ml-2 w-8" />}
+              <TrackMenuButton track={{ title: t.title, artist: t.artist, uid: t.uid, nd_song_id: t.nd_song_id, ref: `lib:${t.uid}`, album_uid: album.uid }} className="-ml-2 w-8" />
             </li>
           ))}
         </ul>
@@ -213,7 +219,7 @@ export function LibraryAlbumPage({ id }: { id: number }) {
         open={picker !== null}
         onClose={() => setPicker(null)}
         title={picker === 'merge' ? 'Объединить с…' : `Перенести ${tracksWord(selected.size)} в…`}
-        excludeIds={[album.id]}
+        excludeIds={[album.uid]}
         allowCreate={picker === 'move'}
         busy={pickBusy}
         onPick={onPick}

@@ -183,12 +183,16 @@ A picked re-upload (`items[].candidate` with `extra.reupload`) is looked up in D
 ## Listening before download
 | Method | Path | Response |
 |---|---|---|
-| GET | `/api/listen?ref=` | `ListenOut` — `ref` of a catalog track (`dz:…`, `hm:…`), of a song only the library has (`nd:<song>`, a mix's track: its file, `kind` `library`; `404` if the library has no such song) or of a file the provider search showed (`file:<provider>:<provider_id>`: that file itself, no pick; `404` «повторите поиск» if unknown, `502` if it doesn't open). The remembered pick, or a new one: the way a download picks (Cyrillic original, source order, ranking) with a shorter search (4 results) and no track pages; all sources are searched at once, the first in source order that has the track wins. The file is not opened here: the stream opens it, and a file that doesn't open gives way to the next candidate (then to a new pick whose files are opened first). `404` if nothing at all. Ready picks answer at once |
+| GET | `/api/listen?ref=` | `ListenOut` — `ref` of a catalog track (`dz:…`, `hm:…`), of a library track (`lib:<uid>`, the primary form since stage 6: its own file, `kind` `library`, `uid` set; the legacy `lib:<int>` and the deprecated `nd:<song>` are resolved to the same track until stage 7; `404` if the library has no such track) or of a file the provider search showed (`file:<provider>:<provider_id>`: that file itself, no pick; `404` «повторите поиск» if unknown, `502` if it doesn't open). The remembered pick, or a new one: the way a download picks (Cyrillic original, source order, ranking) with a shorter search (4 results) and no track pages; all sources are searched at once, the first in source order that has the track wins. The file is not opened here: the stream opens it, and a file that doesn't open gives way to the next candidate (then to a new pick whose files are opened first). `404` if nothing at all. Ready picks answer at once |
 | POST | `/api/listen/prefetch` | `{refs: [...]}` → `{queued}` — the catalog tracks (and files) on the user's screen, top first (≤ 100); replaces the user's previous list (tracks that scrolled away are dropped). The Hub picks their files in the background (3 at a time, each opened once) and remembers them; this work yields to taps and downloads (hitmoz requests, yt-dlp slots). `queued` — how many were not ready yet |
 | GET | `/api/listen/stream?ref=&q=` | audio, `Range` → `206` (unsatisfiable → `416`); the library file, or the server copy of the picked file: the Hub downloads the whole file from the source (googlevideo links are bound to the Hub's IP) to `DATA_DIR/cache/listen`, resuming a connection the source drops, and serves the request from the copy as it grows (a range more than 2 MB past what it has comes straight from the source); for a source without plain HTTP audio (SoundCloud: HLS) — a copy the Hub downloads first (the prefetch downloads it in the background); copies are kept ~3 h, ≤ 500 MB. A preview is proxied. A request from the start (no `Range` or `bytes=0-`) counts as a listen (an economy import downloads the track) unless it carries `X-HomeMusic-Prefetch: 1` — the app loading the start of the next tracks of its queue ahead; the server copy of such a track downloads only while no copy of a played track does. **`q=mobile`** — the light variant for a metered network (`app/light.py`; without `q`, or with any other value, the stream is as above, so older apps are unaffected): a file above 192 kbps (mp3 320, flac, heavy aac) is answered with its Ogg Opus 160 kbps VBR copy (`audio/ogg`, ~half the bytes; `Content-Length` and `Range` as for any file, the copy is bit-exact so a re-made one has the same bytes), a file at or below 192 kbps (opus ~141, YouTube m4a ~128) as it is. Works for every ref: a catalog track (the copy is made from its server copy), a library song (`nd:<song>`, also an owned catalog track) or a file ref. The copies are made ahead (a mix's songs when it syncs, a wave's tracks when handed out) and kept on disk (`DATA_DIR/cache/listen-light`, ≤ 2.5 GB, least recently used out, ≤ 3 ffmpeg at a time, background ones at low priority and yielding to users' requests). A request that finds no copy ready waits ~1.5 s (a track loaded ahead, `X-HomeMusic-Prefetch: 1`, up to 25 s), then serves the original while the copy is finished in the background. Header **`X-HomeMusic-Variant`** (only with `q=mobile`): `light` — the Opus copy; `original` — the file as it is because it is light already (always the same for that file); `original-pending` — the copy is not ready (or ffmpeg failed): the original, which a client must not keep in the cache of the light variant. For 10 min after such an answer the same source keeps getting the original (one cache entry never holds bytes of both variants) |
 
 `ListenOut.kind`: `full` (the file a download takes: `provider`, `bitrate_kbps`, `page_url`), `preview` (no source has it —
-Deezer's 30 s preview, show «превью 30 сек»), `library` (already owned: the own file; `nd_song_id` once Navidrome has scanned it).
+Deezer's 30 s preview, show «превью 30 сек»), `library` (already owned: the own file; `uid` is its Hub track uid and
+`nd_song_id` is the deprecated alias, filled once Navidrome has scanned it).
+The PWA asks for the light variant itself: `lib/listen.ts` adds `q=mobile` when `navigator.connection` reports
+`saveData` or `effectiveType` `2g`/`3g`, and sends no `q` on a fast or unknown network. `X-HomeMusic-Variant` in the
+answer says which variant it got.
 `GET /api/listen/stream?ref=…&full=1` requires a full recording: a remembered/cached preview is re-resolved,
 the regular sources are followed by `sources.download_fallback`, and a preview-only result returns `503`
 with a Russian explanation instead of preview audio. Without `full`, browser preview behavior is preserved.
@@ -229,7 +233,7 @@ stays that file).
 | `event_id` | string ≤ 64, unique per user (a UUID): the key that makes resending harmless |
 | `ts` | when it happened, ISO 8601 with a zone (`2026-10-22T12:00:00Z`; epoch seconds/ms are accepted too). More than 1 h in the future or older than three calendar years → the time it came in. Admitted future events do not affect state/profile before their timestamp |
 | `kind` | `start` (sound began), `progress`, `interrupted`, `error`, `skip`, `finish`, `like`, `unlike`, `dislike`, `undislike` |
-| `ref` / `nd_song_id` | the track: catalog ref (`dz:…`, `hm:…`, `file:…`) and/or Navidrome song id — at least one, else rejected. The Hub fills in the other where it knows it (the library file's Deezer id, the download or import that brought it) |
+| `ref` / `uid` / `nd_song_id` | the track: catalog ref (`dz:…`, `hm:…`, `file:…`), `lib:<uid>`/a bare Hub track uid and/or the deprecated Navidrome song id — at least one, else rejected. The Hub fills in the other where it knows it (the library file's Deezer id, the download or import that brought it) |
 | `playback_id`, `device_id`, `listened_ms` | Optional pair of IDs identifies one attempt on one installation; cumulative measured milliseconds are never summed across checkpoints. `progress`/`interrupted`/`error` require all three. `listening_checkpoints_v1` advertises support |
 | `track_metadata` | Optional snapshot of title, album, artist credit and explicit artists with IDs, duration, ISRC, year and genre. Hub fills missing values from library or catalog cache and records field-level provenance. `primary_nd_artist_id` preserves the primary Navidrome artist ID independently of a possibly composite credit. Unknown fields remain unknown |
 | `position_s`, `duration_s` | seconds (0…86400): where the player was and the track's length (for `skip`/`finish`) |
@@ -374,8 +378,8 @@ Smart Shuffle). The Hub keeps the order and the picks; a client shows them and p
 |---|---|---|
 | POST | `/api/smart-shuffle/start` | `SmartStartIn` `{context, songs, current?, title?, origin?, client?}` → `SmartOut`. `context` — `liked` or `playlist:<Navidrome id>` (else `422`). `songs` (1…5000) — the list's songs in its order (a playlist: new ones at the end; «Понравившиеся»: the newest first): a Navidrome song id, or a catalog ref (it has a colon) for a ♥ that has no file yet. `current` — the song tapped or playing now: it is first in `own`. `title` — the playlist's name (kept for the analytics), `origin` ≤ 32 `^[a-z][a-z0-9_]*$` (`playlist_page`, `liked_page`, `player`), `client` ≤ 32. May take up to ~10 s (the sources are asked) |
 | POST | `/api/smart-shuffle/{id}/next` | `SmartNextIn` `{played: PlayEventIn[] (≤ 500), at?}` → `SmartOut` with `recorded` and `own: []`. Unknown session, another user's, or not asked for 24 h → `404` «Умное перемешивание закончилось» |
-| POST | `/api/smart-shuffle/{id}/hide` | `{ref? \| nd_song_id?}` → `{ok}`. «−»: the track is not recommended in this context («Понравившиеся» or this playlist) any more — by its «artist — title» too, not only its id; it stays everywhere else (this is not `/api/dislikes`). The track must be one this session recommended (`404`) |
-| POST | `/api/smart-shuffle/{id}/add` | `{ref? \| nd_song_id?}` → `SmartAddOut` `{ok, status, playlist_id?}`. «+»: a playlist — `added` (a library song is put in the playlist) or `downloading` (a catalog track is downloaded and put in the playlist after the import: a visible download of the batch `origin` `smart-shuffle`, `POST /api/downloads` with `playlist_id`); «Понравившиеся» — `liked`: the Hub only notes it, the client puts the ♥ itself by its usual way (`/api/star`, the ♥ download for a catalog track). Either way the track counts as taken in the session (what sounds like it goes up) |
+| POST | `/api/smart-shuffle/{id}/hide` | `{ref? \| track_uid? \| nd_song_id?}` → `{ok}`. «−»: the track is not recommended in this context («Понравившиеся» or this playlist) any more — by its «artist — title» too, not only its id; it stays everywhere else (this is not `/api/dislikes`). The track must be one this session recommended (`404`) |
+| POST | `/api/smart-shuffle/{id}/add` | `{ref? \| track_uid? \| nd_song_id?}` → `SmartAddOut` `{ok, status, playlist_id?}`. «+»: a playlist — `added` (a library song is put in the playlist) or `downloading` (a catalog track is downloaded and put in the playlist after the import: a visible download of the batch `origin` `smart-shuffle`, `POST /api/downloads` with `playlist_id`); «Понравившиеся» — `liked`: the Hub only notes it, the client puts the ♥ itself by its usual way (`/api/star`, the ♥ download for a catalog track). Either way the track counts as taken in the session (what sounds like it goes up) |
 
 `SmartOut`: `{session_id, context, title, own, recs, pending, own_per_rec, recorded}`.
 - `own` (start only) — the own songs in the order to play, as the ids the client sent, all of them. «Fewer repeats»: the
@@ -383,7 +387,7 @@ Smart Shuffle). The Hub keeps the order and the picks; a client shows them and p
   `1/(1+days since the user last heard it, in any context)` divided by `1 + position/12`.
 - `recs` — `SmartRecOut` = `WaveTrackOut` (`TrackOut` + `generator, generator_title, familiar, sim`; `sim` — closeness by
   sound to the center of the list's songs) + `{after, slot}`: put the track right after the own song `after` (an id from
-  `own`); `slot` — the number of its place among the recommendations. Play a track by `nd_song_id` when `owned`, else stream its `ref`
+  `own`); `slot` — the number of its place among the recommendations. Play a track as `lib:<uid>` when `owned` (the deprecated `nd_song_id` still works until stage 7), else stream its `ref`
   (`GET /api/listen/stream?ref=`, the Hub has started picking the files, `/api/listen/prefetch`).
   **Places:** one recommendation after every 3 own songs in a list of more than 15 songs, after every 2 in a list of up to
   15; a list of 1–2 songs has one (`own_per_rec` — 3 or 2). `start` fills the first 3 places; `next` fills the places not
@@ -408,6 +412,16 @@ own artist. What it learns from `played`: as the wave does (MIXES.md 7.2) — an
 like the track, a play to its end, a ♥ or «+» raises what sounds like it (a finished track is not downloaded for the session,
 unlike the wave). The rows are kept for the analytics: `smart_sessions`, `smart_items` (`state` `handed`/`added`/`hidden`),
 `smart_hidden`.
+
+## Stage 6: the PWA on the Hub catalog
+The browser PWA (and the WebView of the app) is switched to this section: `Home`, `MediaLibrary`, `Library`,
+`LibraryAlbum`, `Playlists` and the player. `web/src/api/library.ts` picks `/api/library/*` when `/healthz` lists
+`hub_library_v1` and otherwise normalizes the deprecated `/api/nd/*` shapes (id ↔ `uid`, `tracks`/`songs`,
+`cover_url`, `song_count`/`track_count`, `type`/`sort`, `song_ids`/`track_uids`, `nd:`/`lib:` refs); the fallback
+also covers `/healthz` timing out. The queue and the WebView bridge name a library track `lib:<uid>`; the app is
+handed `{ref: "lib:<uid>"}` (the deprecated `{song_id: nd_song_id}` stays until stage 7), so the app streams it
+through the Hub as `/api/listen/stream` does. The «Navidrome» button is gone from «Ещё» and the PWA no longer renders
+`PUBLIC_MUSIC_URL` (the setting itself is removed at stage 7).
 
 ## Library (own files, albums, artists)
 The Hub owns the catalog: `/api/library/*` is its public surface. The public identifier of an album, track and artist
@@ -490,13 +504,16 @@ Hub playlists (capability `hub_liked_v1` covers ♥ only; playlists are Hub-owne
 | POST | `/api/playlists` | `PlaylistCreateIn {name}` → `PlaylistOut`; empty name → `400` |
 | POST | `/api/playlists/{uid}/add` | `PlaylistAddIn {uids?, song_ids?, library_track_ids?, anchor_uid?}` → `{ok, added, uids}`. `uids` are Hub track uids; `song_ids` (deprecated ND ids) and `library_track_ids` are resolved to them. `anchor_uid` is a playlist item uid: the track goes right after it (the end by default). No resolvable track → `400`. Duplicates are allowed |
 | POST | `/api/playlists/{uid}/reorder` | `PlaylistReorderIn {item_uids}` → `{ok}`: the named items first in that order, then the rest |
-| GET | `/api/playlists/{uid}` | → `PlaylistPageOut` (`PlaylistOut` + `tracks: NdSongOut[]` in playlist order, `nd_song_id` may be `null`); `404` unknown or not the user's |
+| GET | `/api/playlists/{uid}` | → `PlaylistPageOut` (`PlaylistOut` + `tracks: NdSongOut[]` in playlist order, `uid` = the Hub track uid, `nd_song_id` may be `null`); `404` unknown or not the user's |
 | POST | `/api/playlists/{uid}/remove` | `PlaylistRemoveIn {indexes}` (1–500 positions from 0; a song may be in a playlist twice) → `{ok, removed}`; `404` unknown |
 | DELETE | `/api/playlists/{uid}` | → `{ok}`; `404` unknown |
 
 ## Navidrome library (the PWA in a browser) — DEPRECATED
-Deprecated transitional proxy: kept unchanged until the PWA switches to `/api/library/*` at stage 6 and removed at
-stage 7. New clients must use `/api/library/*` (capability `hub_library_v1`) and must not depend on these routes.
+Deprecated transitional proxy. Since stage 6 the PWA takes its catalog from `/api/library/*` when `/healthz` lists
+`hub_library_v1` and only falls back to these routes (normalizing their shapes in `web/src/api/library.ts`) when the
+capability is absent or `/healthz` times out — the same routes an older, cached PWA of stage 5 and earlier still uses.
+Removed at stage 7. New clients must use `/api/library/*` (capability `hub_library_v1`) and must not depend on these
+routes.
 
 The library as the user's player sees it — the app has these as native (Tempus) screens, the PWA in a plain browser
 (`STANDALONE`) shows them from here (`app/api/medialib.py`). For an account with Navidrome credentials everything is

@@ -509,7 +509,8 @@ class ListenOut(BaseModel):
     provider: str | None = None  # hitmoz / hitmos_fm / ytdlp for "full"
     bitrate_kbps: int | None = None
     page_url: str | None = None
-    nd_song_id: str | None = None  # "library": the Navidrome song (♥, the app's player)
+    uid: str | None = None  # "library": the Hub track uid (`lib:<uid>` in this PWA)
+    nd_song_id: str | None = None  # deprecated alias of `uid`: the Navidrome song (until stage 7)
     stream_url: str  # audio with Range support, same session cookie
 
 
@@ -637,6 +638,8 @@ class NdSongOut(TrackOut):
     """A Navidrome song as a catalog-like track: `ref` "dz:…" when the Hub knows its Deezer record, else
     "nd:<song>". In /nd/liked, catalog-only favorites may be unowned without an ND id."""
 
+    # the Hub track uid: clients of stage 6 address the song as `lib:<uid>` (until stage 7)
+    uid: str | None = None
     nd_album_id: str | None = None
     nd_artist_id: str | None = None
 

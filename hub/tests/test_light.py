@@ -112,6 +112,37 @@ async def test_light_song_is_served_as_it_is(env, fake_encoder):
     assert fake_encoder.calls == []  # never re-encoded: lossy audio again only loses quality
 
 
+async def test_a_blob_backed_library_track_by_uid_answers_the_variant(env, fake_encoder):
+    """A `lib:<uid>` choice of a blob-backed track (served from the S3 hot-cache, no Navidrome song yet) also answers
+    `X-HomeMusic-Variant` — the library track the PWA of stage 6 names by uid (task 3.3)."""
+    from app.db import session_scope
+    from app.matching.normalize import fingerprint
+    from app.models import Track
+    from app.storage import blobs
+
+    async with session_scope() as s:
+        blob = await blobs.store(s, AUDIO, content_type="audio/mpeg")
+        s.add(
+            Track(
+                uid="u-blob",
+                blob_id=blob.id,
+                path="Artist/Album/stream.mp3",
+                artist="Artist",
+                title="Stream",
+                duration_s=200,
+                nd_song_id=None,
+                fingerprint=fingerprint("Artist", "Stream"),
+            )
+        )
+    c = env["client"]
+    out = (await c.get("/api/listen", params={"ref": "lib:u-blob"})).json()
+    assert out["kind"] == "library" and out["uid"] == "u-blob" and out["nd_song_id"] is None
+    r = await c.get("/api/listen/stream", params={"ref": "lib:u-blob", "q": "mobile"})
+    assert r.status_code == 200 and r.content == AUDIO
+    assert r.headers[VARIANT] == light.ORIGINAL
+    assert fake_encoder.calls == []  # a light file is served as it is
+
+
 async def test_without_the_quality_the_stream_is_as_before(env, fake_encoder):
     c = env["client"]
     await song(env, "heavy.mp3", "nd3")

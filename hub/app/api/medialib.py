@@ -96,6 +96,7 @@ async def songs_out(s: AsyncSession, songs: list[dict]) -> list[NdSongOut]:
                 cover_small_url=cover_url(x.get("coverArt")),
                 owned=True,
                 library_track_id=t.id if t is not None else None,
+                uid=t.uid if t is not None else None,
                 nd_song_id=sid,
                 nd_album_id=x.get("albumId"),
                 nd_artist_id=x.get("artistId"),
@@ -171,6 +172,7 @@ def hub_song_out(track: Track) -> NdSongOut:
         explicit=track.explicit,
         owned=True,
         library_track_id=track.id,
+        uid=track.uid,
     )
 
 

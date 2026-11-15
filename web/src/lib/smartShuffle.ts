@@ -119,7 +119,8 @@ export const labelOf = (context: string, title: string | null) =>
   context === 'liked' ? 'Рекомендация на основе любимых песен' : title ? `Рекомендация на основе «${title}»` : 'Рекомендация на основе плейлиста';
 
 const asTrack = (r: SmartRecOut, s: Session): ListenTrack => ({
-  ref: r.ref,
+  ref: r.uid ? `lib:${r.uid}` : r.ref,
+  uid: r.owned ? (r.uid ?? null) : null,
   nd_song_id: r.owned ? r.nd_song_id : null,
   rec: { label: s.label, session: s.id },
   title: r.title,
@@ -266,10 +267,10 @@ export async function addRec(track: ListenTrack): Promise<void> {
   try {
     if (s?.context === 'liked' || (!s && getListenState().context === 'liked')) {
       await toggleLike({ targetType: 'track', songId: track.nd_song_id, ref: track.ref, data: { ...track } });
-      await api.smartAdd(rec.session, { ref: track.ref, nd_song_id: track.nd_song_id });
+      await api.smartAdd(rec.session, { ref: track.ref, track_uid: track.uid, nd_song_id: track.nd_song_id });
       toast(`«${track.title}» в понравившихся`, 'success');
     } else {
-      const r = await api.smartAdd(rec.session, { ref: track.ref, nd_song_id: track.nd_song_id });
+      const r = await api.smartAdd(rec.session, { ref: track.ref, track_uid: track.uid, nd_song_id: track.nd_song_id });
       toast(r.status === 'downloading' ? `«${track.title}» скачивается и появится в плейлисте` : `«${track.title}» добавлен в плейлист`, 'success');
     }
     markOwn(track.ref);
@@ -291,7 +292,7 @@ export async function hideRec(track: ListenTrack): Promise<void> {
   const gone = getListenState().queue.findIndex((t) => t.ref === track.ref);
   if (gone >= 0 && gone !== getListenState().index) removeFromQueue(gone);
   try {
-    await api.smartHide(rec.session, { ref: track.ref, nd_song_id: track.nd_song_id });
+    await api.smartHide(rec.session, { ref: track.ref, track_uid: track.uid, nd_song_id: track.nd_song_id });
     toast(`«${track.title}» больше не рекомендуется здесь`, 'info');
   } catch (e) {
     toastError(e);

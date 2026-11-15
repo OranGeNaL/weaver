@@ -94,13 +94,12 @@ export function MorePage() {
         )}
         <Item icon="user" to="/password" title="Пароль и устройства" sub="Сменить пароль, внешние входы, активные сеансы" />
         <Item icon="upload" to="/upload" title="Загрузить файлы" sub="Свои аудиофайлы с телефона" />
-        <Item icon="playlist" to="/playlists" title="Плейлисты" sub="Ваши плейлисты в Navidrome" />
+        <Item icon="playlist" to="/playlists" title="Плейлисты" sub="Ваши плейлисты в HomeMusic" />
         <Item icon="transfer" to="/import" title="Перенести музыку" sub="Из Яндекс Музыки и Spotify: ♥, плейлисты, альбомы" />
         {me.is_admin && <Item icon="user" to="/admin" title="Пользователи и приглашения" sub="Расходы на ИИ, песни, коды для новых людей" />}
         {me.is_admin && <SoulseekSettings />}
         {/* the player is here: in the browser, and the app's own on Android */}
         <Item icon="install" href="/app/latest.apk" title="Приложение для Android" sub="HomeMusic: офлайн, плеер в шторке, тот же аккаунт" />
-        {me.public_music_url && <Item icon="external" href={me.public_music_url} title="Navidrome" sub="Веб-интерфейс библиотеки" />}
         <Item
           icon="bell"
           title="Уведомления"

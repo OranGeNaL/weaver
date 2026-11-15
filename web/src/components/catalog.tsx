@@ -42,10 +42,12 @@ export function TrackStatus({
   return <IconButton icon="download" label="Скачать трек" onClick={onDownload} busy={busy} className="text-muted hover:text-fg" />;
 }
 
-/** What the page player needs to know about a catalog track. */
+/** What the page player needs to know about a track: a library track plays as `lib:<uid>` (stage 6+), a
+ * catalog-only one by its catalog ref. */
 export function listenTrack(t: TrackOut): ListenTrack {
   return {
-    ref: t.ref,
+    ref: t.uid ? `lib:${t.uid}` : t.ref,
+    uid: t.uid ?? null,
     nd_song_id: t.nd_song_id,
     title: t.title,
     artist: t.artists?.length ? t.artists.join(', ') : t.artist,
@@ -199,6 +201,7 @@ export function TrackRow({
             title: track.title,
             artist: track.artists?.length ? track.artists.join(', ') : track.artist,
             ref: track.ref,
+            uid: track.uid ?? null,
             nd_song_id: track.nd_song_id,
             artist_ref: track.artist_ref,
             album_ref: track.album_ref,

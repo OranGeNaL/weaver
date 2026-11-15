@@ -568,6 +568,21 @@ async def test_uid_only_scrobble_is_accepted(env):
     assert len(rows) == 1 and rows[0].track_uid == uid
 
 
+async def test_library_ref_and_uid_name_the_track(env):
+    """`lib:<uid>` and a bare uid are resolved to the Hub track uid, like the deprecated `nd:<song>`."""
+    from sqlalchemy import select
+
+    from app.db import session_scope
+    from app.models import Track
+
+    c = env["client"]
+    async with session_scope() as s:
+        uid = (await s.execute(select(Track.uid).where(Track.nd_song_id == "ndK"))).scalar_one()
+    await post(c, ev("start", ref=f"lib:{uid}"), ev("start", ref=uid))
+    rows = await stored()
+    assert len(rows) == 2 and all(e.track_uid == uid for e in rows)
+
+
 async def test_short_attempt_does_not_supersede_a_scrobble(env):
     c = env["client"]
     await c.post(

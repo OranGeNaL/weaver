@@ -18,7 +18,7 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from pydantic import ValidationError
 from sqlalchemy import Result, delete, or_, select, update
@@ -138,8 +138,18 @@ async def _ref_of_song(s: AsyncSession, nd_song_id: str) -> str | None:
     ).scalar_one_or_none()
 
 
+async def _uid_of_library_ref(s: AsyncSession, ref: str) -> str | None:
+    """`lib:<uid>` or a bare track `uid` of the Hub catalog: the uid itself when the track exists."""
+    uid = ref[4:] if ref.startswith("lib:") else ref
+    found = (
+        await s.execute(select(Track.uid).where(Track.uid == uid, Track.deleted_at.is_(None)).limit(1))
+    ).scalar_one_or_none()
+    return cast("str | None", found)
+
+
 async def track_uid_of(s: AsyncSession, ref: str | None, nd_song_id: str | None) -> str | None:
-    """The Hub `uid` of a library track named by a catalog ref and/or a deprecated Navidrome song id."""
+    """The Hub `uid` of a library track named by `lib:<uid>`, a bare `uid`, a catalog ref and/or a deprecated
+    Navidrome song id."""
     if nd_song_id:
         uid = (
             await s.execute(
@@ -152,22 +162,45 @@ async def track_uid_of(s: AsyncSession, ref: str | None, nd_song_id: str | None)
         if uid:
             return uid
     if ref:
-        src, id_ = split_ref(ref)
-        if src == "dz":
-            uid = (
-                await s.execute(
-                    select(Track.uid)
-                    .where(Track.deezer_track_id == id_, Track.deleted_at.is_(None))
-                    .order_by(Track.id.desc())
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            if uid:
+        if ref.startswith("lib:") or ":" not in ref:
+            if uid := await _uid_of_library_ref(s, ref):
                 return uid
-        song = await _song_of_ref(s, ref)
-        if song:
-            return await track_uid_of(s, None, song)
+        else:
+            src, id_ = split_ref(ref)
+            if src == "dz":
+                uid = (
+                    await s.execute(
+                        select(Track.uid)
+                        .where(Track.deezer_track_id == id_, Track.deleted_at.is_(None))
+                        .order_by(Track.id.desc())
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if uid:
+                    return uid
+            song = await _song_of_ref(s, ref)
+            if song:
+                return await track_uid_of(s, None, song)
     return None
+
+
+async def resolve_song_ids(ids: list[str]) -> list[str]:
+    """The context's song ids as smart shuffle names them: `lib:<uid>` of a library track becomes the track uid,
+    a bare uid and a catalog ref stay as they are. One lookup for the whole list."""
+    lib = [i[4:] for i in ids if i.startswith("lib:")]
+    if not lib:
+        return list(ids)
+    from app.db import session_scope
+
+    found: set[str] = set()
+    async with session_scope() as s:
+        for k in range(0, len(lib), 500):
+            found |= set(
+                (await s.execute(select(Track.uid).where(Track.uid.in_(lib[k : k + 500]), Track.deleted_at.is_(None))))
+                .scalars()
+                .all()
+            )
+    return [i[4:] if i.startswith("lib:") and i[4:] in found else i for i in ids]
 
 
 async def track_ids_of_uid(s: AsyncSession, uid: str) -> tuple[str | None, str | None]:
@@ -303,10 +336,17 @@ async def _drop_scrobbles_near(s: AsyncSession, user_id: int, ev: PlayEvent) -> 
 
 
 async def _track_duration(s: AsyncSession, uid: str | None, nd_song_id: str | None) -> float | None:
-    q = select(Track.duration_s).where(Track.deleted_at.is_(None)).limit(1)
-    q = q.where(Track.uid == uid) if uid else q.where(Track.nd_song_id == nd_song_id)
-    value = (await s.execute(q)).scalar_one_or_none()
-    return float(value) if value else None
+    if uid:
+        found = (
+            await s.execute(select(Track.duration_s).where(Track.uid == uid, Track.deleted_at.is_(None)).limit(1))
+        ).scalar_one_or_none()
+    else:
+        found = (
+            await s.execute(
+                select(Track.duration_s).where(Track.nd_song_id == nd_song_id, Track.deleted_at.is_(None)).limit(1)
+            )
+        ).scalar_one_or_none()
+    return float(found) if found else None
 
 
 async def _is_counted_listen(

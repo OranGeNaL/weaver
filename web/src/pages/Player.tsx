@@ -74,14 +74,14 @@ export function PlayerPage() {
     setBusy(false);
   };
   const firstArtist = track.artists?.find((a) => a.ref);
-  const waveSeed = trackSeed({ ...track, nd_song_id: info?.nd_song_id });
+  const waveSeed = trackSeed({ ...track, uid: track.uid ?? info?.uid ?? null, nd_song_id: info?.nd_song_id });
 
   return (
     <div className="pt-safe mx-auto flex min-h-dvh max-w-2xl flex-col">
       <div className="flex min-h-14 items-center gap-1 px-2">
         <IconButton icon="down" label="Свернуть" onClick={() => goBack('/home')} />
         <div className="min-w-0 flex-1 text-center text-xs uppercase tracking-wide text-muted">{contextLabel(context)}</div>
-        <TrackMenuButton track={{ ...track, nd_song_id: info?.nd_song_id }} inPlayer />
+        <TrackMenuButton track={{ ...track, uid: track.uid ?? info?.uid ?? null, nd_song_id: info?.nd_song_id }} inPlayer />
       </div>
 
       <div className="px-6 pt-2">
@@ -113,7 +113,7 @@ export function PlayerPage() {
             )}
           </div>
         </div>
-        <LikeButton songId={info?.nd_song_id} refId={track.ref} title={track.title} data={{ ...track }} size={26} />
+        <LikeButton songId={info?.nd_song_id} uid={info?.uid ?? track.uid ?? null} refId={track.ref} title={track.title} data={{ ...track }} size={26} />
         {owned || dl ? (
           <span className="flex h-11 w-11 shrink-0 items-center justify-center text-accent" title={owned || dl === 'done' ? 'Есть в библиотеке' : 'В загрузках'}>
             <Icon name="check" size={22} stroke={2.6} />

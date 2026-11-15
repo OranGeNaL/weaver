@@ -363,6 +363,36 @@ async def test_liked_endpoint_and_starred_track_uids(env):
     assert liked["albums"] == [] and liked["artists"] == []
 
 
+async def test_album_like_by_hub_uid_reaches_the_library_liked(env):
+    """The library pages ♥ an album by its Hub `uid` (a bare `ref`): `/api/library/liked` finds it, and nothing leaks
+    into the deprecated ND fields (the PWA of stage 6 has no Navidrome album id on that branch)."""
+    c = env["client"]
+    album = (await c.post("/api/library/albums", json={"title": "Группа крови", "album_artist": "Кино"})).json()
+    r = await c.post("/api/star", json={"targets": [{"target_type": "album", "ref": album["uid"]}]})
+    assert r.status_code == 200, r.text
+    liked = (await c.get("/api/library/liked")).json()
+    assert [a["uid"] for a in liked["albums"]] == [album["uid"]]
+    starred = (await c.get("/api/starred")).json()
+    assert starred["album_ids"] == []  # no UUID in the deprecated Navidrome ids
+    assert any(s["target_type"] == "album" and s["liked"] for s in starred["subjects"])
+
+
+async def test_artist_like_by_hub_uid_reaches_the_library_liked(env):
+    """The library pages ♥ an artist by its Hub `uid` (bare ref): `/api/library/liked` finds it, and no UUID leaks into
+    the deprecated `artist_ids`."""
+    c = env["client"]
+    album = (await c.post("/api/library/albums", json={"title": "Группа крови", "album_artist": "Кино"})).json()
+    artist_uid = album["artist_uid"]
+    assert artist_uid
+    r = await c.post("/api/star", json={"targets": [{"target_type": "artist", "ref": artist_uid}]})
+    assert r.status_code == 200, r.text
+    liked = (await c.get("/api/library/liked")).json()
+    assert artist_uid in [a["uid"] for a in liked["artists"]]
+    starred = (await c.get("/api/starred")).json()
+    assert starred["artist_ids"] == []  # no UUID in the deprecated Navidrome ids
+    assert any(x["target_type"] == "artist" and x["liked"] for x in starred["subjects"])
+
+
 async def test_trashed_track_is_not_an_index_in_a_playlist(env):
     from datetime import UTC, datetime
 

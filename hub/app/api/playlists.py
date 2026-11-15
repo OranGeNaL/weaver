@@ -75,6 +75,7 @@ async def songs_of(s: AsyncSession, tracks_: list[Track]) -> list[NdSongOut]:
                 cover_small_url=cover,
                 owned=True,
                 library_track_id=t.id,
+                uid=t.uid,
                 nd_song_id=t.nd_song_id,
                 nd_album_id=None,
                 nd_artist_id=None,

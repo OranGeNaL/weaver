@@ -1,5 +1,9 @@
 """Listening before downloading: GET /api/listen picks the file a download would pick and streams it with Range."""
 
+# The fakes below replace the Hub's services (`svc.deezer`, the engine pool) with test doubles on purpose: this
+# module is not part of the project's type-checking scope (`hub/pyrightconfig.json` includes only `app`).
+# pyright: reportAttributeAccessIssue=false, reportOptionalMemberAccess=false
+
 from __future__ import annotations
 
 import asyncio
@@ -704,6 +708,54 @@ async def test_library_song_of_a_mix_plays_its_file(env):
     r = await c.get(r.json()["stream_url"], headers={"Range": "bytes=0-9"})
     assert r.status_code == 206 and r.content == AUDIO[:10]
     assert (await c.get("/api/listen", params={"ref": "nd:gone"})).status_code == 404
+
+
+async def test_library_track_is_addressed_by_uid(env):
+    """`ref=lib:<uid>` plays the library file; the legacy `lib:<int>` and `nd:<song>` are resolved until stage 7."""
+    from sqlalchemy import select
+
+    from app.db import session_scope
+    from app.matching.normalize import fingerprint
+    from app.models import Track
+
+    rel = "Кино/1988 - Группа крови/1-03 - Печаль.mp3"
+    f = env["music"] / "library" / rel
+    f.parent.mkdir(parents=True)
+    f.write_bytes(AUDIO)
+    async with session_scope() as s:
+        s.add(
+            Track(
+                uid="u-lib",
+                path=rel,
+                artist="Кино",
+                title="Печаль",
+                duration_s=300,
+                nd_song_id="nd-pechal",
+                fingerprint=fingerprint("Кино", "Печаль"),
+            )
+        )
+    async with session_scope() as s:
+        legacy_id = (await s.execute(select(Track.id).where(Track.uid == "u-lib"))).scalar_one()
+
+    c = env["client"]
+    r = await c.get("/api/listen", params={"ref": "lib:u-lib"})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["kind"] == "library" and out["uid"] == "u-lib" and out["nd_song_id"] == "nd-pechal"
+    assert env["hm"].searched == 0
+    r = await c.get(out["stream_url"], headers={"Range": "bytes=0-9"})
+    assert r.status_code == 206 and r.content == AUDIO[:10]
+
+    # legacy `lib:<int>` (until stage 7) and the deprecated `nd:<song>` alias name the same track
+    legacy = await c.get("/api/listen", params={"ref": f"lib:{legacy_id}"})
+    assert legacy.status_code == 200, legacy.text
+    assert legacy.json()["uid"] == "u-lib"
+    by_song = await c.get("/api/listen", params={"ref": "nd:nd-pechal"})
+    assert by_song.status_code == 200, by_song.text
+    assert by_song.json()["uid"] == "u-lib"
+
+    assert (await c.get("/api/listen", params={"ref": "lib:nope"})).status_code == 404
+    assert (await c.get("/api/listen", params={"ref": "lib:999999"})).status_code == 404
 
 
 async def search_files(c, group: str | None = "sources") -> list[dict]:

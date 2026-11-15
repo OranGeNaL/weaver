@@ -20,6 +20,8 @@ type Bridge = {
 export const NATIVE_PLAYING_EVENT = 'hm:native-playing';
 
 function bridge(): Bridge | undefined {
+  // SAFETY: the Android WebView injects `HomeMusicAndroid` into `window`; no DOM type declares it, and a page
+  // without the bridge answers `undefined` (checked by every `canPlay*` guard).
   return (window as unknown as { HomeMusicAndroid?: Bridge }).HomeMusicAndroid;
 }
 
@@ -72,16 +74,25 @@ const hubItem = (t: HubItem): QueueItem => ({
   duration_s: t.duration_s ?? null,
 });
 
-/** Plays `list` (an album, search results…) in the app's player from `from` on: downloaded tracks from the
- * library, the rest streamed by the Hub (the file a download would take). Needs `canPlayAll()`. `context` — where
- * it was played from (`mix:<id>`…); by default the screen (`routeContext`). `origin` — where it was launched (by
- * default by `context`). */
+/** Plays `list` (an album, search results…) in the app's player from `from` on: a library track is handed over as
+ * `{ref: "lib:<uid>"}` (the app streams it through the Hub), the rest as the file a download would take. A library
+ * track without a `uid` falls back to the deprecated `{song_id: nd_song_id}` until stage 7. Needs `canPlayAll()`.
+ * `context` — where it was played from (`mix:<id>`…); by default the screen (`routeContext`). `origin` — where it
+ * was launched (by default by `context`). */
 export function playTracks(list: readonly TrackOut[], from?: TrackOut, context?: string, origin?: LaunchOrigin) {
-  const items: QueueItem[] = list.map((t) =>
-    t.owned && t.nd_song_id
-      ? { song_id: t.nd_song_id }
-      : hubItem({ ...t, artist: t.artists?.length ? t.artists.join(', ') : t.artist, album: t.album_title }),
-  );
+  const items: QueueItem[] = list.map((t) => {
+    if (t.uid)
+      return hubItem({
+        ref: `lib:${t.uid}`,
+        title: t.title,
+        artist: t.artists?.length ? t.artists.join(', ') : t.artist,
+        album: t.album_title,
+        cover_url: t.cover_url,
+        duration_s: t.duration_s,
+      });
+    if (t.owned && t.nd_song_id) return { song_id: t.nd_song_id };
+    return hubItem({ ...t, artist: t.artists?.length ? t.artists.join(', ') : t.artist, album: t.album_title });
+  });
   playQueue(items, from ? Math.max(0, list.indexOf(from)) : 0, context, origin);
 }
 

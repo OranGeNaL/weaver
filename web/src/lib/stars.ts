@@ -9,6 +9,8 @@ import { toast, toastError } from './ui';
 
 export interface LikeTarget {
   targetType?: FavoriteType;
+  /** the Hub uid of the target: the primary alias since stage 5 */
+  uid?: string | null;
   songId?: string | null;
   ndId?: string | null;
   ref?: string | null;
@@ -110,7 +112,7 @@ function apiTarget(t: LikeTarget): FavoriteTarget {
   const type = typeOf(t);
   const id = t.ndId ?? t.songId ?? (type === 'track' && t.ref ? refSongs.get(t.ref) : undefined);
   return {
-    target_type: type, ref: t.ref, target_data: t.data,
+    target_type: type, ref: t.ref, uid: t.uid ?? null, target_data: t.data,
     ...(id ? { [type === 'track' ? 'nd_song_id' : type === 'album' ? 'nd_album_id' : 'nd_artist_id']: id } : {}),
   };
 }

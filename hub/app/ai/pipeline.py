@@ -206,9 +206,9 @@ async def resolve_row(
             if lib is not None:
                 row.status, row.library_track_id, row.score = "owned", lib.id, 1.0
                 row.best = TrackOut(
-                    ref=f"lib:{lib.id}",
+                    ref=f"lib:{lib.uid}",
                     source="dz",
-                    id=str(lib.id),
+                    id=lib.uid,
                     title=lib.title,
                     artist=lib.artist,
                     album_title=lib.album,

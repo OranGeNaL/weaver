@@ -104,8 +104,8 @@ export function LibraryPage({ initialQuery }: { initialQuery: string }) {
         <>
           <div className="grid grid-cols-2 gap-x-4 gap-y-5 px-4 pt-1 min-[520px]:grid-cols-3">
             {albums.map((a) => (
-              <Link key={a.id} to={`/library/album/${a.id}`} className="min-w-0">
-                <Cover src={a.has_cover ? libraryCoverUrl(a.id, 300) : null} alt={a.title} className="aspect-square w-full" icon="disc" />
+              <Link key={a.uid} to={`/library/album/${a.uid}`} className="min-w-0">
+                <Cover src={a.has_cover ? libraryCoverUrl(a.uid, 300) : null} alt={a.title} className="aspect-square w-full" icon="disc" />
                 <div className="mt-2 truncate text-sm font-medium">{a.title}</div>
                 <div className="truncate text-xs text-muted">{[a.album_artist, a.year].filter(Boolean).join(' · ')}</div>
                 <div className="truncate text-xs text-dim">{[recordTypeLabel(a.release_type), tracksWord(a.track_count)].filter(Boolean).join(' · ')}</div>
@@ -144,7 +144,7 @@ function CreateAlbumSheet({ open, onClose }: { open: boolean; onClose: () => voi
     setBusy(false);
     if (a) {
       onClose();
-      navigate(`/library/album/${a.id}`);
+      navigate(`/library/album/${a.uid}`);
     }
   };
 

@@ -264,6 +264,21 @@ async def test_start_validates_the_context_and_the_list(env) -> None:
     assert (await c.post("/api/smart-shuffle/start", json={"context": "playlist:", "songs": ["a"]})).status_code == 422
 
 
+async def test_lib_refs_of_the_context_are_resolved_to_uids(env, monkeypatch) -> None:
+    """A client of stage 6 names the library songs `lib:<uid>`; the session keeps them by uid, so `after` matches."""
+    from app.db import session_scope
+    from app.models import Track
+
+    await library(4)
+    fake_gens(monkeypatch, [new(i) for i in range(8)])
+    async with session_scope() as s:
+        uids = {t.nd_song_id: t.uid for t in (await s.execute(select(Track))).scalars()}
+    refs = [f"lib:{uids[f'nd{i}']}" for i in range(1, 5)]
+    plan = await start(env["client"], refs, current=refs[1])
+    assert sorted(plan["own"]) == sorted(uids[f"nd{i}"] for i in range(1, 5))
+    assert all(r["after"] in plan["own"] for r in plan["recs"])
+
+
 # --- next -----------------------------------------------------------------------------------------------------------
 
 

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
+import { libAlbum, libAlbums, libArtist, libArtists, libLiked } from '../api/library';
 import type { NdAlbumOut, NdArtistOut, NdSongOut } from '../api/types';
 import { playAll, TrackRow } from '../components/catalog';
 import { Icon } from '../components/Icon';
@@ -11,10 +12,12 @@ import { useAsync, useRememberScrollX } from '../lib/hooks';
 import { Link, enc, navigate } from '../lib/router';
 import { attempt, confirmDialog } from '../lib/ui';
 import { useSmartForPage, useSmartPage } from '../lib/smartShuffle';
-import { canWave, seedKey, startWave, useWave } from '../lib/wave';
+import { artistRadioSeed, canWave, seedKey, startWave, useWave } from '../lib/wave';
 
-/** The Navidrome library as a player shows it, for the PWA in a plain browser (`STANDALONE`): inside the app these
- * are its native screens. Songs are `NdSongOut` (owned catalog-like tracks), so `TrackRow` plays them. */
+/** The Hub catalog as a player shows it, for the PWA in a plain browser (`STANDALONE`): inside the app these are
+ * its native screens. The data comes from `/api/library/*` (`api/library.ts`), or from the deprecated `/api/nd/*`
+ * when the Hub lacks `hub_library_v1`; both branches arrive here in the ND shape with `uid` = `id`. Songs are
+ * `NdSongOut` (owned catalog-like tracks playing `lib:<uid>`), so `TrackRow` plays them. */
 
 // --- pieces ------------------------------------------------------------------------------------------------
 
@@ -37,7 +40,7 @@ export function AlbumRow({ title, albums, rowKey, more }: { title: string; album
       <SectionTitle right={more ? <Link to={more} className="text-sm text-muted hover:text-fg">Все</Link> : undefined}>{title}</SectionTitle>
       <div ref={row} className="no-scrollbar flex gap-4 overflow-x-auto px-4 pb-1">
         {albums.map((a) => (
-          <div key={a.id} className="w-36 shrink-0">
+          <div key={a.uid ?? a.id} className="w-36 shrink-0">
             <NdAlbumCard album={a} />
           </div>
         ))}
@@ -55,7 +58,7 @@ export function NdArtistBubble({ artist, radio = false }: { artist: NdArtistOut;
         <Cover src={artist.cover_url} size={104} round icon="user" alt={artist.name} />
         {radio && (
           <span className="absolute bottom-1 right-1 flex h-8 w-8 items-center justify-center rounded-full bg-accent text-on-accent shadow">
-            {starting === seedKey({ nd_artist_id: artist.id }) ? <Spinner size={16} /> : <Icon name="wave" size={18} />}
+            {starting === seedKey(artistRadioSeed(artist)) ? <Spinner size={16} /> : <Icon name="wave" size={18} />}
           </span>
         )}
       </span>
@@ -65,7 +68,7 @@ export function NdArtistBubble({ artist, radio = false }: { artist: NdArtistOut;
   const cls = 'flex w-28 shrink-0 flex-col items-center gap-2 text-center';
   if (radio && canWave())
     return (
-      <button type="button" className={cls} aria-label={`Радио: ${artist.name}`} onClick={() => void startWave({ nd_artist_id: artist.id }, 'radio')}>
+      <button type="button" className={cls} aria-label={`Радио: ${artist.name}`} onClick={() => void startWave(artistRadioSeed(artist), 'radio')}>
         {body}
       </button>
     );
@@ -75,6 +78,11 @@ export function NdArtistBubble({ artist, radio = false }: { artist: NdArtistOut;
     </Link>
   );
 }
+
+/** The ♥ target of an album, the same on every screen of the library branch: its catalog ref when the Hub knows one
+ * (`dz:…`), else its Hub `uid` as a bare ref (the Hub resolves it). The deprecated branch keeps the ND album id. */
+const albumLikeRef = (a: NdAlbumOut) =>
+  a.deezer_album_id ? `dz:${a.deezer_album_id}` : (a.lib_uid ?? null);
 
 /** «Слушать» and «Перемешать» for a whole list. */
 export function ListActions({ tracks, context, children }: { tracks: readonly NdSongOut[]; context?: string; children?: ReactNode }) {
@@ -125,7 +133,7 @@ function Hero({ cover, round, title, sub, right }: { cover?: string | null; roun
 // --- pages -------------------------------------------------------------------------------------------------
 
 export function LikedPage() {
-  const res = useAsync((s) => api.ndLiked(s), []);
+  const res = useAsync((s) => libLiked(s), []);
   useSmartPage('liked', null);
   useHubEvent('library', () => res.reload(true));
   useHubEvent('import', () => res.reload(true));
@@ -186,7 +194,7 @@ export function ArtistRow({ artists, rowKey, radio }: { artists: NdArtistOut[]; 
   return (
     <div ref={row} className="no-scrollbar flex gap-3 overflow-x-auto px-4 pb-1">
       {artists.map((a) => (
-        <NdArtistBubble key={a.id} artist={a} radio={radio} />
+        <NdArtistBubble key={a.uid ?? a.id} artist={a} radio={radio} />
       ))}
     </div>
   );
@@ -227,7 +235,7 @@ export function PlaylistPage({ id }: { id: string }) {
 }
 
 export function ArtistsPage() {
-  const res = useAsync((s) => api.ndArtists(s), []);
+  const res = useAsync((s) => libArtists(s), []);
   const [q, setQ] = useState('');
   const shown = useMemo(() => {
     const needle = q.trim().toLocaleLowerCase('ru');
@@ -248,7 +256,7 @@ export function ArtistsPage() {
       ) : (
         <ul>
           {shown.map((a) => (
-            <li key={a.id}>
+            <li key={a.uid ?? a.id}>
               <Link to={`/lib/artist/${enc(a.id)}`} className="flex min-h-16 items-center gap-3 px-4 py-2 hover:bg-fg/5">
                 <Cover src={a.cover_url} size={48} round icon="user" alt="" />
                 <span className="min-w-0 flex-1">
@@ -272,7 +280,7 @@ const albumsWord = (n: number) => {
 };
 
 export function NdArtistPage({ id }: { id: string }) {
-  const res = useAsync((s) => api.ndArtist(id, s), [id]);
+  const res = useAsync((s) => libArtist(id, s), [id]);
   const { starting } = useWave();
   if (res.loading) return (<><PageHeader title="Исполнитель" back="/artists" /><SkeletonRows /></>);
   if (!res.data) return (<><PageHeader title="Исполнитель" back="/artists" /><ErrorState text={res.error ?? 'Исполнитель не найден'} onRetry={() => res.reload()} /></>);
@@ -282,7 +290,7 @@ export function NdArtistPage({ id }: { id: string }) {
       <PageHeader
         title={artist.name}
         back="/artists"
-        right={<LikeButton targetType="artist" ndId={artist.id} title={artist.name} data={{ name: artist.name }} />}
+        right={<LikeButton targetType="artist" refId={artist.lib_uid ?? null} ndId={artist.lib_uid ? null : artist.id} title={artist.name} data={{ name: artist.name }} />}
       />
       <Hero
         cover={artist.cover_url ?? albums[0]?.cover_url}
@@ -294,8 +302,8 @@ export function NdArtistPage({ id }: { id: string }) {
             <Button
               variant="primary"
               icon="wave"
-              busy={starting === seedKey({ nd_artist_id: artist.id })}
-              onClick={() => void startWave({ nd_artist_id: artist.id }, 'radio')}
+              busy={starting === seedKey(artistRadioSeed(artist))}
+              onClick={() => void startWave(artistRadioSeed(artist), 'radio')}
             >
               Радио по исполнителю
             </Button>
@@ -304,7 +312,7 @@ export function NdArtistPage({ id }: { id: string }) {
       />
       <div className="grid grid-cols-2 gap-4 px-4 pb-4 sm:grid-cols-3">
         {albums.map((a) => (
-          <NdAlbumCard key={a.id} album={a} showArtist={false} />
+          <NdAlbumCard key={a.uid ?? a.id} album={a} showArtist={false} />
         ))}
       </div>
     </div>
@@ -312,7 +320,7 @@ export function NdArtistPage({ id }: { id: string }) {
 }
 
 export function NdAlbumPage({ id }: { id: string }) {
-  const res = useAsync((s) => api.ndAlbum(id, s), [id]);
+  const res = useAsync((s) => libAlbum(id, s), [id]);
   if (res.loading) return (<><PageHeader title="Альбом" back="/library" /><SkeletonRows /></>);
   if (!res.data) return (<><PageHeader title="Альбом" back="/library" /><ErrorState text={res.error ?? 'Альбом не найден'} onRetry={() => res.reload()} /></>);
   const a = res.data;
@@ -323,7 +331,7 @@ export function NdAlbumPage({ id }: { id: string }) {
         title={a.title}
         sub={a.artist}
         back="/library"
-        right={<LikeButton targetType="album" ndId={a.id} title={a.title} data={{ name: a.title, artist: a.artist }} />}
+        right={<LikeButton targetType="album" refId={albumLikeRef(a)} ndId={a.lib_uid || a.deezer_album_id ? null : a.id} title={a.title} data={{ name: a.title, artist: a.artist }} />}
       />
       <Hero
         cover={a.cover_url?.replace(/size=\d+/, 'size=600')}
@@ -344,7 +352,7 @@ export function NdAlbumPage({ id }: { id: string }) {
       <ListActions tracks={tracks} context="album" />
       <ul>
         {tracks.map((t, i) => (
-          <li key={`${t.nd_song_id}:${i}`}>
+          <li key={`${t.uid ?? t.ref}:${i}`}>
             <TrackRow track={t} number={t.track_no ?? i + 1} queue={tracks} link={false} />
           </li>
         ))}
@@ -356,13 +364,13 @@ export function NdAlbumPage({ id }: { id: string }) {
 /** «Все альбомы» of the library, by name, a page at a time. */
 export function NdAlbumsPage() {
   const [pages, setPages] = useState<NdAlbumOut[][]>([]);
-  const first = useAsync((s) => api.ndAlbums('alphabeticalByName', 0, 60, s), []);
+  const first = useAsync((s) => libAlbums('alphabeticalByName', 0, 60, undefined, s), []);
   const [busy, setBusy] = useState(false);
   const all = [...(first.data ?? []), ...pages.flat()];
   const done = (first.data?.length ?? 0) < 60 || (pages.length > 0 && pages[pages.length - 1].length < 60);
   const more = async () => {
     setBusy(true);
-    const next = await attempt(() => api.ndAlbums('alphabeticalByName', all.length, 60));
+    const next = await attempt(() => libAlbums('alphabeticalByName', all.length, 60));
     setBusy(false);
     if (next) setPages((p) => [...p, next]);
   };
@@ -377,7 +385,7 @@ export function NdAlbumsPage() {
         <>
           <div className="grid grid-cols-2 gap-4 px-4 pb-4 sm:grid-cols-3">
             {all.map((a) => (
-              <NdAlbumCard key={a.id} album={a} />
+              <NdAlbumCard key={a.uid ?? a.id} album={a} />
             ))}
           </div>
           {!done && (

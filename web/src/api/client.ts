@@ -319,7 +319,9 @@ export const api = {
   // library
   libAlbums: (q: string, offset = 0, limit = 50, signal?: AbortSignal) =>
     request<LibAlbumOut[]>('GET', withQuery('/api/library/albums', { q, offset, limit }), { signal }),
-  libAlbum: (id: number, signal?: AbortSignal) => request<LibAlbumOut>('GET', `/api/library/albums/${id}`, { signal }),
+  /** An album by its `uid` (the deprecated int id is still accepted until stage 7). */
+  libAlbum: (ref: string | number, signal?: AbortSignal) =>
+    request<LibAlbumOut>('GET', `/api/library/albums/${enc(String(ref))}`, { signal }),
   createAlbum: (body: AlbumCreateIn) => request<LibAlbumOut>('POST', '/api/library/albums', { json: body }),
   patchAlbum: (id: number, body: AlbumPatchIn) =>
     request<LibAlbumOut>('PATCH', `/api/library/albums/${id}`, { json: body }),
@@ -355,9 +357,9 @@ export const api = {
   // «Моя волна»
   smartStart: (body: SmartStartIn) => request<SmartOut>('POST', '/api/smart-shuffle/start', { json: body }),
   smartNext: (id: string, body: SmartNextIn) => request<SmartOut>('POST', `/api/smart-shuffle/${encodeURIComponent(id)}/next`, { json: body }),
-  smartHide: (id: string, body: { ref?: string | null; nd_song_id?: string | null }) =>
+  smartHide: (id: string, body: { ref?: string | null; track_uid?: string | null; nd_song_id?: string | null }) =>
     request<{ ok: boolean }>('POST', `/api/smart-shuffle/${encodeURIComponent(id)}/hide`, { json: body }),
-  smartAdd: (id: string, body: { ref?: string | null; nd_song_id?: string | null }) =>
+  smartAdd: (id: string, body: { ref?: string | null; track_uid?: string | null; nd_song_id?: string | null }) =>
     request<SmartAddOut>('POST', `/api/smart-shuffle/${encodeURIComponent(id)}/add`, { json: body }),
   waveStart: (body: WaveStartIn) => request<WaveOut>('POST', '/api/wave/start', { json: body }),
   waveNext: (id: string, body: WaveNextIn) => request<WaveOut>('POST', `/api/wave/${encodeURIComponent(id)}/next`, { json: body }),
@@ -439,10 +441,28 @@ export const api = {
   deleteChat: (id: number) => request<OkOut>('DELETE', `/api/assistant/chats/${id}`),
 };
 
-export const libraryCoverUrl = (albumId: number, size = 300, bust?: string | number) =>
-  withQuery(`/api/library/albums/${albumId}/cover`, { size, v: bust });
+/** The library cover of an album by its `uid` (the deprecated int id is still accepted until stage 7). */
+export const libraryCoverUrl = (ref: string | number, size = 300, bust?: string | number) =>
+  withQuery(`/api/library/albums/${enc(String(ref))}/cover`, { size, v: bust });
 
-/** Audio of a catalog track for `<audio src>`; the Hub picks the file on the first request if needed. */
-export const listenStreamUrl = (ref: string) => withQuery('/api/listen/stream', { ref });
+/** The browser's hint about a metered/slow network (`navigator.connection`, absent in most desktops). */
+export interface NetworkInfo {
+  saveData?: boolean;
+  effectiveType?: string;
+}
+
+/** A metered or slow network asks for the light variant of a stream (`q=mobile`): no video-like payload on 3G. */
+export const isMetered = (conn?: NetworkInfo | null): boolean =>
+  !!conn && (conn.saveData === true || conn.effectiveType === '2g' || conn.effectiveType === '3g');
+
+const connection = (): NetworkInfo | undefined => {
+  if (typeof navigator === 'undefined') return undefined;
+  return (navigator as Navigator & { connection?: NetworkInfo }).connection;
+};
+
+/** Audio of a catalog track for `<audio src>`; the Hub picks the file on the first request if needed. `q=mobile`
+ * asks for the light variant on a metered network (design §7). */
+export const listenStreamUrl = (ref: string, conn: NetworkInfo | null | undefined = connection()) =>
+  withQuery('/api/listen/stream', { ref, q: isMetered(conn) ? 'mobile' : undefined });
 
 export const uploadCoverUrl = (uploadId: number) => `/api/uploads/${uploadId}/cover`;

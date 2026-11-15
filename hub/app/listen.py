@@ -131,7 +131,8 @@ class Choice:
     sha256: str | None = None  # kind "library": the immutable blob address
     blob_size: int | None = None  # kind "library": its size
     media_type: str | None = None  # kind "library": by the logical file name
-    nd_song_id: str | None = None  # kind "library", once Navidrome has scanned the file
+    nd_song_id: str | None = None  # deprecated alias of `uid` (the Navidrome song, until stage 7)
+    uid: str | None = None  # kind "library": the Hub track uid (`lib:<uid>`)
     source: StreamSource | None = None  # upstream that opened last (URL after redirects); renewed when it fails
     local: Path | None = None  # "full" from a source without plain HTTP audio: the copy the Hub downloaded
     heard: bool = False  # the user has listened to it
@@ -243,8 +244,8 @@ async def choose(ref: str, *, background: bool = False, stale: Choice | None = N
 def _usable(c: Choice) -> bool:
     # an owned blob is playable while the bucket has it; a cached copy makes it cheap
     if c.kind == "library":
-        # an unscanned track is looked up again: its Navidrome song id makes ♥ work
-        return bool(c.nd_song_id) and (c.path is None or c.path.is_file())
+        # an unscanned track is looked up again: its deprecated Navidrome song id makes ♥ work until stage 7
+        return bool(c.uid) and c.nd_song_id is not None and (c.path is None or c.path.is_file())
     return c.path is None or (c.path.is_file() and bool(c.nd_song_id))
 
 
@@ -440,7 +441,7 @@ async def _light_source(c: Choice) -> tuple[Path, str] | None:
 
 def warm_light(refs: list[str]) -> None:
     """Make the light copies of these tracks in the background (a mix's songs, a wave's tracks), in order, so a
-    stream asked for the light variant finds them ready. Songs of the library are `nd:<song>`."""
+    stream asked for the light variant finds them ready. Songs of the library are `lib:<uid>`."""
     _spawn(_warm_light(list(dict.fromkeys(refs))), background=True)
 
 
@@ -699,6 +700,8 @@ async def _resolve(ref: str, *, probe: bool, remembered: bool, full_only: bool =
         raise ListenError(400, "Неверная ссылка на трек") from e
     if src == FILE_REF:
         return await _resolve_file(ref, probe=probe, remembered=remembered)
+    if src == "lib":
+        return await _resolve_library(ref, id_)
     if src == "nd":
         return await _resolve_song(ref, id_)
     if not ((src == "dz" and svc.deezer is not None) or (src == "hm" and "hitmoz" in svc.providers)):
@@ -750,8 +753,43 @@ async def _resolve_file(ref: str, *, probe: bool, remembered: bool) -> Choice:
     return choice
 
 
+async def _find_library_track(s, track_ref: str) -> Track | None:
+    """A library track by its `uid`, or by the legacy int id kept until stage 7."""
+    if track_ref.isdigit():
+        return (
+            await s.execute(select(Track).where(Track.id == int(track_ref), Track.deleted_at.is_(None)).limit(1))
+        ).scalar_one_or_none()
+    return (
+        await s.execute(select(Track).where(Track.uid == track_ref, Track.deleted_at.is_(None)).limit(1))
+    ).scalar_one_or_none()
+
+
+async def _resolve_library(ref: str, track_ref: str) -> Choice:
+    """A library track by its Hub `uid` (`lib:<uid>`); the legacy int id is still resolved until stage 7."""
+    async with session_scope() as s:
+        t = await _find_library_track(s, track_ref)
+        found = await _library_ref(s, t)
+    if t is None or found is None:
+        raise ListenError(404, "Песни нет в библиотеке")
+    choice = Choice(
+        ref,
+        "library",
+        t.artist,
+        t.title,
+        t.duration_s,
+        path=found.local_path,
+        sha256=found.sha256,
+        blob_size=found.size,
+        media_type=found.media_type,
+        nd_song_id=t.nd_song_id,
+        uid=t.uid,
+    )
+    _choices[ref] = choice
+    return choice
+
+
 async def _resolve_song(ref: str, song_id: str) -> Choice:
-    """A song only the library has (`nd:<song>`, in a mix): its file."""
+    """A song only the library has (`nd:<song>`, deprecated): its file, resolved through `uid`."""
     async with session_scope() as s:
         t = (
             await s.execute(select(Track).where(Track.nd_song_id == song_id, Track.deleted_at.is_(None)).limit(1))
@@ -770,6 +808,7 @@ async def _resolve_song(ref: str, song_id: str) -> Choice:
         blob_size=found.size,
         media_type=found.media_type,
         nd_song_id=song_id,
+        uid=t.uid,
     )
     _choices[ref] = choice
     return choice
@@ -913,7 +952,8 @@ async def _resolve_hitmoz(ref: str, id_: str, probe: bool) -> Choice:
 class _LibraryTrack(NamedTuple):
     sha256: str | None
     size: int | None
-    nd_song_id: str | None
+    nd_song_id: str | None  # deprecated alias of `uid` (until stage 7)
+    uid: str
     logical_path: str | None
     media_type: str
     local_path: Path | None  # a pre-blob row, still served from the old on-disk library
@@ -931,16 +971,16 @@ async def _library_ref(s, t: Track | None) -> _LibraryTrack | None:
     if t.blob_id is not None:
         blob = await s.get(Blob, t.blob_id)
         if blob is not None:
-            return _LibraryTrack(blob.sha256, blob.size, t.nd_song_id, t.path, media_type, None)
+            return _LibraryTrack(blob.sha256, blob.size, t.nd_song_id, t.uid, t.path, media_type, None)
     if t.path:
         legacy = get_settings().library_dir / Path(*t.path.split("/"))
         if legacy.is_file():
-            return _LibraryTrack(None, None, t.nd_song_id, t.path, media_type, legacy)
+            return _LibraryTrack(None, None, t.nd_song_id, t.uid, t.path, media_type, legacy)
     return None
 
 
 async def _library_track(query: dict) -> _LibraryTrack | None:
-    """What the owned track plays as: its blob address, Navidrome id and logical file name."""
+    """What the owned track plays as: its blob address, Hub uid and logical file name."""
     async with session_scope() as s:
         t = await find_existing(
             s,
@@ -967,6 +1007,7 @@ def _library_choice(
         blob_size=found.size,
         media_type=found.media_type,
         nd_song_id=found.nd_song_id,
+        uid=found.uid,
         query=query,
     )
 

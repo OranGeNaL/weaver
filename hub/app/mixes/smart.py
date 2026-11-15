@@ -589,9 +589,13 @@ async def start(
 ) -> Plan:
     if not valid_context(context):
         raise SmartError(422, "context: liked или playlist:<id>")
-    ids = list(dict.fromkeys(songs))
+    from app import plays
+
+    ids = await plays.resolve_song_ids(list(dict.fromkeys(songs)))
     if not ids:
         raise SmartError(422, "В списке нет песен")
+    if current and current.startswith("lib:"):
+        current = (await plays.resolve_song_ids([current]))[0]
     rng = rng or random.Random()
     now = now or utcnow()
     cfg = get_settings().cfg.mixes
@@ -721,6 +725,10 @@ async def next_batch(user: User, sid: str, played: list[Any], at: str | None) ->
     rt = await _runtime(sid, user)
     if not rt.state.pool and rt.tasks:  # nothing to pick from yet: the sources still answer (outside the lock)
         await asyncio.wait(set(rt.tasks), timeout=get_settings().wave_wait_s)
+    if at and at.startswith("lib:"):
+        from app import plays
+
+        at = (await plays.resolve_song_ids([at]))[0]
     async with rt.lock:
         recorded, events = await record(rt, played)
         await wave._profile(rt, user)  # after the events were stored: it sees them

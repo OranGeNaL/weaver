@@ -7,6 +7,7 @@ import { IconButton, cx } from './ui';
  * `pending` is a legacy hint; an explicit own unlike always overrides it. */
 export function LikeButton({
   songId,
+  uid,
   refId,
   pending,
   title,
@@ -17,6 +18,8 @@ export function LikeButton({
   data,
 }: {
   songId?: string | null;
+  /** the Hub track uid (the primary alias since stage 5) */
+  uid?: string | null;
   refId?: string | null;
   pending?: boolean;
   title: string;
@@ -30,9 +33,9 @@ export function LikeButton({
   useEffect(() => {
     if (targetType === 'track' && pending && refId && !songId) markLikePending(refId);
   }, [pending, refId, songId, targetType]);
-  const target = { targetType, ndId, songId, ref: refId, data };
+  const target = { targetType, ndId, uid, songId, ref: refId, data };
   const liked = useLiked(target);
-  if (!songId && !ndId && !refId) return null;
+  if (!songId && !ndId && !refId && !uid) return null;
   return (
     <IconButton
       icon="heart"

@@ -135,6 +135,9 @@ let libTracks = [
 function libTrackOut(t: (typeof libTracks)[number]) {
   const a = libAlbums.find((x) => x.id === t.album_id);
   return {
+    uid: `t${t.id}`,
+    album_uid: a?.uid ?? null,
+    artist_uid: null,
     id: t.id,
     nd_song_id: `nd${t.id}`,
     album_id: t.album_id,
@@ -158,7 +161,7 @@ function libTrackOut(t: (typeof libTracks)[number]) {
 
 function libAlbumOut(a: (typeof libAlbums)[number], withTracks = false) {
   const tracks = libTracks.filter((t) => t.album_id === a.id);
-  return { ...a, track_count: tracks.length, nd_album_id: `ndal${a.id}`, tracks: withTracks ? tracks.map(libTrackOut) : null };
+  return { ...a, artist_uid: null, track_count: tracks.length, nd_album_id: `ndal${a.id}`, tracks: withTracks ? tracks.map(libTrackOut) : null };
 }
 
 // --- the Navidrome library (/api/nd: the PWA in a plain browser) ---------------------------------------
@@ -182,7 +185,7 @@ function ndSongOut(t: (typeof libTracks)[number]) {
     ref: `nd:nd${t.id}`, source: 'nd', id: `nd${t.id}`, title: t.title, artist: t.artist, artists: [t.artist],
     album_title: a?.title ?? null, duration_s: lt.duration_s, track_no: t.track_no, explicit: t.explicit,
     cover_url: a?.has_cover ? cover(`lib${t.album_id}`) : null, cover_small_url: a?.has_cover ? cover(`lib${t.album_id}`, 300) : null,
-    owned: true, library_track_id: t.id, nd_song_id: `nd${t.id}`, downloading: false,
+    uid: `t${t.id}`, owned: true, library_track_id: t.id, nd_song_id: `nd${t.id}`, downloading: false,
     nd_album_id: `ndal${t.album_id}`, nd_artist_id: ndArtistId(a?.album_artist ?? t.artist),
   };
 }
@@ -1203,6 +1206,15 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
   }
   if (p === '/api/listen' || p === '/api/listen/stream') {
     const ref = url.searchParams.get('ref') ?? '';
+    if (ref.startsWith('lib:')) {
+      // a Hub library track by its uid (the primary form of stage 6): its own file
+      const t = libTracks.find((x) => `t${x.id}` === ref.slice(4));
+      if (!t) return send(res, 404, { detail: 'Песни нет в библиотеке' }), true;
+      const out = libTrackOut(t);
+      const pick = { ref, kind: 'library', artist: out.artist, title: out.title, duration_s: out.duration_s, provider: null, bitrate_kbps: null, page_url: null, uid: out.uid, nd_song_id: out.nd_song_id, stream_url: `/api/listen/stream?ref=${encodeURIComponent(ref)}` };
+      if (p === '/api/listen') return send(res, 200, pick), true;
+      return sendRange(req, res, wav(Number(out.duration_s) || 30, String(out.title)), 'audio/wav'), true;
+    }
     if (ref.startsWith('nd:')) {
       // a mix's song only the library has, or a song of the library pages: its file
       const lib = ndSong(ref.slice(3));
@@ -1298,9 +1310,9 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
     for (const t of libTracks) if ((b.track_ids as number[]).includes(t.id)) t.album_id = Number(b.album_id);
     return send(res, 200, libAlbumOut(libAlbums.find((a) => a.id === Number(b.album_id))!)), true;
   }
-  mm = p.match(/^\/api\/library\/albums\/(\d+)\/cover$/);
+  mm = p.match(/^\/api\/library\/albums\/([^/]+)\/cover$/);
   if (mm) {
-    const a = libAlbums.find((x) => x.id === Number(mm![1]));
+    const a = libAlbums.find((x) => x.uid === mm![1] || x.id === Number(mm![1]));
     if (m === 'PUT' && a) {
       await readBody(req);
       a.has_cover = true;
@@ -1308,9 +1320,9 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
     }
     return send(res, 200, coverSvg(a?.title ?? 'x'), 'image/svg+xml'), true;
   }
-  mm = p.match(/^\/api\/library\/albums\/(\d+)$/);
+  mm = p.match(/^\/api\/library\/albums\/([^/]+)$/);
   if (mm) {
-    const a = libAlbums.find((x) => x.id === Number(mm![1]));
+    const a = libAlbums.find((x) => x.uid === mm![1] || x.id === Number(mm![1]));
     if (!a) return send(res, 404, { detail: 'Альбом не найден' }), true;
     if (m === 'PATCH') Object.assign(a, await readJson(req));
     return send(res, 200, libAlbumOut(a, true)), true;

@@ -36,8 +36,8 @@ export function PlaylistsPage() {
       </form>
       <p className="px-4 pb-2 text-xs text-muted">
         {STANDALONE
-          ? 'Плейлисты хранятся в Navidrome: те же, что в приложении HomeMusic.'
-          : 'Плейлисты хранятся в Navidrome: слушайте и скачивайте их для офлайна в плеере (Tempus).'}
+          ? 'Плейлисты хранятся в HomeMusic — вместе с ♥ и историей.'
+          : 'Плейлисты хранятся в HomeMusic: слушайте и скачивайте их для офлайна в плеере.'}
       </p>
       {res.loading ? (
         <SkeletonRows />

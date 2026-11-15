@@ -212,8 +212,10 @@ async def test_cover_by_uid_resize_and_404(api, tmp_path):
     assert r.json()["has_cover"] is True
     full = await api.get(f"/api/library/albums/{album_uid}/cover")
     assert full.status_code == 200 and full.headers["content-type"] == "image/jpeg"
+    # the cover is cacheable by the client for an hour: the URL carries the album uid, so it is stable
+    assert "max-age=3600" in full.headers["cache-control"]
     small = await api.get(f"/api/library/albums/{album_uid}/cover?size=32")
-    assert small.status_code == 200
+    assert small.status_code == 200 and "max-age=3600" in small.headers["cache-control"]
     with Image.open(io.BytesIO(small.content)) as im:
         assert max(im.size) <= 32
     assert (await api.get("/api/library/albums/00000000-0000-0000-0000-000000000000/cover")).status_code == 404

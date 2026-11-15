@@ -264,6 +264,32 @@ async def _play_orders(s: AsyncSession, user_id: int) -> tuple[list[int], list[i
     return recent, frequent
 
 
+async def _starred_artist_ids(s: AsyncSession, user_id: int) -> list[int]:
+    """Liked artists from the like/unlike journal, newest first: a bare Hub `uid` ref (the PWA of stage 6 names a
+    library artist by it) or an `artist:<uid>`/`uid:` alias, like `_starred_album_ids` does for albums."""
+    from app.favorites import snapshot
+
+    states = await snapshot(s, user_id)
+    liked_at: dict[str, datetime] = {}
+    for st in states.values():
+        if st.target_type != "artist" or not st.liked:
+            continue
+        refs = {x for x in (st.ref, *(st.aliases or [])) if x}
+        uids = {r.split(":", 1)[1] for r in refs if r.startswith(("artist:", "uid:"))}
+        uids |= {r for r in refs if not r.startswith(("dz:", "ref:", "nd:", "artist:", "uid:"))}
+        if st.uid:
+            uids.add(st.uid)
+        when = st.since or st.event.ts
+        for uid in uids:
+            if uid not in liked_at or when > liked_at[uid]:
+                liked_at[uid] = when
+    if not liked_at:
+        return []
+    rows = list((await s.execute(select(Artist).where(Artist.uid.in_(liked_at)))).scalars())
+    rows.sort(key=lambda a: liked_at[a.uid], reverse=True)
+    return [a.id for a in rows]
+
+
 async def _starred_album_ids(s: AsyncSession, user_id: int) -> list[int]:
     """Liked albums from the journal of like/unlike decisions (`favorites.snapshot`), newest first."""
     from app.favorites import snapshot
@@ -849,10 +875,11 @@ async def liked(user: User = Depends(current_user), s: AsyncSession = Depends(ge
     albums = [a for a in (await s.execute(select(Album).where(Album.id.in_(album_ids)))).scalars()] if album_ids else []
     albums.sort(key=lambda a: album_ids.index(a.id))
     album_out_list = await _albums_out(s, albums)
-    artist_uids = {x.uid for x in states if x.target_type == "artist" and x.uid}
+    artist_ids = await _starred_artist_ids(s, user.id)
     artists = (
-        list((await s.execute(select(Artist).where(Artist.uid.in_(artist_uids)))).scalars()) if artist_uids else []
+        [a for a in (await s.execute(select(Artist).where(Artist.id.in_(artist_ids)))).scalars()] if artist_ids else []
     )
+    artists.sort(key=lambda a: artist_ids.index(a.id))
     counts = (
         dict(
             (
