@@ -2,8 +2,7 @@
 
 The original bytes are hashed and uploaded to the object store unchanged: no tags are written on import, so the
 same file imported twice yields one blob shared by both tracks. The staging file stays where the caller put it.
-The catalog row is the source of truth: a download is finalized by `catalog_commit`;
-separate coalesced, best-effort `nd_sync` until stage 5/7.
+The catalog row is the source of truth: a download is finalized by `catalog_commit`.
 """
 
 from __future__ import annotations

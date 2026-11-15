@@ -1,9 +1,8 @@
 """Catalog commit: one transaction from a committed blob to a `done` download item.
 
 The Hub's
-own catalog is now the source of truth: once the blob and the track row are in one transaction, the item is `done`
+own catalog is the source of truth: once the blob and the track row are in one transaction, the item is `done`
 and carries the public `uid` (and the deprecated `library_track_id`).
-`nd_sync` until stage 5/7; it never decides whether the catalog record exists.
 """
 
 from __future__ import annotations
