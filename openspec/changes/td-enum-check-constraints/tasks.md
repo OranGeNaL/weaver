@@ -34,7 +34,17 @@
 
 ## 4. Проверка
 
-- [ ] 4.1 `pytest -q -n 4` на тестовом Postgres: зелёный (база: 1081 passed).
-- [ ] 4.2 `pyright` по `hub/pyrightconfig.json`: 0 ошибок.
-- [ ] 4.3 `ruff check` и `ruff format --check`: без ошибок.
-- [ ] 4.4 Проверить, что валидные пути записи (создание импорта, коллекций, элементов, альбома, микса) не изменились.
+- [x] 4.1 `pytest -q -n 4` на тестовом Postgres: зелёный (база: 1081 passed).
+
+  `TEST_DATABASE_URL=postgresql+asyncpg://hub:hub@localhost:5433/hub_test_enum uv run pytest -q -n 4`:
+  **1161 passed, 74 skipped, 0 failed** за 622.51s. Число «1081» в постановке устарело: на ветке до change'а
+  проходят 1129 тестов, 32 из 1161 — новые (`tests/test_enum_constraints.py`).
+
+- [x] 4.2 `pyright` по `hub/pyrightconfig.json`: 0 ошибок — `uv run pyright`: `0 errors, 0 warnings, 0 informations`.
+- [x] 4.3 `ruff check` и `ruff format --check`: без ошибок — `All checks passed!`, `196 files already formatted`.
+- [x] 4.4 Проверить, что валидные пути записи (создание импорта, коллекций, элементов, альбома, микса) не изменились.
+
+  Пути записи не трогались (менялись только `__table_args__` и миграция), и они покрыты зелёным полным прогоном:
+  `tests/test_imports.py` (создание импорта, коллекций, элементов, economy/full), `tests/test_mixes.py`
+  (микс дня, настройки), `tests/test_library_catalog.py` (альбом и его `release_type`), `tests/test_wave.py`
+  (`wave_sessions.mode`).
