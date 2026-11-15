@@ -112,7 +112,7 @@ Hub SHALL отправлять шестизначный код на email чер
 
 ### Requirement: Вход через OIDC и привязка аккаунта
 
-Hub SHALL поддерживать вход через внешних OIDC-провайдеров (Google и generic) и MUST связывать пару `iss` + `sub` с локальной учётной записью. Hub MUST NOT автоматически связывать OIDC-аккаунт по email, MUST NOT выдавать пароль Navidrome и MUST NOT быть OIDC Provider для сторонних приложений.
+Hub SHALL поддерживать вход через внешних OIDC-провайдеров (Google и generic) и MUST связывать пару `iss` + `sub` с локальной учётной записью. Hub MUST NOT автоматически связывать OIDC-аккаунт по email и MUST NOT быть OIDC Provider для сторонних приложений.
 
 #### Scenario: Вход в связанный аккаунт
 - **WHEN** пользователь завершает OIDC-вход аккаунтом, уже связанным с пользователем Hub

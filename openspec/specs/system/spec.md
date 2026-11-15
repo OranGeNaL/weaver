@@ -4,26 +4,6 @@
 
 ## Requirements
 
-### Requirement: Публичный health и capabilities
-
-Hub SHALL отдавать `GET /healthz` без авторизации с признаком доступности Navidrome, версией, идентификатором сборки PWA и списком capabilities. Capabilities MUST позволять клиентам выбирать поддерживаемые функции без угадывания версии Hub.
-
-#### Scenario: Hub доступен
-- **WHEN** клиент вызывает `/healthz`
-- **THEN** Hub возвращает `ok: true`
-- **AND** отдельно сообщает `navidrome: true|false`
-- **AND** возвращает `web_build` и список capabilities
-
-#### Scenario: Navidrome недоступен
-- **WHEN** Navidrome не отвечает
-- **THEN** `/healthz` всё равно возвращает `ok: true`
-- **AND** `navidrome` равен `false`
-
-#### Scenario: Новый клиент
-- **WHEN** клиент видит `typed_favorites_v1`, `listening_checkpoints_v1`, `launch_events_v1`, `wave_origin_v1` или `smart_shuffle_v1`
-- **THEN** он MAY использовать соответствующее расширение API
-- **AND** старый клиент продолжает работать без него
-
 ### Requirement: Capability избранного Hub
 
 Hub SHALL сообщать в `/healthz.capabilities` возможность `hub_liked_v1`, означающую, что `/api/starred` и `/api/library/liked` обслуживаются Hub и содержат `track_uids`.
@@ -44,11 +24,11 @@ Hub SHALL сообщать в `/healthz.capabilities` возможность `hu
 #### Scenario: Новый клиент
 - **WHEN** клиент видит `hub_library_v1`
 - **THEN** он MAY использовать `/api/library/*` и `lib:<uid>`
-- **AND** не обращается к `/api/nd/*`
+- **AND** использует только `/api/library/*`
 
 #### Scenario: Старый клиент
 - **WHEN** клиент не знает `hub_library_v1`
-- **THEN** он продолжает работать через прежние endpoint'ы до этапа 7
+- **THEN** он продолжает работать без расширений каталога (остальной API доступен)
 
 ### Requirement: Административная диагностика
 
@@ -263,3 +243,36 @@ Hub SHALL сообщать состояние S3-хранилища в публ�
 - **WHEN** администратор запрашивает расширенный health
 - **THEN** Hub возвращает объём библиотеки и занятость кэша
 - **AND** не выполняет тяжёлых операций с бакетом
+
+### Requirement: Публичный health и capabilities Hub
+
+Hub SHALL отдавать `GET /healthz` без авторизации с признаком доступности, версией, идентификатором сборки PWA и списком capabilities. Capabilities MUST позволять клиентам выбирать поддерживаемые функции без угадывания версии Hub. Состав ответа MUST NOT зависеть от внешнего медиасервера.
+
+#### Scenario: Hub доступен
+- **WHEN** клиент вызывает `/healthz`
+- **THEN** Hub возвращает `ok: true`
+- **AND** возвращает `web_build` и список capabilities
+- **AND** не сообщает признак внешнего медиасервера
+
+#### Scenario: Внешний медиасервер отсутствует
+- **WHEN** внешнего медиасервера в системе нет
+- **THEN** `/healthz` возвращает `ok: true`
+- **AND** состав ответа не зависит от внешнего медиасервера
+
+#### Scenario: Новый клиент
+- **WHEN** клиент видит `typed_favorites_v1`, `listening_checkpoints_v1`, `launch_events_v1`, `wave_origin_v1`, `smart_shuffle_v1`, `hub_library_v1` или `hub_liked_v1`
+- **THEN** он MAY использовать соответствующее расширение API
+- **AND** старый клиент продолжает работать без него
+
+### Requirement: Публичные адреса Hub
+
+Hub SHALL удалить `public_music_url` из `MeOut`/`/api/auth/me`, `music_url` из `/api/auth/options`, а также `player_seen_at` из админских ответов. `public_hub_url` MUST остаться.
+
+#### Scenario: Ответ входа
+- **WHEN** клиент вызывает `/api/auth/me`
+- **THEN** ответ содержит `public_hub_url`
+- **AND** не содержит `public_music_url`/`music_url`
+
+#### Scenario: Админский список
+- **WHEN** администратор вызывает `/api/admin/users`
+- **THEN** в ответе нет `player_seen_at`
