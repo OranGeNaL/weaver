@@ -39,7 +39,7 @@
 - [x] 6.2 Прогнать `ruff check` и `ruff format --check`; ожидается без ошибок.
 - [x] 6.3 Прогнать `npm run typecheck` и `npm run build`; ожидается без ошибок.
 - [x] 6.4 Проверить `docker compose config` и запуск стека без сервиса Navidrome.
-- [ ] 6.5 Проверить `rg -i "navidrome|nd_song_id|nd_album_id|nd_artist_id|nd_playlist_id|navidrome_sync|mirror_pending"` по репозиторию; допустимы архивные changes, Purpose-строки и `hub/migrations/versions/` (историю не переписываем).
-- [ ] 6.6 Проверить вручную: вход, каталог, плейлист, воспроизведение, ♥, «Микс дня», история.
+- [x] 6.5 Проверить `rg -i "navidrome|nd_song_id|nd_album_id|nd_artist_id|nd_playlist_id|navidrome_sync|mirror_pending"` по репозиторию; допустимы архивные changes, Purpose-строки и `hub/migrations/versions/` (историю не переписываем).
+- [x] 6.6 Проверить вручную: вход, каталог, плейлист, воспроизведение, ♥, «Микс дня», история.
 - [x] 6.7 Удалить `nd:`/`lib:<int>`-резолв после 6.6, вернуть `404`; проверить `rg "nd:|lib:<int>" hub/app/mixes hub/app/ai` (пусто).
 - [x] 6.8 Убрать `{song_id}`-ветку WebView-моста (`playQueue` и legacy `play(idsJson)`), оставить `{ref:"lib:<uid>"}`; проверить `web/src/lib/player.ts` и typecheck.
