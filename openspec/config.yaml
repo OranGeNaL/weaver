@@ -39,17 +39,21 @@ context: |
     а метаданные — в `library`. Staging и hot-cache находятся под `MUSIC_ROOT`.
   - Собственного reverse proxy, SSH-туннеля и VPS-скриптов в проекте нет.
 
-  # Серия navidrome-migration
-  - Порядок этапов: 0 governance → 1 postgres → 2 storage → 3 catalog → 4 identity →
-    5 user-data → 6 delivery → 7 decommission. Этап 4 может разрабатываться параллельно
-    1–3, но MUST быть завершён до 6. `embedder-vector-store` вне серии и её не блокирует.
-  - Политика delta-спек: базовые `openspec/specs/*` остаются As-Is до архивации
-    соответствующего change; изменения поведения оформляются только delta-спеками
+  # Серия navidrome-migration (завершена)
+  - Историческая справка: все восемь change'ей серии
+    (`0-governance` → `1-postgres` → `2-storage` → `3-catalog` →
+    `4-identity` → `5-user-data` → `6-delivery` → `7-decommission`)
+    заархивированы в `openspec/changes/archive/`. Их порядок и
+    зависимости (например, этап 4 до 6) описывают уже выполненную
+    работу и не являются обязательством для новых change'ей.
+  - Политика delta-спек (действует для новых change'ей): базовые
+    `openspec/specs/*` остаются As-Is до архивации соответствующего
+    change; изменения поведения оформляются только delta-спеками
     внутри change и не требуют переписывать базовые спеки заранее.
 
   # Технический долг (td-*)
   - Отдельный change на одну тему долга: нейминг `td-<краткая-тема>` в kebab-case,
-    вне серии `navidrome-migration`, без номера этапа.
+    без номера этапа.
   - Схема — `spec-driven`. Если долг не меняет контракт системы (тулинг, формат,
     типы), в `.openspec.yaml` ставится `skip_specs: true`; если меняет правило
     (например, «статическая проверка типов обязательна»), заводится capability

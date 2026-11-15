@@ -15,7 +15,10 @@ proxy/timeout; `AsyncOpenAI` получает его через `cast(Any, ...)`
 **Non-Goals:**
 - Не менять поведение ассистента, промпты, формат запросов/ответов и таймауты.
 - Не переводить остальной HTTP Hub (`app/net.py`, провайдеры) на `httpx2`.
-- Не трогать `respx`-моки других модулей (Navidrome, провайдеры) — они остаются на `httpx`.
+- Не трогать `respx`-моки модулей, которые остаются на `httpx`:
+  - провайдеры — hitmoz/hitmos.fm, Deezer, MusicBrainz, yt-dlp/YouTube;
+  - внешние источники и адаптеры — mix sources (YTM, Last.fm, Deezer, embedder),
+    Yandex OAuth при импорте, OIDC IdP, Spotify-ссылки в `ai_links`, `net`.
 
 ## Decisions
 

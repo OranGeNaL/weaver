@@ -1,6 +1,6 @@
 ## Context
 
-В `hub/tests` есть развитая инфраструктура: мигрированная копия SQLite, in-process HTTP-клиент, фейковый Navidrome, отключённые фоновые задачи. Не хватает тестов на несколько уже работающих контрактов.
+В `hub/tests` есть развитая инфраструктура: шаблонная Postgres-БД (`TEST_DATABASE_URL`: миграции один раз в шаблон, клон на воркер xdist и truncate перед каждым тестом), in-process HTTP-клиент `app_client`, фейки внешних источников (`FakeProvider`, `FakeDeezer` в `tests/support.py`), отключённые фоновые задачи (`DISABLE_BACKGROUND`). Не хватает тестов на несколько уже работающих контрактов.
 
 ## Goals / Non-Goals
 
