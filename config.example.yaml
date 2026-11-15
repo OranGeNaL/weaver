@@ -40,7 +40,7 @@ soulseek:
   parallel_transfers: 3
 
 ytdlp:
-  # bestaudio without re-encoding (opus/m4a) is playable by Tempus/Navidrome
+  # bestaudio without re-encoding (opus/m4a) is playable by the PWA and the app
   prefer_original_codec: true
   search_prefix: "ytsearch5:"
   # Shared by regular YouTube and re-uploads; SoundCloud has its own limit.
@@ -80,7 +80,7 @@ uploads:
 
 library:
   trash_days: 30
-  backup_hour: 4   # local time; daily copy of Hub and Navidrome DBs to MUSIC_ROOT/.backups
+  backup_hour: 4   # local time; daily copy of the Hub DB to MUSIC_ROOT/.backups
 
 mixes:
   taste_model: v2  # v1 is the rollback: new mixes and new wave sessions switch back

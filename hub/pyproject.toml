@@ -1,7 +1,7 @@
 [project]
 name = "homemusic-hub"
 version = "0.1.0"
-description = "HomeMusic Hub: catalog, downloaders, uploads, tagging and AI assistant on top of Navidrome"
+description = "HomeMusic Hub: catalog, streaming, downloaders, uploads, tagging and AI assistant"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi==0.145.0",

@@ -14,7 +14,7 @@ class Settings:
     data_dir: Path = field(default_factory=lambda: Path(_env("DATA_DIR", "/data")))
     # weights (Hugging Face cache) live in their own volume, not in the image
     models_dir: Path = field(default_factory=lambda: Path(_env("MODELS_DIR", "/models")))
-    # library folder, read-only: `path` items are relative to it (as Navidrome's song.path)
+    # library folder, read-only: `path` items are relative to it
     music_root: Path = field(default_factory=lambda: Path(_env("MUSIC_ROOT", "/music")))
     # empty: no auth (the service is reachable only from the compose network)
     token: str = field(default_factory=lambda: _env("EMBEDDER_TOKEN", ""))
