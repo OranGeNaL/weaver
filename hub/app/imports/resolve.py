@@ -178,7 +178,7 @@ async def resolve_artist(s: AsyncSession, source: str, external_id: str, raw: di
 
 
 async def library_track_ids(s: AsyncSession, track_ids: set[int]) -> dict[int, str | None]:
-    """track id -> Navidrome song id."""
+    """track id -> Hub track uid."""
     if not track_ids:
         return {}
-    return dict((await s.execute(select(Track.id, Track.nd_song_id).where(Track.id.in_(track_ids)))).all())
+    return dict((await s.execute(select(Track.id, Track.uid).where(Track.id.in_(track_ids)))).all())

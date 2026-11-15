@@ -68,7 +68,6 @@ def track_out(t: Track, *, album_uid: str | None = None, artist_uid: str | None 
         album_uid=album_uid,
         artist_uid=artist_uid,
         id=t.id,
-        nd_song_id=t.nd_song_id,
         album_id=t.album_id,
         integrity_issue=t.integrity_issue,
         artist=t.artist,
@@ -240,11 +239,11 @@ async def _play_orders(s: AsyncSession, user_id: int) -> tuple[list[int], list[i
                 func.max(PlayEvent.ts).label("last_ts"),
                 func.count(PlayEvent.id).label("plays"),
             )
-            .join(Track, Track.nd_song_id == PlayEvent.nd_song_id)
+            .join(Track, Track.uid == PlayEvent.track_uid)
             .where(
                 PlayEvent.user_id == user_id,
                 PlayEvent.kind.in_(("start", "finish")),
-                PlayEvent.nd_song_id.is_not(None),
+                PlayEvent.track_uid.is_not(None),
                 Track.album_id.is_not(None),
                 Track.deleted_at.is_(None),
             )
@@ -612,10 +611,10 @@ async def import_mounted(
 
 @router.get("/api/library/track-source", response_model=TrackSourceOut)
 async def track_source(
-    nd_song_id: str, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
+    uid: str, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
 ):
     t = (
-        await s.execute(select(Track).where(Track.nd_song_id == nd_song_id, Track.deleted_at.is_(None)).limit(1))
+        await s.execute(select(Track).where(Track.uid == uid, Track.deleted_at.is_(None)).limit(1))
     ).scalar_one_or_none()
     if t is None:
         raise HTTPException(404, "Трек не найден")
@@ -778,7 +777,7 @@ async def restore_track(
 async def starred(user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
     """The user's ♥, served by the Hub only (`hub_liked_v1`)."""
     from app.api.schemas import FavoriteTarget
-    from app.favorites import ND_FIELDS, AliasIndex, imported_targets, snapshot
+    from app.favorites import AliasIndex, imported_targets, snapshot
     from app.imports.apply import pending_like_refs
     from app.models import FavoriteSubject
 
@@ -798,7 +797,6 @@ async def starred(user: User = Depends(current_user), s: AsyncSession = Depends(
                 key=state.key,
                 ref=state.ref,
                 uid=state.uid,
-                nd_id=state.nd_id,
                 liked=state.liked,
                 liked_since=state.since,
                 target_data=state.data,
@@ -817,34 +815,17 @@ async def starred(user: User = Depends(current_user), s: AsyncSession = Depends(
                     key=key[1],
                     ref=ref,
                     uid=None,
-                    nd_id=None,
                     liked=True,
                     aliases=[f"ref:{ref}"],
                     provenance="import",
                 )
             )
-    song_ids: list[str] = []
-    album_ids: list[str] = []
-    artist_ids: list[str] = []
     track_uids: list[str] = []
     for state in states.values():
-        if not state.liked:
-            continue
-        nd_id = getattr(state.event, ND_FIELDS[state.target_type], None) or state.nd_id
-        if state.target_type == "track":
-            if nd_id:
-                song_ids.append(nd_id)
-            if state.uid:
-                track_uids.append(state.uid)
-        elif state.target_type == "album" and nd_id:
-            album_ids.append(nd_id)
-        elif state.target_type == "artist" and nd_id:
-            artist_ids.append(nd_id)
-    refs.update(x.ref for x in states.values() if x.target_type == "track" and x.liked and x.ref and not x.nd_id)
+        if state.liked and state.target_type == "track" and state.uid:
+            track_uids.append(state.uid)
+    refs.update(x.ref for x in states.values() if x.target_type == "track" and x.liked and x.ref and not x.uid)
     return StarredOut(
-        song_ids=list(dict.fromkeys(song_ids)),
-        album_ids=list(dict.fromkeys(album_ids)),
-        artist_ids=list(dict.fromkeys(artist_ids)),
         track_uids=list(dict.fromkeys(track_uids)),
         refs=sorted(refs),
         subjects=subjects,
@@ -918,9 +899,6 @@ async def star(
 
     targets = list(body.targets)
     targets += [FavoriteTarget(uid=x) for x in body.uids]
-    targets += [FavoriteTarget(nd_song_id=x) for x in body.song_ids]
-    targets += [FavoriteTarget(target_type="album", nd_album_id=x) for x in body.album_ids]
-    targets += [FavoriteTarget(target_type="artist", nd_artist_id=x) for x in body.artist_ids]
     if body.refs and not body.unstar:
         raise HTTPException(400, "Чтобы отметить трек каталога, поставьте его в загрузку с ♥")
     targets += [FavoriteTarget(ref=x) for x in body.refs]

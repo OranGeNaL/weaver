@@ -1,6 +1,6 @@
 """Client of the `embedder` service (MIXES.md 4.2): audio vectors of library songs and catalog candidates.
 
-Keys: `nd:<song_id>` for a library song (its file, `path` relative to the library), a catalog `ref` (`dz:…`) for a
+Keys: `lib:<uid>` for a library song (its file, `path` relative to the library), a catalog `ref` (`dz:…`) for a
 track known by its Deezer preview. The service did not answer — `EmbedderDown`: mixes are built without the audio
 term.
 """
@@ -123,8 +123,8 @@ def configured() -> bool:
     return bool(get_settings().embedder_url.strip())
 
 
-def song_key(nd_song_id: str) -> str:
-    return f"nd:{nd_song_id}"
+def song_key(uid: str) -> str:
+    return f"lib:{uid}"
 
 
 @dataclass

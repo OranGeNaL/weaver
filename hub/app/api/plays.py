@@ -82,7 +82,6 @@ def _out(d: Dislike) -> DislikeOut:
     return DislikeOut(
         id=d.id,
         ref=d.ref,
-        nd_song_id=d.nd_song_id,
         artist_ref=d.artist_ref,
         artist=d.artist,
         title=d.title,
@@ -109,7 +108,6 @@ async def add(
         s,
         user.id,
         ref=body.ref,
-        nd_song_id=body.nd_song_id,
         artist_ref=body.artist_ref,
         artist=body.artist,
         title=body.title,
@@ -121,7 +119,7 @@ async def add(
         user.id,
         "dislike",
         ref=d.artist_ref or d.ref,
-        nd_song_id=d.nd_song_id,
+        uid=None,
         client=body.client,
         context=body.context,
         target_type="artist" if d.artist_ref else "track",
@@ -132,23 +130,23 @@ async def add(
 @router.delete("/api/dislikes")
 async def remove(
     ref: str | None = None,
-    nd_song_id: str | None = None,
+    uid: str | None = None,
     artist_ref: str | None = None,
     client: str = "pwa",
     user: User = Depends(current_user),
     s: AsyncSession = Depends(get_session, scope="function"),
 ):
-    """«Не нравится» off: the track (`ref` and/or `nd_song_id`) or the artist (`artist_ref`)."""
-    if not (ref or nd_song_id or artist_ref):
+    """«Не нравится» off: the track (`ref`/`uid`) or the artist (`artist_ref`)."""
+    if not (ref or uid or artist_ref):
         raise HTTPException(400, "Укажите трек или исполнителя")
-    n = await plays.remove_dislikes(s, user.id, ref=ref, nd_song_id=nd_song_id, artist_ref=artist_ref)
+    n = await plays.remove_dislikes(s, user.id, ref=ref, uid=uid, artist_ref=artist_ref)
     if n:
         await plays.dislike_event(
             s,
             user.id,
             "undislike",
             ref=artist_ref or ref,
-            nd_song_id=nd_song_id,
+            uid=None,
             client=client[:32],
             target_type="artist" if artist_ref else "track",
         )
@@ -167,7 +165,7 @@ async def remove_one(
         user.id,
         "undislike",
         ref=d.artist_ref or d.ref,
-        nd_song_id=d.nd_song_id,
+        uid=None,
         client="pwa",
         target_type="artist" if d.artist_ref else "track",
     )

@@ -19,7 +19,6 @@ from app.api.schemas import HealthOut, SoulseekStatusOut
 from app.auth import admin_user
 from app.config import get_settings
 from app.db import get_session
-from app.library.navidrome import admin_client
 from app.models import User
 from app.providers.base import ProviderError
 from app.providers.soulseek import SoulseekProvider
@@ -29,16 +28,6 @@ log = logging.getLogger(__name__)
 router = APIRouter(tags=["system"])
 
 SoulseekState = Literal["disabled", "unreachable", "auth_error", "connecting", "disconnected", "ready"]
-
-
-async def _navidrome_ok() -> bool:
-    nd = admin_client()
-    try:
-        return await asyncio.wait_for(nd.ping(), timeout=5)
-    except Exception:
-        return False
-    finally:
-        await nd.aclose()
 
 
 _BUILD_META = re.compile(r'<meta\s+name="hm-build"\s+content="([^"]+)"')
@@ -88,7 +77,6 @@ async def healthz():
 
     return HealthOut(
         ok=True,
-        navidrome=await _navidrome_ok(),
         storage=await _storage_status(),
         catalog=dict(last_result),
         web_build=web_build(get_settings().static_dir),
@@ -114,7 +102,6 @@ async def health(user: User = Depends(admin_user)):
 
     return HealthOut(
         ok=True,
-        navidrome=await _navidrome_ok(),
         providers=providers,
         storage=status,
         catalog=dict(last_result),

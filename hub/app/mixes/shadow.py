@@ -30,9 +30,7 @@ def compare(snapshot: TasteSnapshot, candidates: list[build.Cand], *, now: datet
             contributions = None
             if reason is None:
                 generators = {g: cfg.weights.get(g, 0.5) / log2(pos + 2) for g, pos in c.gens.items()}
-                known = profile.find(
-                    ref=c.track.ref, nd_song_id=c.nd_song_id, fp=fingerprint(c.track.artist, c.track.title)
-                )
+                known = profile.find(ref=c.track.ref, uid=c.uid, fp=fingerprint(c.track.artist, c.track.title))
                 artist_score = profile.artists.get(c.artist, 0)
                 contributions = {
                     "generators": generators,

@@ -136,8 +136,8 @@ class V2Profile(Profile):
             or self.picked_artists
         )
 
-    def known(self, *, ref=None, nd_song_id=None, fp=None) -> bool:
-        t = self.find(ref=ref, nd_song_id=nd_song_id, fp=fp)
+    def known(self, *, ref=None, uid=None, fp=None) -> bool:
+        t = self.find(ref=ref, uid=uid, fp=fp)
         return bool(t and t.familiar)
 
     def seeds(self, n: int, max_per_artist: int = 2) -> list[TasteTrack]:
@@ -150,10 +150,10 @@ class V2Profile(Profile):
 
         return top_artists(self, n)
 
-    def disliked(self, *, ref, nd_song_id, artist, artist_ref) -> bool:
-        t = self.find(ref=ref, nd_song_id=nd_song_id)
+    def disliked(self, *, ref, uid, artist, artist_ref) -> bool:
+        t = self.find(ref=ref, uid=uid)
         return bool(t and t.key in self.explicit_negative_keys) or super().disliked(
-            ref=ref, nd_song_id=nd_song_id, artist=artist, artist_ref=artist_ref
+            ref=ref, uid=uid, artist=artist, artist_ref=artist_ref
         )
 
     def positive_weights(self) -> dict[str, float]:
@@ -170,7 +170,7 @@ class V2Profile(Profile):
                 if t.score >= 1
                 and t.positive_age is not None
                 and t.positive_age <= 30
-                and not self.disliked(ref=t.ref, nd_song_id=t.nd_song_id, artist=t.artist, artist_ref=None)
+                and not self.disliked(ref=t.ref, uid=t.uid, artist=t.artist, artist_ref=None)
             ),
             key=lambda t: (-t.score, t.key),
         )
@@ -185,9 +185,7 @@ class V2Profile(Profile):
 
 
 def _event_subject(e: TasteEvent) -> bool:
-    return bool(
-        e.ref or getattr(e, {"track": "nd_song_id", "album": "nd_album_id", "artist": "nd_artist_id"}[e.target_type])
-    )
+    return bool(e.ref or (e.target_type == "track" and e.track_uid))
 
 
 def _heard(e: Any, duration: float | None) -> bool:
@@ -260,23 +258,21 @@ def _calculate(snapshot, *, now, timezone, mode, experiment, version="v2", trace
     events = tuple(e for e in visible_events(snapshot, now, mode) if _event_subject(e))
     subjects = list(snapshot.subjects)
     for tr in snapshot.metadata:
-        keys = tuple(
-            k for k in (f"ref:{tr.ref}" if tr.ref else None, f"nd:{tr.nd_song_id}" if tr.nd_song_id else None) if k
-        )
+        keys = tuple(k for k in (f"ref:{tr.ref}" if tr.ref else None, f"lib:{tr.uid}" if tr.uid else None) if k)
         if keys:
             subjects.append(
                 Subject(
                     "track",
                     keys,
                     tr.ref,
-                    tr.nd_song_id,
+                    tr.uid,
                     {"artist": tr.artist, "title": tr.title, "duration_s": tr.duration_s},
                 )
             )
-    # A verified pair on a playback event must also unify ref-only/ND-only favorite
+    # A verified pair on a playback event must also unify ref-only/uid-only favorite
     # decisions: the ledger helper intentionally consumes only like/unlike rows.
-    pairs = {(e.ref, e.nd_song_id) for e in events if e.target_type == "track" and e.ref and e.nd_song_id}
-    subjects.extend(Subject("track", (f"ref:{ref}", f"nd:{nd}"), ref, nd) for ref, nd in sorted(pairs))
+    pairs = {(e.ref, e.track_uid) for e in events if e.target_type == "track" and e.ref and e.track_uid}
+    subjects.extend(Subject("track", (f"ref:{ref}", f"lib:{uid}"), ref, uid) for ref, uid in sorted(pairs))
     index = AliasIndex(cast("Iterable[Any]", events), subjects)
     state = fold(cast("Iterable[PlayEvent]", events), subjects, now)
     p = V2Profile(snapshot.user_id, now, timezone=timezone, favorite_states=state, limitations=snapshot.limitations)
@@ -290,7 +286,7 @@ def _calculate(snapshot, *, now, timezone, mode, experiment, version="v2", trace
     for subject in subjects:
         if subject.target_type == "track" and subject.aliases:
             k = index.root(("track", min(subject.aliases)))
-            preferred.setdefault(k, (subject.ref, subject.nd_id))
+            preferred.setdefault(k, (subject.ref, subject.uid))
             data = metadata.setdefault(k, {})
             for key, value in subject.data.items():
                 if value is not None:
@@ -302,27 +298,27 @@ def _calculate(snapshot, *, now, timezone, mode, experiment, version="v2", trace
                 if value is not None:
                     data.setdefault(key, value)
 
-    def get_track(ref=None, nd=None):
-        aliases = {k for k in (f"ref:{ref}" if ref else None, f"nd:{nd}" if nd else None) if k}
+    def get_track(ref=None, uid=None):
+        aliases = {k for k in (f"ref:{ref}" if ref else None, f"lib:{uid}" if uid else None) if k}
         if not aliases:
             return None
         root = index.root(("track", min(aliases)))
         all_aliases = aliases_by_key.get(root, aliases)
-        nds = sorted(a[3:] for a in all_aliases if a.startswith("nd:"))
+        uids = sorted(a[4:] for a in all_aliases if a.startswith("lib:"))
         refs = sorted(a[4:] for a in all_aliases if a.startswith("ref:"))
-        pref_ref, pref_nd = preferred.get(root, (None, None))
-        canonical_nd = pref_nd or (nds[0] if nds else nd)
+        pref_ref, pref_uid = preferred.get(root, (None, None))
+        canonical_uid = pref_uid or (uids[0] if uids else uid)
         canonical_ref = pref_ref or (refs[0] if refs else ref)
-        if not canonical_nd and not canonical_ref:
+        if not canonical_uid and not canonical_ref:
             return None
-        key = f"nd:{canonical_nd}" if canonical_nd else str(canonical_ref)
+        key = f"lib:{canonical_uid}" if canonical_uid else str(canonical_ref)
         t = p.tracks.get(key)
         if t is None:
             data = metadata.get(root, {})
             t = TasteTrack(
                 key,
                 canonical_ref,
-                canonical_nd,
+                canonical_uid,
                 data.get("artist") or "",
                 data.get("title") or "",
                 data.get("duration_s") or data.get("duration"),
@@ -338,7 +334,7 @@ def _calculate(snapshot, *, now, timezone, mode, experiment, version="v2", trace
     for e in events:
         if e.ts < cutoff or e.target_type != "track":
             continue
-        t = get_track(e.ref, e.nd_song_id)
+        t = get_track(e.ref, e.track_uid)
         if t and _heard(e, e.duration_s or t.duration_s):
             heard_by_day[e.ts.replace(tzinfo=UTC).astimezone(zone).date()].add(t.key)
     for e in _real_actions(events, subjects, index):
@@ -362,7 +358,7 @@ def _calculate(snapshot, *, now, timezone, mode, experiment, version="v2", trace
     for e in events:
         if e.ts < cutoff or e.target_type != "track" or e.kind not in ("start", "finish", "skip"):
             continue
-        t = get_track(e.ref, e.nd_song_id)
+        t = get_track(e.ref, e.track_uid)
         if not t:
             continue
         t.last_event = max(t.last_event or e.ts, e.ts)
@@ -403,7 +399,7 @@ def _calculate(snapshot, *, now, timezone, mode, experiment, version="v2", trace
                     picked_artists=(),
                 )
                 before = calculate_profile(prior, now=e.ts, timezone=timezone, mode=mode)
-                familiar = before.find(ref=e.ref, nd_song_id=e.nd_song_id)
+                familiar = before.find(ref=e.ref, uid=e.track_uid)
                 if familiar and familiar.score >= 4:
                     base = -0.5
             elif experiment == "P4":
@@ -450,7 +446,7 @@ def _calculate(snapshot, *, now, timezone, mode, experiment, version="v2", trace
     for st in state.values():
         if not st.liked or st.target_type != "track":
             continue
-        t = get_track(st.ref, st.nd_id)
+        t = get_track(st.ref, st.uid)
         if t:
             t.liked = True
             t.last_event = max(filter(None, (t.last_event, st.since)), default=None)
@@ -476,7 +472,7 @@ def _calculate(snapshot, *, now, timezone, mode, experiment, version="v2", trace
                     ),
                 )
     for saved in snapshot.downloads:
-        if utc(saved.at) <= now and (t := get_track(saved.ref, saved.nd_song_id)):
+        if utc(saved.at) <= now and (t := get_track(saved.ref, saved.uid)):
             t.downloaded = True
             t.last_event = max(t.last_event or utc(saved.at), utc(saved.at))
             if trace is not None:
@@ -503,9 +499,9 @@ def _calculate(snapshot, *, now, timezone, mode, experiment, version="v2", trace
         album_aliases = set(st.aliases)
         for tr in snapshot.metadata:
             if (tr.album_ref and f"ref:{tr.album_ref}" in album_aliases) or (
-                tr.album_nd_id and f"nd:{tr.album_nd_id}" in album_aliases
+                False  # album identity is the catalog ref
             ):
-                t = get_track(tr.ref, tr.nd_song_id)
+                t = get_track(tr.ref, tr.uid)
                 if t:
                     t.album_liked = True
                     if trace is not None:
@@ -532,12 +528,12 @@ def _calculate(snapshot, *, now, timezone, mode, experiment, version="v2", trace
             continue
         data = e.target_data or {}
         if e.target_type == "artist":
-            p.disliked_artist_refs.add(e.ref or f"nd:{e.nd_artist_id}")
+            p.disliked_artist_refs.add(e.ref or "")
             if name := data.get("name"):
                 p.disliked_artists.add(artist_key(name))
-        elif t := get_track(e.ref, e.nd_song_id):
+        elif t := get_track(e.ref, e.track_uid):
             p.explicit_negative_keys.add(t.key)
-            p.disliked_ids.update(k for k in (t.ref, f"nd:{t.nd_song_id}" if t.nd_song_id else None) if k)
+            p.disliked_ids.update(k for k in (t.ref, f"lib:{t.uid}" if t.uid else None) if k)
             t.negative += 5 * weight(e.ts)
             if trace is not None:
                 w = weight(e.ts)
@@ -565,14 +561,14 @@ def _calculate(snapshot, *, now, timezone, mode, experiment, version="v2", trace
                 if d.artist:
                     p.disliked_artists.add(artist_key(d.artist))
         else:
-            aliases = [f"ref:{d.ref}"] if d.ref else [f"nd:{d.nd_song_id}"]
+            aliases = [f"ref:{d.ref}"] if d.ref else []
             if index.root(("track", aliases[0])) in journalled:
                 continue
-            t = get_track(d.ref, d.nd_song_id)
+            t = get_track(d.ref, None)
             if not t:
                 continue
             p.explicit_negative_keys.add(t.key)
-            p.disliked_ids.update(k for k in (t.ref, f"nd:{t.nd_song_id}" if t.nd_song_id else None) if k)
+            p.disliked_ids.update(k for k in (t.ref, f"lib:{t.uid}" if t.uid else None) if k)
             t.negative += 5 * weight(utc(d.at) if d.at else now)
             if trace is not None:
                 at = utc(d.at) if d.at else now
@@ -652,7 +648,7 @@ def _ignored(trace: Trace, snapshot: TasteSnapshot, p: V2Profile, now: datetime)
     for e in snapshot.events:
         if e.user_id != snapshot.user_id or e.kind != "like" or e.target_type != "track":
             continue
-        t = p.find(ref=e.ref, nd_song_id=e.nd_song_id)
+        t = p.find(ref=e.ref, uid=e.track_uid)
         if t is None:
             continue
         if (e.target_data or {}).get("provenance") == "import" or e.client == "import":

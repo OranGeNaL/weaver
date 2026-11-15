@@ -179,21 +179,21 @@ async def build(
         ls = [x for x in h.launches if x.mix_id == info.mix.id]
         attempts, marks = [a for x in ls for a in x.attempts], [m for x in ls for m in x.marks]
         for i in info.items:
-            if i.state == "active" and (i.nd_song_id or i.ref):
+            if i.state == "active" and i.ref:
                 add(
-                    f"nd:{i.nd_song_id}" if i.nd_song_id else i.ref or "",
+                    i.ref,
                     "mix",
                     generator=i.generator,
                     mix_position=i.position,
                     familiar=i.familiar,
-                    mix_outcome=launches.outcome(attempts, marks, h.aliases.of(i.ref, i.nd_song_id)),
+                    mix_outcome=launches.outcome(attempts, marks, h.aliases.of(i.ref, None)),
                 )
     wave_items = h.wave_items.get(sid or "", [])
     if sid:
         launch = next((x for x in h.launches if x.wave_id == sid), None)
         for w in wave_items:
             add(
-                w.key,
+                w.ref,
                 "wave",
                 wave_position=w.position,
                 familiar=w.familiar,
@@ -201,7 +201,7 @@ async def build(
                 wave_outcome=launches.outcome(
                     launch.attempts if launch else [],
                     launch.marks if launch else [],
-                    h.aliases.of(w.ref, w.nd_song_id) | {w.key},
+                    h.aliases.of(w.ref, None),
                 ),
             )
 
@@ -216,12 +216,12 @@ async def build(
     pairs, known = [], {}
     for k in keys:
         t = p.tracks.get(k)
-        r, n = (t.ref, t.nd_song_id) if t else ((None, k[3:]) if k.startswith("nd:") else (k, None))
+        r, n = (t.ref, t.uid) if t else ((None, k[4:]) if k.startswith("lib:") else (k, None))
         pairs.append((r, n))
         if t:
             known[(r, n)] = (t.artist, t.title)
     for w in wave_items:
-        known.setdefault((w.ref, w.nd_song_id), (w.artist, w.title))
+        known.setdefault((w.ref, None), (w.artist, w.title))
     name_of = await names.resolve(s, pairs, known)
     order = [f.id for f in p.geometry.facets]
     members = facet_index(found)

@@ -11,9 +11,9 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-# "nd": a song only the library has (Navidrome id), no catalog record: mixes (`app.mixes`) list such songs too
+# "lib": a song only the library has (Hub uid, `lib:<uid>`), no catalog record: mixes (`app.mixes`) list such songs
 # "file": an exact provider file used as the first track of a wave, including songs absent from catalogs.
-Source = Literal["dz", "hm", "mb", "nd", "file"]
+Source = Literal["dz", "hm", "mb", "lib", "file"]
 RecordType = Literal["album", "single", "ep", "compile"]
 
 

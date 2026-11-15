@@ -46,7 +46,7 @@ async def decide(s: AsyncSession, imp: Import, it: ImportItem, kind: str, r: Res
     if kind == "dislikes":
         it.status = "skipped"  # never downloaded, never ♥: «Не нравится» for mixes and «Моя волна»
         track = await s.get(Track, it.track_id) if it.track_id else None
-        if it.match != "not_found" and (it.ref or (track and track.nd_song_id)):
+        if it.match != "not_found" and (it.ref or (track and track.uid)):
             from app.plays import add_dislike
 
             raw = it.raw_json or {}
@@ -54,7 +54,7 @@ async def decide(s: AsyncSession, imp: Import, it: ImportItem, kind: str, r: Res
                 s,
                 imp.user_id,
                 ref=it.ref,
-                nd_song_id=track.nd_song_id if track else None,
+                uid=track.uid if track else None,
                 artist=raw.get("artist"),
                 title=raw.get("title"),
                 source="yandex_import",
@@ -320,14 +320,13 @@ async def sync_playlists(s: AsyncSession, imp: Import) -> None:
     for c in colls:
         items = list((await s.execute(select(ImportItem).where(ImportItem.collection_id == c.id))).scalars())
         want = playlist_order(items, await _track_uids(s, items))
-        existing = c.playlist_uid or c.nd_playlist_id  # the deprecated alias may hold the uid of an earlier run
+        existing = c.playlist_uid
         playlist = await playlists_lib.get_owned(s, imp.user_id, existing) if existing else None
         if playlist is None:
             playlist = await playlists_lib.create(s, imp.user_id, c.title)
         if want != list(c.track_uids or []):
             await playlists_lib.replace_tracks(s, playlist, want)
         c.playlist_uid, c.track_uids = playlist.uid, want
-        c.nd_playlist_id, c.nd_song_ids = playlist.uid, want  # deprecated aliases until stage 7
     await s.flush()
 
 

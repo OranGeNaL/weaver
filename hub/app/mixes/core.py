@@ -221,7 +221,6 @@ async def save(s: AsyncSession, user: User, built: builder.Built) -> Mix:
                 state="active" if pos < len(built.active) else "reserve",
                 familiar=c.familiar,
                 ref=c.track.ref if c.track.source == "dz" else None,
-                nd_song_id=c.nd_song_id,
                 track_id=c.library_track_id,
                 generator=c.generator,
                 score=round(c.score, 4),
@@ -289,10 +288,6 @@ async def sync(mix_id: int) -> None:
             dl = dls.get(it.download_item_id) if it.download_item_id else None
             if dl is not None and dl.status == "done" and dl.track_id:
                 it.track_id = dl.track_id
-            if it.track_id and not it.nd_song_id:
-                it.nd_song_id = (
-                    await s.execute(select(Track.nd_song_id).where(Track.id == it.track_id))
-                ).scalar_one_or_none()
         reserve = [i for i in items if i.state == "reserve"]
         for it in items:
             dl = dls.get(it.download_item_id) if it.download_item_id else None
@@ -314,7 +309,6 @@ async def sync(mix_id: int) -> None:
                 await queue_download(s, mix, it)
         await s.flush()
         ordered = sorted(items, key=lambda i: i.position)
-        songs = [i.nd_song_id for i in ordered if i.state == "active" and i.nd_song_id]
         track_ids = [i.track_id for i in ordered if i.state == "active" and i.track_id]
         uids = (
             {t.id: t.uid for t in (await s.execute(select(Track).where(Track.id.in_(track_ids)))).scalars()}
@@ -328,17 +322,11 @@ async def sync(mix_id: int) -> None:
             pid = await write_playlist(s, user, settings.playlist_uid, track_uids, mix)
             if pid:
                 settings.playlist_uid = mix.playlist_uid = pid
-                # deprecated aliases until stage 7: an old client still reads these fields
-                settings.nd_playlist_id = mix.nd_playlist_id = pid
-                mix.stats_json = {
-                    **(mix.stats_json or {}),
-                    "playlist_songs": songs,
-                    "playlist_uids": track_uids,
-                }
+                mix.stats_json = {**(mix.stats_json or {}), "playlist_uids": track_uids}
     # the light copies for a metered network (app.light), made now so a tap finds them ready
     from app import listen
 
-    listen.warm_light([f"nd:{song}" for song in songs])
+    listen.warm_light([f"lib:{uid}" for uid in track_uids])
     notify()
 
 
@@ -444,8 +432,7 @@ async def _users_keep(users: list[User]) -> tuple[set[str], set[str]] | None:
             try:
                 for st in (await snapshot(s, u.id)).values():
                     if st.target_type == "track" and st.liked:
-                        # the uid is primary; an old row may only have the deprecated aliases
-                        starred.add(st.uid or st.ref or (f"nd:{st.nd_id}" if st.nd_id else ""))
+                        starred.add(st.uid or st.ref or "")
             except Exception as e:
                 log.warning("mix cleanup: ♥ of user %s not read (%r): nothing is deleted", u.id, e)
                 return None
@@ -455,10 +442,10 @@ async def _users_keep(users: list[User]) -> tuple[set[str], set[str]] | None:
 async def kept_reasons(s: AsyncSession, it: MixItem, track: Track, starred: set[str], listed: set[str]) -> list[str]:
     """Why a song downloaded for a mix stays in the library (6.3); empty — it goes."""
     why: list[str] = []
-    song = track.nd_song_id
+    song = track.uid
     refs = [r for r in {it.ref, f"dz:{track.deezer_track_id}" if track.deezer_track_id else None} if r]
-    ids = or_(*([PlayEvent.nd_song_id == song] if song else []), *([PlayEvent.ref.in_(refs)] if refs else []))
-    # by anyone: the app's and the PWA's events and Navidrome's scrobbles (imported as `finish`)
+    ids = or_(*([PlayEvent.track_uid == song] if song else []), *([PlayEvent.ref.in_(refs)] if refs else []))
+    # by anyone: the app's and the PWA's events and imported scrobbles (`finish`)
     listened = (
         await s.execute(
             select(PlayEvent.id)
@@ -473,8 +460,6 @@ async def kept_reasons(s: AsyncSession, it: MixItem, track: Track, starred: set[
     keys = {track.uid}
     if track.deezer_track_id:
         keys.add(f"dz:{track.deezer_track_id}")
-    if track.nd_song_id:
-        keys.add(f"nd:{track.nd_song_id}")
     if keys & starred:
         why.append("starred")
     if track.uid in listed:

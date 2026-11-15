@@ -102,7 +102,7 @@ def select_profile_seeds(p: V2Profile, n: int, max_per_artist: int = 2) -> list[
                 t
                 for t in p.tracks.values()
                 if (t.liked or t.downloaded or t.album_liked)
-                and not p.disliked(ref=t.ref, nd_song_id=t.nd_song_id, artist=t.artist, artist_ref=None)
+                and not p.disliked(ref=t.ref, uid=t.uid, artist=t.artist, artist_ref=None)
             ),
             key=lambda t: t.key,
         )
@@ -168,7 +168,7 @@ async def enrich_selected(p: V2Profile, selected: list[TasteTrack]) -> list[Tast
             and t.title
             and counts[artist_key(t.artist)] < 2
             and not p.disliked(
-                ref=t.ref, nd_song_id=t.nd_song_id, artist=t.artist, artist_ref=t.track.artist_ref if t.track else None
+                ref=t.ref, uid=t.uid, artist=t.artist, artist_ref=t.track.artist_ref if t.track else None
             )
         ):
             counts[artist_key(t.artist)] += 1
@@ -203,7 +203,7 @@ async def seeds(p: V2Profile, n: int) -> list[TasteTrack]:
             t.key not in seen
             and counts[a] < 2
             and not p.disliked(
-                ref=t.ref, nd_song_id=t.nd_song_id, artist=t.artist, artist_ref=t.track.artist_ref if t.track else None
+                ref=t.ref, uid=t.uid, artist=t.artist, artist_ref=t.track.artist_ref if t.track else None
             )
         ):
             seen.add(t.key)

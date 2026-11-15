@@ -14,8 +14,6 @@ from cryptography.fernet import Fernet
 from psycopg import sql
 from sqlalchemy.engine import make_url
 
-from tests.support import ND
-
 
 def _with_database(url: str, name: str) -> str:
     return make_url(url).set(database=name).render_as_string(hide_password=False)
@@ -117,7 +115,7 @@ def db_url(worker_url: str) -> str:
 
 @pytest.fixture
 def hub_env(db_url: str, tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator:
-    """Settings for create_app(): temp folders, a fake Navidrome, no background workers, no waiting.
+    """Settings for create_app(): temp folders, no background workers, no waiting.
 
     Yields the music root. Module caches that outlive a test are cleared before and after it.
     """
@@ -131,7 +129,6 @@ def hub_env(db_url: str, tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator:
     monkeypatch.setenv("STORAGE_BACKEND", "fs")
     monkeypatch.setenv("ENVIRONMENT", "development")
     monkeypatch.setenv("MEDIA_BLOB_TOKEN", "test-blob-token")
-    monkeypatch.setenv("NAVIDROME_URL", ND)
     monkeypatch.setenv("NAVIDROME_ADMIN_USER", "admin")
     monkeypatch.setenv("NAVIDROME_ADMIN_PASSWORD", "adminpw")
     monkeypatch.setenv("HUB_SECRET_KEY", Fernet.generate_key().decode())
@@ -143,7 +140,6 @@ def hub_env(db_url: str, tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator:
     monkeypatch.setenv("ADMIN_BOOTSTRAP_TOKEN", "")
     monkeypatch.setenv("DISABLE_BACKGROUND", "true")
     monkeypatch.setenv("LLM_API_KEY", "")
-    monkeypatch.setenv("ND_SCAN_POLL_S", "0")
     monkeypatch.setenv("EMBEDDER_URL", "")  # a test that needs it mocks its own
     monkeypatch.setenv("LASTFM_API_KEY", "")
     monkeypatch.setenv("SMTP_HOST", "")  # no letters; a test that sends them captures its own
@@ -156,7 +152,6 @@ def hub_env(db_url: str, tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator:
 
 def _clear_caches() -> None:
     from app import accounts, config, google_auth, oidc, security, storage
-    from app.library.navidrome import NavidromeAdmin
     from app.mixes import sources, wave
     from app.providers import ytdlp
 
@@ -167,7 +162,6 @@ def _clear_caches() -> None:
     google_auth._keys.clear()
     oidc._docs.clear()
     oidc._keys.clear()
-    NavidromeAdmin.forget_token()
     ytdlp._media_hosts.clear()
     sources._lastfm_limiter = None
     wave._rt.clear()

@@ -1,14 +1,14 @@
 """Listening data for mixes and «Моя волна» (MIXES.md 3): events from the app and the PWA, scrobbles of Hub clients,
 «Не нравится».
 
-- An event names its track by a Hub `track_uid` and/or a catalog `ref`; the Navidrome `nd_song_id` stays a deprecated
-  alias until stage 7. The Hub fills in the other identifiers where it knows them.
+- An event names its track by a Hub `track_uid` and/or a catalog `ref`. The Hub fills in the other identifier where
+  it knows it.
 - `event_id` is the client's: a batch sent again (the app retries when offline) stores nothing twice.
 - A client scrobble is a `finish` with `scrobble=true`/`origin=client` and the Hub track uid. The app's own measured
   events of the same song near it win: a scrobble is not counted next to them, and a scrobble that arrived first is
   marked `superseded_scrobble` when they come (`DEDUP_WINDOW` plus the track's length).
-- ♥ that an import of another service set are not the user's own (M4): `imported_likes` lists them for callers
-  that still work with Navidrome ids; the profile itself reads `favorites.imported_targets`.
+- ♥ that an import of another service set are not the user's own (M4): `imported_likes` lists them; the profile
+  itself reads `favorites.imported_targets`.
 """
 
 from __future__ import annotations
@@ -62,57 +62,51 @@ async def _favorites_snapshot(session: AsyncSession, user_id: int, now: datetime
 # --- ids -----------------------------------------------------------------------------------------------------
 
 
-async def _song_of_ref(session: AsyncSession, ref: str) -> str | None:
-    """The Navidrome song of a catalog track the library has."""
+async def _uid_of_ref(session: AsyncSession, ref: str) -> str | None:
+    """The Hub track uid of a catalog track the library has."""
     try:
         src, id_ = split_ref(ref)
     except ValueError:
         src, id_ = "", ""
     if src == "dz":
-        nd = (
+        uid = (
             await session.execute(
-                select(Track.nd_song_id)
-                .where(Track.deezer_track_id == id_, Track.nd_song_id.is_not(None), Track.deleted_at.is_(None))
+                select(Track.uid)
+                .where(Track.deezer_track_id == id_, Track.deleted_at.is_(None))
                 .order_by(Track.id.desc())
                 .limit(1)
             )
         ).scalar_one_or_none()
-        if nd:
-            return nd
-    # the download (any ref: hitmoz, a provider'session file) or the import row that brought the file in
+        if uid:
+            return cast("str | None", uid)
+    # the download (any ref: hitmoz, a provider's file) or the import row that brought the file in
     by_download = (
-        select(Track.nd_song_id)
+        select(Track.uid)
         .join(DownloadItem, DownloadItem.track_id == Track.id)
         .where(
             DownloadItem.query_json["meta"]["track_ref"].astext == ref,
-            Track.nd_song_id.is_not(None),
             Track.deleted_at.is_(None),
         )
         .order_by(DownloadItem.id.desc())
         .limit(1)
     )
-    nd = (await session.execute(by_download)).scalar_one_or_none()
-    if nd:
-        return nd
+    uid = (await session.execute(by_download)).scalar_one_or_none()
+    if uid:
+        return cast("str | None", uid)
     by_import = (
-        select(Track.nd_song_id)
+        select(Track.uid)
         .join(ImportItem, ImportItem.track_id == Track.id)
-        .where(ImportItem.ref == ref, Track.nd_song_id.is_not(None), Track.deleted_at.is_(None))
+        .where(ImportItem.ref == ref, Track.deleted_at.is_(None))
         .order_by(ImportItem.id.desc())
         .limit(1)
     )
-    return (await session.execute(by_import)).scalar_one_or_none()
+    return cast("str | None", (await session.execute(by_import)).scalar_one_or_none())
 
 
-async def _ref_of_song(s: AsyncSession, nd_song_id: str) -> str | None:
+async def _ref_of_uid(s: AsyncSession, uid: str) -> str | None:
     """The catalog track of a library song."""
     t = (
-        await s.execute(
-            select(Track)
-            .where(Track.nd_song_id == nd_song_id, Track.deleted_at.is_(None))
-            .order_by(Track.id.desc())
-            .limit(1)
-        )
+        await s.execute(select(Track).where(Track.uid == uid, Track.deleted_at.is_(None)).limit(1))
     ).scalar_one_or_none()
     if t is None:
         return None
@@ -147,20 +141,10 @@ async def _uid_of_library_ref(s: AsyncSession, ref: str) -> str | None:
     return cast("str | None", found)
 
 
-async def track_uid_of(s: AsyncSession, ref: str | None, nd_song_id: str | None) -> str | None:
-    """The Hub `uid` of a library track named by `lib:<uid>`, a bare `uid`, a catalog ref and/or a deprecated
-    Navidrome song id."""
-    if nd_song_id:
-        uid = (
-            await s.execute(
-                select(Track.uid)
-                .where(Track.nd_song_id == nd_song_id, Track.deleted_at.is_(None))
-                .order_by(Track.id.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        if uid:
-            return uid
+async def track_uid_of(s: AsyncSession, ref: str | None, uid: str | None = None) -> str | None:
+    """The Hub `uid` of a library track named by `lib:<uid>`, a bare `uid` and/or a catalog ref."""
+    if uid and (found := await _uid_of_library_ref(s, uid)):
+        return found
     if ref:
         if ref.startswith("lib:") or ":" not in ref:
             if uid := await _uid_of_library_ref(s, ref):
@@ -178,9 +162,9 @@ async def track_uid_of(s: AsyncSession, ref: str | None, nd_song_id: str | None)
                 ).scalar_one_or_none()
                 if uid:
                     return uid
-            song = await _song_of_ref(s, ref)
-            if song:
-                return await track_uid_of(s, None, song)
+            found = await _uid_of_ref(s, ref)
+            if found:
+                return found
     return None
 
 
@@ -203,80 +187,79 @@ async def resolve_song_ids(ids: list[str]) -> list[str]:
     return [i[4:] if i.startswith("lib:") and i[4:] in found else i for i in ids]
 
 
-async def track_ids_of_uid(s: AsyncSession, uid: str) -> tuple[str | None, str | None]:
-    """The catalog ref and the deprecated Navidrome song of a Hub track uid."""
+async def track_ref_of_uid(s: AsyncSession, uid: str) -> str | None:
+    """The catalog ref of a Hub track uid (`lib:<uid>` when the library has it without a catalog record)."""
     t = (
         await s.execute(select(Track).where(Track.uid == uid, Track.deleted_at.is_(None)).limit(1))
     ).scalar_one_or_none()
     if t is None:
-        return None, None
+        return None
     ref = f"dz:{t.deezer_track_id}" if t.deezer_track_id else None
-    if ref is None and t.nd_song_id:
-        ref = await _ref_of_song(s, t.nd_song_id)
-    return ref or f"lib:{uid}", t.nd_song_id
+    if ref is None:
+        ref = await _ref_of_uid(s, uid)
+    return ref or f"lib:{uid}"
 
 
 @dataclass
 class Ids:
-    """Fills in `ref` ↔ `nd_song_id` (cached for one batch)."""
+    """Fills in `ref` ↔ `uid` (cached for one batch)."""
 
     s: AsyncSession
-    _songs: dict[str, str | None] = field(default_factory=dict)
+    _uids: dict[str, str | None] = field(default_factory=dict)
     _refs: dict[str, str | None] = field(default_factory=dict)
 
     async def prime(self, pairs: Iterable[tuple[str | None, str | None]]) -> None:
         """Complete old partial events in batches, never one SQL query per historical event."""
         pairs = list(pairs)
-        refs = {r for r, nd in pairs if r and not nd}
-        songs = {nd for r, nd in pairs if nd and not r}
-        self._songs.update({r: None for r in refs})
-        self._refs.update({nd: None for nd in songs})
+        refs = {r for r, uid in pairs if r and not uid}
+        uids = {u for r, u in pairs if u and not r}
+        self._uids.update({r: None for r in refs})
+        self._refs.update({u: None for u in uids})
         # Prefer the newest local row, just like the single-target path.
         dz = {r[3:] for r in refs if r.startswith("dz:")}
         for tr in (
             await self.s.execute(
                 select(Track)
-                .where(or_(Track.nd_song_id.in_(songs), Track.deezer_track_id.in_(dz)), Track.deleted_at.is_(None))
+                .where(or_(Track.uid.in_(uids), Track.deezer_track_id.in_(dz)), Track.deleted_at.is_(None))
                 .order_by(Track.id.desc())
             )
         ).scalars():
             ref = f"dz:{tr.deezer_track_id}" if tr.deezer_track_id else None
-            if ref in refs and tr.nd_song_id and not self._songs[ref]:
-                self._songs[ref] = tr.nd_song_id
-            if tr.nd_song_id in songs and ref and not self._refs[tr.nd_song_id]:
-                self._refs[tr.nd_song_id] = ref
+            if ref in refs and not self._uids[ref]:
+                self._uids[ref] = tr.uid
+            if tr.uid in uids and ref and not self._refs[tr.uid]:
+                self._refs[tr.uid] = ref
         for model, column in (
             (DownloadItem, DownloadItem.query_json["meta"]["track_ref"].astext),
             (ImportItem, ImportItem.ref),
         ):
             rows = (
                 await self.s.execute(
-                    select(column, Track.nd_song_id)
+                    select(column, Track.uid)
                     .join(Track, model.track_id == Track.id)
                     .where(
-                        or_(column.in_(refs), Track.nd_song_id.in_(songs)),
-                        Track.nd_song_id.is_not(None),
+                        or_(column.in_(refs), Track.uid.in_(uids)),
                         Track.deleted_at.is_(None),
                     )
                     .order_by(model.id.desc())
                 )
             ).all()
-            for ref, nd in rows:
-                if ref in refs and not self._songs[ref]:
-                    self._songs[ref] = nd
-                if nd in songs and ref and not self._refs[nd]:
-                    self._refs[nd] = ref
+            for ref, uid in rows:
+                if ref in refs and not self._uids[ref]:
+                    self._uids[ref] = uid
+                if uid in uids and ref and not self._refs[uid]:
+                    self._refs[uid] = ref
 
-    async def complete(self, ref: str | None, nd_song_id: str | None) -> tuple[str | None, str | None]:
-        if ref and not nd_song_id:
-            if ref not in self._songs:
-                self._songs[ref] = await _song_of_ref(self.s, ref)
-            nd_song_id = self._songs[ref]
-        elif nd_song_id and not ref:
-            if nd_song_id not in self._refs:
-                self._refs[nd_song_id] = await _ref_of_song(self.s, nd_song_id)
-            ref = self._refs[nd_song_id]
-        return ref, nd_song_id
+    async def complete(self, ref: str | None, uid: str | None) -> tuple[str | None, str | None]:
+        if ref and not uid:
+            if ref not in self._uids:
+                self._uids[ref] = await _uid_of_ref(self.s, ref)
+            uid = self._uids[ref]
+        elif uid and not ref:
+            if uid not in self._refs:
+                self._refs[uid] = await _ref_of_uid(self.s, uid)
+            ref = self._refs[uid]
+        return ref, uid
 
 
 # --- events --------------------------------------------------------------------------------------------------
@@ -305,12 +288,10 @@ class Recorded:
     rejected: list[dict[str, Any]] = field(default_factory=list)
 
 
-async def _track_length(s: AsyncSession, nd_song_id: str, duration_s: float | None) -> timedelta:
+async def _track_length(s: AsyncSession, uid: str, duration_s: float | None) -> timedelta:
     if not duration_s:
         duration_s = (
-            await s.execute(
-                select(Track.duration_s).where(Track.nd_song_id == nd_song_id, Track.deleted_at.is_(None)).limit(1)
-            )
+            await s.execute(select(Track.duration_s).where(Track.uid == uid, Track.deleted_at.is_(None)).limit(1))
         ).scalar_one_or_none()
     return timedelta(seconds=min(float(duration_s or 0), 3600))
 
@@ -320,7 +301,7 @@ async def _drop_scrobbles_near(s: AsyncSession, user_id: int, ev: PlayEvent) -> 
     conds = _same_track(ev)
     if conds is None:
         return
-    length = await _track_length(s, ev.nd_song_id, ev.duration_s) if ev.nd_song_id else _duration(ev.duration_s)
+    length = await _track_length(s, ev.track_uid, ev.duration_s) if ev.track_uid else _duration(ev.duration_s)
     w = DEDUP_WINDOW + length
     await s.execute(
         update(PlayEvent)
@@ -335,29 +316,22 @@ async def _drop_scrobbles_near(s: AsyncSession, user_id: int, ev: PlayEvent) -> 
     )
 
 
-async def _track_duration(s: AsyncSession, uid: str | None, nd_song_id: str | None) -> float | None:
-    if uid:
-        found = (
-            await s.execute(select(Track.duration_s).where(Track.uid == uid, Track.deleted_at.is_(None)).limit(1))
-        ).scalar_one_or_none()
-    else:
-        found = (
-            await s.execute(
-                select(Track.duration_s).where(Track.nd_song_id == nd_song_id, Track.deleted_at.is_(None)).limit(1)
-            )
-        ).scalar_one_or_none()
+async def _track_duration(s: AsyncSession, uid: str | None) -> float | None:
+    found = (
+        await s.execute(select(Track.duration_s).where(Track.uid == uid, Track.deleted_at.is_(None)).limit(1))
+    ).scalar_one_or_none()
     return float(found) if found else None
 
 
 async def _is_counted_listen(
-    s: AsyncSession, uid: str | None, nd: str | None, listened_ms: int | None, duration_s: float | None
+    s: AsyncSession, uid: str | None, listened_ms: int | None, duration_s: float | None
 ) -> bool:
     """The summary counts a measured listen when cumulative `listened_ms` crosses its threshold; only that wins."""
     if listened_ms is None:
         return False
     from app.listening_summary import listened_threshold_ms
 
-    duration = duration_s or await _track_duration(s, uid, nd)
+    duration = duration_s or (await _track_duration(s, uid) if uid else None)
     return listened_ms >= listened_threshold_ms(duration)
 
 
@@ -366,32 +340,25 @@ def _duration(duration_s: float | None) -> timedelta:
 
 
 def _same_track(ev: PlayEvent) -> list | None:
-    """Predicates naming the same library track: the Hub uid first, then the deprecated aliases."""
+    """Predicates naming the same track: the Hub uid first, then the catalog ref."""
     conds = []
     if ev.track_uid:
         conds.append(PlayEvent.track_uid == ev.track_uid)
-    if ev.nd_song_id:
-        conds.append(PlayEvent.nd_song_id == ev.nd_song_id)
     if ev.ref:
         conds.append(PlayEvent.ref == ev.ref)
     return conds or None
 
 
-async def _listening_metadata(s: AsyncSession, e: PlayEventIn, nd: str | None) -> dict[str, Any] | None:
+async def _listening_metadata(s: AsyncSession, e: PlayEventIn, uid: str | None) -> dict[str, Any] | None:
     """Snapshot known facts so later removal of a catalog cache entry or library file cannot erase them."""
     data: dict[str, Any] = {}
     provenance: dict[str, str] = {}
     if e.track_metadata:
         data = e.track_metadata.model_dump(exclude_none=True)
         provenance = {key: "client" for key in data}
-    if nd:
+    if uid:
         track = (
-            await s.execute(
-                select(Track)
-                .where(Track.nd_song_id == nd, Track.deleted_at.is_(None))
-                .order_by(Track.id.desc())
-                .limit(1)
-            )
+            await s.execute(select(Track).where(Track.uid == uid, Track.deleted_at.is_(None)).limit(1))
         ).scalar_one_or_none()
         if track:
             for key, value in {
@@ -510,15 +477,12 @@ async def record_events(
             out.duplicates += 1
             continue
         seen.add(e.event_id)
-        ref, nd = await fill.complete(e.ref, e.nd_song_id) if e.target_type == "track" else (e.ref, None)
+        ref, uid = await fill.complete(e.ref, e.uid) if e.target_type == "track" else (e.ref, None)
         metadata = (
-            await _listening_metadata(session, e, nd)
+            await _listening_metadata(session, e, uid)
             if e.kind in ("start", "progress", "interrupted", "error", "skip", "finish")
             else None
         )
-        uid = e.uid if e.target_type == "track" else None
-        if e.target_type == "track" and not uid:
-            uid = await track_uid_of(session, ref, nd)
         values = dict(
             user_id=user_id,
             event_id=e.event_id,
@@ -526,7 +490,6 @@ async def record_events(
             kind=e.kind,
             ref=ref,
             track_uid=uid,
-            nd_song_id=nd,
             position_s=e.position_s,
             duration_s=e.duration_s,
             context=e.context,
@@ -537,8 +500,6 @@ async def record_events(
             listened_ms=e.listened_ms,
             track_metadata=metadata,
             target_type=e.target_type,
-            nd_album_id=e.nd_album_id,
-            nd_artist_id=e.nd_artist_id,
             target_data=e.target_data,
             reverts_event_id=e.reverts_event_id,
             launch_id=e.launch_id,
@@ -555,42 +516,27 @@ async def record_events(
 
             await remember(
                 session,
-                FavoriteTarget(
-                    target_type=e.target_type,
-                    ref=ref,
-                    nd_song_id=nd,
-                    nd_album_id=e.nd_album_id,
-                    nd_artist_id=e.nd_artist_id,
-                    target_data=e.target_data,
-                ),
+                FavoriteTarget(target_type=e.target_type, ref=ref, uid=uid, target_data=e.target_data),
             )
         if (
             e.kind in PLAYBACK_KINDS
-            and e.client != "navidrome"
-            and (uid or ref or nd)
-            and await _is_counted_listen(session, uid, nd, e.listened_ms, e.duration_s)
+            and (uid or ref)
+            and await _is_counted_listen(session, uid, e.listened_ms, e.duration_s)
         ):
             await _drop_scrobbles_near(session, user_id, PlayEvent(**values))
         if e.kind == "dislike":
             await add_dislike(
                 session,
                 user_id,
-                ref=ref if e.target_type == "track" else None,
-                nd_song_id=nd,
-                artist_ref=(ref or f"nd:{e.nd_artist_id}") if e.target_type == "artist" else None,
+                ref=ref,
+                uid=uid,
+                artist_ref=None,
                 artist=(e.target_data or {}).get("name") if e.target_type == "artist" else None,
                 source=dislike_source(e.client),
                 complete=False,
             )
         elif e.kind == "undislike":
-            await remove_dislikes(
-                session,
-                user_id,
-                ref=ref if e.target_type == "track" else None,
-                nd_song_id=nd,
-                artist_ref=(ref or f"nd:{e.nd_artist_id}") if e.target_type == "artist" else None,
-                complete=False,
-            )
+            await remove_dislikes(session, user_id, ref=ref, uid=uid, artist_ref=None, complete=False)
     if causal_batch and out.accepted:
         after_favorites = await _favorites_snapshot(session, user_id, now)
         for key, state in after_favorites.items():
@@ -618,19 +564,18 @@ async def record_scrobble(
     ).scalar_one_or_none()
     if existing is not None:
         return existing, True  # a resent scrobble: keep the stored verdict (`counted`) truthful
-    ref, nd = await Ids(session).complete(e.ref, e.nd_song_id)
-    uid = e.track_uid or await track_uid_of(session, ref, nd)
-    if not (uid or ref or nd):
+    ref, uid = await Ids(session).complete(e.ref, e.track_uid)
+    if not (uid or ref):
         raise ValueError("scrobble names no track")
     ts = event_time(e.ts, now)
     length = (
-        await _track_length(session, nd, e.duration_s) if nd else timedelta(seconds=min(float(e.duration_s or 0), 3600))
+        await _track_length(session, uid, e.duration_s)
+        if uid
+        else timedelta(seconds=min(float(e.duration_s or 0), 3600))
     )
     conds = []
     if uid:
         conds.append(PlayEvent.track_uid == uid)
-    if nd:
-        conds.append(PlayEvent.nd_song_id == nd)
     if ref:
         conds.append(PlayEvent.ref == ref)
     w = DEDUP_WINDOW + length
@@ -648,9 +593,9 @@ async def record_scrobble(
     )
     measured = False
     for row in rows:
-        if row.scrobble or row.client == "navidrome":
+        if row.scrobble:
             continue
-        if await _is_counted_listen(session, row.track_uid, row.nd_song_id, row.listened_ms, row.duration_s):
+        if await _is_counted_listen(session, row.track_uid, row.listened_ms, row.duration_s):
             measured = True
             break
     twin = any(row.scrobble and not row.superseded_scrobble for row in rows)
@@ -662,11 +607,10 @@ async def record_scrobble(
             kind="finish",
             ref=ref,
             uid=uid,
-            nd_song_id=nd,
             client=e.client,
             track_metadata=e.track_metadata,
         ),
-        nd,
+        uid,
     )
     values = dict(
         user_id=user_id,
@@ -675,7 +619,6 @@ async def record_scrobble(
         kind="finish",
         ref=ref,
         track_uid=uid,
-        nd_song_id=nd,
         duration_s=e.duration_s or (length.total_seconds() or None),
         position_s=e.position_s,
         context=e.context,
@@ -715,18 +658,18 @@ async def user_events(
 
 
 async def imported_likes(s: AsyncSession, user_id: int) -> set[str]:
-    """Navidrome songs whose ♥ an import of another service set (`imports.options_json.liked`) and the user did not
-    like again themselves since (a `like` event): such ♥ don't count for the taste profile (M4)."""
+    """Hub track uids whose ♥ an import of another service set (`imports.options_json.liked_uids`) and the user did
+    not like again themselves since (a `like` event): such ♥ don't count for the taste profile (M4)."""
     liked: set[str] = set()
     for opts in (await s.execute(select(Import.options_json).where(Import.user_id == user_id))).scalars():
-        liked.update((opts or {}).get("liked") or [])
+        liked.update((opts or {}).get("liked_uids") or [])
     if not liked:
         return liked
     own = set(
         (
             await s.execute(
-                select(PlayEvent.nd_song_id).where(
-                    PlayEvent.user_id == user_id, PlayEvent.kind == "like", PlayEvent.nd_song_id.in_(liked)
+                select(PlayEvent.track_uid).where(
+                    PlayEvent.user_id == user_id, PlayEvent.kind == "like", PlayEvent.track_uid.in_(liked)
                 )
             )
         ).scalars()
@@ -737,15 +680,10 @@ async def imported_likes(s: AsyncSession, user_id: int) -> set[str]:
 # --- «Не нравится» ---------------------------------------------------------------------------------------------
 
 
-def _target(ref: str | None, nd_song_id: str | None, artist_ref: str | None):
+def _target(ref: str | None, artist_ref: str | None):
     if artist_ref:
         return Dislike.artist_ref == artist_ref
-    conds = [
-        c
-        for c in (Dislike.ref == ref if ref else None, Dislike.nd_song_id == nd_song_id if nd_song_id else None)
-        if c is not None
-    ]
-    return or_(*conds) if conds else None
+    return Dislike.ref == ref if ref else None
 
 
 async def add_dislike(
@@ -753,18 +691,18 @@ async def add_dislike(
     user_id: int,
     *,
     ref: str | None = None,
-    nd_song_id: str | None = None,
+    uid: str | None = None,
     artist_ref: str | None = None,
     artist: str | None = None,
     title: str | None = None,
     source: str,
     complete: bool = True,
 ) -> Dislike | None:
-    """«Не нравится» a track (by `ref` and/or `nd_song_id`) or an artist (`artist_ref`); the same target twice is
-    one row (the ids it lacked are filled in). None: nothing to name."""
+    """«Не нравится» a track (by `ref`/`uid`) or an artist (`artist_ref`); the same target twice is one row (the ids
+    it lacked are filled in). None: nothing to name."""
     if not artist_ref and complete:
-        ref, nd_song_id = await Ids(s).complete(ref, nd_song_id)
-    cond = _target(ref, nd_song_id, artist_ref)
+        ref, uid = await Ids(s).complete(ref, uid)
+    cond = _target(ref, artist_ref)
     if cond is None:
         return None
     row = (await s.execute(select(Dislike).where(Dislike.user_id == user_id, cond).limit(1))).scalar_one_or_none()
@@ -772,7 +710,7 @@ async def add_dislike(
         row = Dislike(user_id=user_id, artist_ref=artist_ref, source=source, created_at=utcnow())
         s.add(row)
     if not artist_ref:
-        row.ref, row.nd_song_id = row.ref or ref, row.nd_song_id or nd_song_id
+        row.ref = row.ref or ref
     row.artist, row.title = row.artist or artist, row.title or title
     await s.flush()
     return row
@@ -783,13 +721,13 @@ async def remove_dislikes(
     user_id: int,
     *,
     ref: str | None = None,
-    nd_song_id: str | None = None,
+    uid: str | None = None,
     artist_ref: str | None = None,
     complete: bool = True,
 ) -> int:
     if not artist_ref and complete:
-        ref, nd_song_id = await Ids(s).complete(ref, nd_song_id)
-    cond = _target(ref, nd_song_id, artist_ref)
+        ref, uid = await Ids(s).complete(ref, uid)
+    cond = _target(ref, artist_ref)
     if cond is None:
         return 0
     res = await s.execute(delete(Dislike).where(Dislike.user_id == user_id, cond))
@@ -802,7 +740,7 @@ async def dislike_event(
     kind: str,
     *,
     ref: str | None,
-    nd_song_id: str | None,
+    uid: str | None,
     client: str,
     context: str | None = None,
     target_type: str = "track",
@@ -815,7 +753,7 @@ async def dislike_event(
             ts=utcnow(),
             kind=kind,
             ref=ref,
-            nd_song_id=nd_song_id,
+            track_uid=uid,
             context=context,
             client=client,
             received_at=utcnow(),

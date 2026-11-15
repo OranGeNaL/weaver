@@ -17,16 +17,14 @@ router = APIRouter(prefix="/api/wave", tags=["wave"])
 
 async def track_outs(s: AsyncSession, cands: list, user_id: int) -> list[WaveTrackOut]:
     """The candidates as the API's tracks: the catalog record with the library state, the generator, the sound."""
-    annotated = await annotate_tracks(s, [c.track for c in cands if c.track.source not in ("nd", "file")], user_id)
+    annotated = await annotate_tracks(s, [c.track for c in cands if c.track.source not in ("lib", "file")], user_id)
     by_ref = {t.ref: t for t in annotated}
     tracks: list[WaveTrackOut] = []
     for c in cands:
         base = by_ref.get(c.track.ref)
         d = base.model_dump() if base is not None else c.track.model_dump()
-        if c.nd_song_id:
-            d.update(
-                owned=True, nd_song_id=c.nd_song_id, library_track_id=c.library_track_id or d.get("library_track_id")
-            )
+        if c.uid:
+            d.update(owned=True, uid=c.uid, library_track_id=c.library_track_id or d.get("library_track_id"))
         g = wave.top_generator(c)
         tracks.append(
             WaveTrackOut(**d, generator=g, generator_title=wave.generator_title(g), familiar=c.familiar, sim=c.sim)

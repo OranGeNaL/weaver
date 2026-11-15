@@ -1,8 +1,7 @@
 """«Микс дня» in the Hub (app/mixes/core.py, taste.py, api/mixes.py): the taste profile, the build with its quiet
-downloads and the Navidrome playlist, the reserve, the replacement with its deletion rule, the API, the schedule.
+downloads and the Hub playlist, the reserve, the replacement with its deletion rule, the API, the schedule.
 
-Navidrome is a mock that keeps every user's ♥ and playlists (`ND.starred`, `ND.playlists`); the generators of the
-build are fakes (`fake_generators`): the songs the library has and new catalog tracks dz:5000… .
+The generators of the build are fakes (`fake_generators`): the songs the library has and new catalog tracks dz:5000… .
 """
 
 from __future__ import annotations
@@ -10,80 +9,14 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
 
-import httpx
 import pytest
-import respx
 from sqlalchemy import func, select
 
 from app.catalog.models import CatalogTrack
-from tests.support import FakeDeezer, app_client, grant_navidrome
+from tests.support import FakeDeezer, app_client
 
 NOW = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
-
-
-class ND:
-    """Navidrome as several users see it: ♥ and playlists per user; `down` — it doesn't answer."""
-
-    def __init__(self) -> None:
-        self.starred: dict[str, set[str]] = {}
-        self.playlists: dict[str, dict[str, Any]] = {}  # id -> {name, owner, songs, comment}
-        self.artists: dict[str, dict[str, Any]] = {}  # id -> getArtist's artist (wave by an artist)
-        self.albums: dict[str, dict[str, Any]] = {}  # id -> getAlbum's album
-        self.songs: dict[str, dict[str, Any]] = {}
-        self.down = False
-        self.writes = 0
-
-    def handler(self, request: httpx.Request) -> httpx.Response:
-        p = request.url.params
-        user = p.get("u", "")
-        path = request.url.path
-        if path == "/auth/login":
-            return httpx.Response(200, json={"token": "jwt", "id": "nd-1"})
-        if path == "/api/scrobble":
-            return httpx.Response(200, json=[])
-        if self.down:
-            return httpx.Response(503)
-        ok: dict[str, Any] = {"status": "ok", "version": "1.16.1"}
-        name = path.rsplit("/", 1)[-1].removesuffix(".view")
-        if name == "getUser":
-            ok["user"] = {"adminRole": user == "admin"}
-        elif name == "getStarred2":
-            ok["starred2"] = {
-                "song": [{"id": x, "starred": "2026-10-01T10:00:00Z"} for x in self.starred.get(user, ())]
-            }
-        elif name == "getPlaylists":
-            ok["playlists"] = {
-                "playlist": [{"id": k, "name": v["name"]} for k, v in self.playlists.items() if v["owner"] == user]
-            }
-        elif name == "getPlaylist":
-            pl = self.playlists[p["id"]]
-            ok["playlist"] = {"id": p["id"], "entry": [{"id": x} for x in pl["songs"]]}
-        elif name == "createPlaylist":
-            songs = p.get_list("songId")
-            if pid := p.get("playlistId"):
-                self.playlists[pid]["songs"] = songs
-                self.writes += 1
-            else:
-                pid = f"pl{len(self.playlists) + 1}"
-                self.playlists[pid] = {"name": p["name"], "owner": user, "songs": songs, "comment": ""}
-            ok["playlist"] = {"id": pid}
-        elif name in ("getArtist", "getAlbum", "getSong"):
-            found = {"getArtist": self.artists, "getAlbum": self.albums, "getSong": self.songs}[name].get(
-                p.get("id", "")
-            )
-            if found is None:
-                return httpx.Response(
-                    200, json={"subsonic-response": {"status": "failed", "error": {"code": 70, "message": "not found"}}}
-                )
-            ok[name[3:].lower()] = found
-        elif name == "updatePlaylist":
-            pl = self.playlists[p["playlistId"]]
-            pl["songs"] += p.get_list("songIdToAdd")
-            if "comment" in p:
-                pl["comment"] = p["comment"]
-        return httpx.Response(200, json={"subsonic-response": ok})
 
 
 @pytest.fixture
@@ -95,15 +28,11 @@ async def env(hub_env, tmp_path: Path):
     from app.config import get_settings
 
     get_settings.cache_clear()  # importing app.main creates the module's app and may cache defaults
-    nd = ND()
     app = create_app()
     async with app.router.lifespan_context(app):
         svc.deezer = FakeDeezer()
-        with respx.mock(assert_all_called=False) as mock:
-            mock.route(host="navidrome.test").mock(side_effect=nd.handler)
-            async with app_client(app) as client:
-                await grant_navidrome("admin")  # stage-4 transition: the ND proxy tests need ND credentials
-                yield {"app": app, "client": client, "nd": nd, "music": hub_env, "admin": await user_id("admin")}
+        async with app_client(app) as client:
+            yield {"app": app, "client": client, "music": hub_env, "admin": await user_id("admin")}
 
 
 async def user_id(name: str) -> int:
@@ -128,7 +57,7 @@ async def add_user(name: str) -> int:
 
 
 async def add_track(n: int, *, music: Path | None = None, deezer: bool = True) -> int:
-    """A library song «Свой n — Песня n» (Navidrome nd<n>, Deezer dz:<n> unless `deezer` is false)."""
+    """A library song «Свой n — Песня n» (Hub uid u<n>, Deezer dz:<n> unless `deezer` is false)."""
     from app.db import session_scope
     from app.matching.normalize import fingerprint
     from app.models import Track
@@ -140,9 +69,8 @@ async def add_track(n: int, *, music: Path | None = None, deezer: bool = True) -
         f.write_bytes(b"mp3")
     async with session_scope() as s:
         t = Track(
-            uid=str(uuid.uuid4()),
+            uid=f"u{n}",
             path=path,
-            nd_song_id=f"nd{n}",
             artist=f"Свой {n}",
             title=f"Песня {n}",
             duration_s=200,
@@ -158,7 +86,7 @@ async def add_event(
     user: int,
     kind: str,
     *,
-    nd: str | None = None,
+    uid: str | None = None,
     ref: str | None = None,
     at: datetime | None = None,
     position: float | None = None,
@@ -174,7 +102,7 @@ async def add_event(
                 ts=at or NOW,
                 kind=kind,
                 ref=ref,
-                nd_song_id=nd,
+                track_uid=uid,
                 position_s=position,
                 client="app/1.5.0",
             )
@@ -212,7 +140,7 @@ async def history(user: int, n: int = 4) -> None:
     """The user listened to library songs 1..n ten days ago."""
     for i in range(1, n + 1):
         await add_track(i)
-        await add_event(user, "finish", nd=f"nd{i}", at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=10))
+        await add_event(user, "finish", uid=f"u{i}", at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=10))
 
 
 # --- the profile ---------------------------------------------------------------------------------------------------
@@ -228,13 +156,13 @@ async def test_profile_weights_and_decay(env) -> None:
     me = env["admin"]
     for n in range(1, 10):
         await add_track(n)
-    await add_event(me, "finish", nd="nd1", at=NOW)
-    await add_event(me, "finish", nd="nd2", at=NOW - timedelta(days=30))
-    await add_event(me, "skip", nd="nd3", at=NOW, position=10)
-    await add_event(me, "skip", nd="nd3", at=NOW, position=100)  # after 30 s: 70 of the 170 s past them (file: 200 s)
-    await add_event(me, "like", nd="nd7", at=NOW - timedelta(days=1))
-    await add_event(me, "like", nd="nd4", at=NOW)  # ♥ without a playback event; its own download adds nothing
-    await add_event(me, "skip", nd="nd8", at=NOW, position=199)  # a second before the end
+    await add_event(me, "finish", uid="u1", at=NOW)
+    await add_event(me, "finish", uid="u2", at=NOW - timedelta(days=30))
+    await add_event(me, "skip", uid="u3", at=NOW, position=10)
+    await add_event(me, "skip", uid="u3", at=NOW, position=100)  # after 30 s: 70 of the 170 s past them (file: 200 s)
+    await add_event(me, "like", uid="u7", at=NOW - timedelta(days=1))
+    await add_event(me, "like", uid="u4", at=NOW)  # ♥ without a playback event; its own download adds nothing
+    await add_event(me, "skip", uid="u8", at=NOW, position=199)  # a second before the end
     async with session_scope() as s:
         batch = DownloadBatch(user_id=me, origin="catalog")
         s.add(batch)
@@ -269,8 +197,8 @@ async def test_profile_weights_and_decay(env) -> None:
                 query_json={"query": {}, "meta": {"track_ref": "dz:9"}},
             )
         )
-        s.add(Dislike(user_id=me, nd_song_id="nd5", source="app", created_at=NOW))
-        s.add(Import(user_id=me, source="yandex", method="token", options_json={"liked": ["nd6"]}))
+        s.add(Dislike(user_id=me, source="app", created_at=NOW))
+        s.add(Import(user_id=me, source="yandex", method="token", options_json={"liked_uids": ["u6"]}))
         user = await s.get(User, me)
         p = await build_profile(
             s,
@@ -278,22 +206,22 @@ async def test_profile_weights_and_decay(env) -> None:
             now=NOW,
         )
 
-    score = {t.nd_song_id: round(t.score, 3) for t in p.tracks.values()}
+    score = {t.uid: round(t.score, 3) for t in p.tracks.values()}
     assert score == {
-        "nd1": 2.0,
-        "nd2": 1.0,
-        "nd3": -0.702,  # −1 + 2 · (70/170) / (1 + 3 · 100/170)
-        "nd4": 1.0,  # ♥ without an event; its own download adds nothing
-        "nd5": -5.0,
-        "nd7": 0.977,  # the ♥ event a day ago
-        "nd8": 1.954,  # a skip at the very end counts almost as a finish
-        "nd9": 0.0,  # only downloaded
+        "u1": 2.0,
+        "u2": 1.0,
+        "u3": -0.702,  # −1 + 2 · (70/170) / (1 + 3 · 100/170)
+        "u4": 1.0,  # ♥ without an event; its own download adds nothing
+        "u5": -5.0,
+        "u7": 0.977,  # the ♥ event a day ago
+        "u8": 1.954,  # a skip at the very end counts almost as a finish
+        "u9": 0.0,  # only downloaded
     }  # nd6: the import's ♥, a mix's download
-    assert p.tracks["nd:nd4"].liked and p.tracks["nd:nd4"].downloaded and p.tracks["nd:nd7"].liked
-    assert p.find(ref="dz:1") is p.tracks["nd:nd1"]  # known by its catalog id too
+    assert p.tracks["lib:u4"].liked and p.tracks["lib:u4"].downloaded and p.tracks["lib:u7"].liked
+    assert p.find(ref="dz:1") is p.tracks["lib:u1"]  # known by its catalog id too
     # nd2 and nd4 tie at 1.0: the profile's order (events first)
-    assert [t.nd_song_id for t in p.seeds(8)] == ["nd1", "nd8", "nd2", "nd4", "nd7"]
-    assert p.disliked(ref=None, nd_song_id="nd5", artist="x", artist_ref=None)
+    assert [t.uid for t in p.seeds(8)] == ["u1", "u8", "u2", "u4", "u7"]
+    assert p.disliked(ref=None, uid="u5", artist="x", artist_ref=None)
 
 
 async def test_v1_profile_does_not_count_an_imported_like(env) -> None:
@@ -367,11 +295,11 @@ async def test_own_download_alone_weighs_nothing_but_stays_in_the_profile(env) -
         await s.flush()
         p = await build_profile(s, await s.get(User, me), now=NOW)
 
-    t = p.tracks["nd:nd1"]
+    t = p.tracks["lib:u1"]
     assert t.downloaded and t.score == 0.0
     assert favorites(p) == [] and p.vector_profile() == {}
     assert [x.ref for x in stash(p)] == ["dz:1"]
-    assert [x.nd_song_id for x in p.seeds(8)] == ["nd1"] and not p.empty
+    assert [x.uid for x in p.seeds(8)] == ["u1"] and not p.empty
 
 
 def test_skip_weight_rises_slowly_then_steeply() -> None:
@@ -398,7 +326,6 @@ async def test_skip_after_30_s_takes_the_length_of_the_event(env) -> None:
                 event_id="e1",
                 ts=NOW,
                 kind="skip",
-                nd_song_id="nd1",
                 position_s=80,
                 duration_s=130,
                 client="app/1.6.0",
@@ -407,7 +334,7 @@ async def test_skip_after_30_s_takes_the_length_of_the_event(env) -> None:
         await s.flush()
         p = await build_profile(s, await s.get(User, me), now=NOW)
 
-    assert round(p.tracks["nd:nd1"].score, 3) == 0.4  # x = 50 / 100: 2 · 0.5 / (1 + 3 · 0.5)
+    assert round(p.tracks["lib:u1"].score, 3) == 0.4  # x = 50 / 100: 2 · 0.5 / (1 + 3 · 0.5)
 
 
 async def test_cold_start_seeds_from_picked_artists(env) -> None:
@@ -484,10 +411,10 @@ async def test_build_queues_quiet_downloads_and_writes_the_playlist(env, monkeyp
     rows = await mix_rows(mix.id)
     active = [r for r in rows if r.state == "active"]
     # the light copies for a metered network are made ahead: the songs of the mix the library has
-    assert warmed and warmed[-1] == [f"nd:{r.nd_song_id}" for r in active if r.nd_song_id]
+    assert warmed and warmed[-1] == [f"lib:{r.uid}" for r in active if r.uid]
     assert len(active) == 6 and len([r for r in rows if r.state == "reserve"]) == 2
     assert sum(r.familiar for r in active) == 2  # «Обычный»: 40 % of 6
-    assert active[0].familiar and active[0].nd_song_id and active[0].generator == "favorites"
+    assert active[0].familiar and active[0].uid and active[0].generator == "favorites"
     async with session_scope() as s:
         dls = list((await s.execute(select(DownloadItem))).scalars())
         jobs = list((await s.execute(select(Job).where(Job.kind == "download_item"))).scalars())
@@ -596,7 +523,6 @@ async def old_mix_with(user: int, track_id: int, *, for_mix: bool = True, ref: s
                 position=0,
                 state="active",
                 ref=ref,
-                nd_song_id="nd7",
                 track_id=track_id,
                 generator="ytm_radio",
                 downloaded_for_mix=for_mix,
@@ -610,7 +536,7 @@ async def keep_by(case: str, env, me: int, other: int, track_id: int) -> None:
     from app.models import DownloadBatch, DownloadItem, Import, ImportCollection, ImportItem, Mix, MixItem
 
     if case == "listened":
-        await add_event(other, "finish", nd="nd7")
+        await add_event(other, "finish", uid="u7")
     elif case == "listened 30 s":
         await add_event(other, "skip", ref="dz:7", position=31)
     elif case == "starred":
@@ -751,8 +677,8 @@ async def test_an_unheard_song_goes_to_the_trash(env) -> None:
     me, other = env["admin"], await add_user("other")
     tid = await add_track(7, music=env["music"])
     mix_id = await old_mix_with(me, tid)
-    await add_event(other, "skip", nd="nd7", position=12)  # skipped early: not listened
-    await add_event(me, "start", nd="nd7")
+    await add_event(other, "skip", uid="u7", position=12)  # skipped early: not listened
+    await add_event(me, "start", uid="u7")
 
     assert await core.remove_unheard([mix_id]) == 1
     async with session_scope() as s:
@@ -780,9 +706,9 @@ async def test_today_settings_and_rebuild(env, monkeypatch) -> None:
     body = r.json()["mix"]
     assert body["id"] == mix.id and body["total"] == 6 and body["mode_title"] == "Обычный"
     first = body["tracks"][0]
-    assert first["owned"] and first["nd_song_id"] and first["generator_title"] == "Любимое" and first["familiar"]
+    assert first["owned"] and first["uid"] and first["generator_title"] == "Любимое" and first["familiar"]
     assert {t["generator"] for t in body["tracks"]} == {"favorites", "ytm_radio"}
-    assert body["ready"] == sum(1 for t in body["tracks"] if t["nd_song_id"])
+    assert body["ready"] == sum(1 for t in body["tracks"] if t["uid"])
     assert (await client.get(f"/api/mixes/{mix.id}")).json()["tracks"] == body["tracks"]
 
     r = await client.put("/api/mixes/settings", json={"mode": "discover", "mix_hour": 7})

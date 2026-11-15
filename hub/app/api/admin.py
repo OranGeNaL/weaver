@@ -97,7 +97,7 @@ async def _stats(s: AsyncSession, user_ids: list[int]) -> dict[int, dict[str, An
 
 
 def _user_out(user: User, stats: dict[str, Any]) -> dict:
-    """A local Hub account: no Navidrome users are listed any more, `last_seen_at` comes from access/refresh."""
+    """A local Hub account: `last_seen_at` comes from access/refresh."""
     return dict(
         id=user.id,
         username=user.username,
@@ -106,10 +106,8 @@ def _user_out(user: User, stats: dict[str, Any]) -> dict:
         in_hub=True,
         created_at=user.created_at,
         last_seen_at=user.last_seen_at,
-        player_seen_at=None,
         google_email=user.google_email,
         email=user.email,
-        # ♥ and playlists move to Hub-owned data in stage 5: until then they are empty, not borrowed from ND
         starred_songs=0,
         playlists=0,
         **stats,

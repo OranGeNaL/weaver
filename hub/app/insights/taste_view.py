@@ -82,7 +82,7 @@ def counters(contribs: list[Contribution]) -> dict[str, int]:
 
 def disliked_track(p: Profile, t: TasteTrack) -> bool:
     return t.key in getattr(p, "explicit_negative_keys", set()) or bool(
-        (t.ref and t.ref in p.disliked_ids) or (t.nd_song_id and f"nd:{t.nd_song_id}" in p.disliked_ids)
+        (t.ref and t.ref in p.disliked_ids) or (t.uid and f"lib:{t.uid}" in p.disliked_ids)
     )
 
 
@@ -107,11 +107,11 @@ def seed_pool(p: Profile) -> set[str]:
 
 
 async def _names(s: AsyncSession, tracks: list[TasteTrack]) -> dict[str, names.Name]:
-    known = {(t.ref, t.nd_song_id): (t.artist, t.title) for t in tracks}
-    found = await names.resolve(s, [(t.ref, t.nd_song_id) for t in tracks], known)
+    known = {(t.ref, t.uid): (t.artist, t.title) for t in tracks}
+    found = await names.resolve(s, [(t.ref, t.uid) for t in tracks], known)
     return {
-        t.key: found.get(f"nd:{t.nd_song_id}" if t.nd_song_id else t.ref or "")
-        or names.Name(t.ref, t.nd_song_id, t.artist, t.title or names.UNKNOWN, False, "profile")
+        t.key: found.get(f"lib:{t.uid}" if t.uid else t.ref or "")
+        or names.Name(t.ref, t.uid, t.artist, t.title or names.UNKNOWN, False, "profile")
         for t in tracks
     }
 
@@ -123,7 +123,7 @@ def track_row(
     return {
         "key": t.key,
         "ref": t.ref,
-        "nd_song_id": t.nd_song_id,
+        "uid": t.uid,
         "artist": name.artist or t.artist,
         "title": name.title or t.title,
         "owned": name.owned,
@@ -316,7 +316,7 @@ def artist_block(p: Profile, t: TasteTrack) -> dict[str, Any] | None:
 
 def _track_aliases(p: Profile, t: TasteTrack) -> set[str]:
     out = {k for k, v in p.by_id.items() if v == t.key and k != t.fp}
-    out |= {x for x in (t.ref, f"nd:{t.nd_song_id}" if t.nd_song_id else None, t.key) if x}
+    out |= {x for x in (t.ref, f"lib:{t.uid}" if t.uid else None, t.key) if x}
     return out
 
 
@@ -337,7 +337,7 @@ async def track(s: AsyncSession, user: User, *, key: str, model: str | None, now
     mixes = []
     for info in h.mixes.values():
         for i in info.items:
-            if h.aliases.of(i.ref, i.nd_song_id) & aliases:
+            if h.aliases.of(i.ref, None) & aliases:
                 ls = by_mix.get(info.mix.id, [])
                 mixes.append(
                     {
@@ -356,7 +356,7 @@ async def track(s: AsyncSession, user: User, *, key: str, model: str | None, now
     waves = []
     for sid, items in h.wave_items.items():
         for w in items:
-            if h.aliases.of(w.ref, w.nd_song_id) & aliases or w.key in aliases:
+            if h.aliases.of(w.ref, None) & aliases:
                 lw = next((x for x in h.launches if x.wave_id == sid), None)
                 waves.append(
                     {
@@ -472,11 +472,11 @@ async def matrix(
         pairs = {}
         for group in members.values():
             keys = {a for (_, p, _, t) in group for a in _track_aliases(p, t)}
-            nds = sorted(k for k in keys if k.startswith("nd:"))
-            refs = sorted(k for k in keys if not k.startswith("nd:"))
-            key = nds[0] if nds else refs[0] if refs else group[0][3].key
-            pairs[union.find(group[0][3].key)] = (key, refs[0] if refs else None, nds[0][3:] if nds else None)
-        known = {(t.ref, t.nd_song_id): (t.artist, t.title) for t in all_tracks}
+            libs = sorted(k for k in keys if k.startswith("lib:"))
+            refs = sorted(k for k in keys if not k.startswith("lib:"))
+            key = libs[0] if libs else refs[0] if refs else group[0][3].key
+            pairs[union.find(group[0][3].key)] = (key, refs[0] if refs else None, libs[0][4:] if libs else None)
+        known = {(t.ref, t.uid): (t.artist, t.title) for t in all_tracks}
         found = await names.resolve(s, [(ref, nd) for _, ref, nd in pairs.values()], known)
         for root, group in members.items():
             key, ref, nd = pairs[root]

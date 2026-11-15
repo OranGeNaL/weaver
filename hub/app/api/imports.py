@@ -109,10 +109,8 @@ async def items(
         await s.execute(q.order_by(ImportCollection.position, ImportItem.position).offset(offset).limit(limit))
     ).all()
     track_ids = {it.track_id for it, _ in rows if it.track_id}
-    songs = (
-        dict((await s.execute(select(Track.id, Track.nd_song_id).where(Track.id.in_(track_ids)))).all())
-        if track_ids
-        else {}
+    uids = (
+        dict((await s.execute(select(Track.id, Track.uid).where(Track.id.in_(track_ids)))).all()) if track_ids else {}
     )
     dl_ids = {it.download_item_id for it, _ in rows if it.download_item_id}
     dls = (
@@ -126,7 +124,7 @@ async def items(
             core.item_out(
                 it,
                 kind,
-                songs.get(it.track_id) if it.track_id is not None else None,
+                uids.get(it.track_id) if it.track_id is not None else None,
                 dls.get(it.download_item_id) if it.download_item_id is not None else None,
             )
             for it, kind in rows

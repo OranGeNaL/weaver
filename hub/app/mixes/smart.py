@@ -78,7 +78,7 @@ class OwnInfo:
     id: str
     artist: str = ""
     title: str = ""
-    nd_song_id: str | None = None
+    uid: str | None = None
     ref: str | None = None
     duration_s: int | None = None
     track: CatalogTrack | None = None
@@ -99,7 +99,7 @@ class SmartRuntime(wave.Runtime):
     hidden: set[str] = field(default_factory=set)  # fingerprints hidden in this context
     offered: set[str] = field(default_factory=set)  # fingerprints recent runs of this context offered
     own_refs: set[str] = field(default_factory=set)
-    own_nd: set[str] = field(default_factory=set)
+    own_uids: set[str] = field(default_factory=set)
     center: dict[str, float] = field(default_factory=dict)  # embedder keys of the context's songs -> weight
     psim: dict[str, float] = field(default_factory=dict)  # candidate key -> closeness to the center
     accepted: list[str] = field(default_factory=list)  # keys of recommendations the user added with «+»
@@ -120,7 +120,7 @@ def dump(rt: SmartRuntime) -> dict[str, Any]:
         "hidden": sorted(rt.hidden),
         "offered": sorted(rt.offered),
         "own_refs": sorted(rt.own_refs),
-        "own_nd": sorted(rt.own_nd),
+        "own_uids": sorted(rt.own_uids),
         "center": rt.center,
         "psim": rt.psim,
         "accepted": rt.accepted,
@@ -139,11 +139,7 @@ async def _save(sid: str, rt: wave.Runtime) -> None:
 
 def _blocked(rt: SmartRuntime):
     def blocked(c: build.Cand) -> bool:
-        return (
-            c.track.ref in rt.own_refs
-            or (c.nd_song_id is not None and c.nd_song_id in rt.own_nd)
-            or wave.fp_of(c) in rt.hidden
-        )
+        return c.track.ref in rt.own_refs or (c.uid is not None and c.uid in rt.own_uids) or wave.fp_of(c) in rt.hidden
 
     return blocked
 
@@ -183,7 +179,7 @@ async def _runtime(sid: str, user: User) -> SmartRuntime:
                     hidden=set(d.get("hidden") or []),
                     offered=set(d.get("offered") or []),
                     own_refs=set(d.get("own_refs") or []),
-                    own_nd=set(d.get("own_nd") or []),
+                    own_uids=set(d.get("own_uids") or []),
                     center=dict(d.get("center") or {}),
                     psim=dict(d.get("psim") or {}),
                     accepted=list(d.get("accepted") or []),
@@ -203,20 +199,14 @@ async def _runtime(sid: str, user: User) -> SmartRuntime:
 async def own_infos(ids: list[str]) -> dict[str, OwnInfo]:
     """What the Hub knows of the context's songs (the library record; for a ♥ not downloaded yet — the catalog
     cache). A song it knows nothing of is still played: it has no artist and no title here."""
-    out = {i: OwnInfo(i, nd_song_id=None if is_ref(i) else i, ref=i if is_ref(i) else None) for i in ids}
+    out = {i: OwnInfo(i, uid=None if is_ref(i) else i, ref=i if is_ref(i) else None) for i in ids}
     plain = [i for i in ids if not is_ref(i)]
     dz = {split_ref(i)[1]: i for i in ids if is_ref(i) and i.startswith("dz:")}
     async with session_scope() as s:
         rows: list[Track] = []
         for k in range(0, len(plain), 500):
             chunk = plain[k : k + 500]
-            rows += (
-                await s.execute(
-                    select(Track).where(
-                        or_(Track.nd_song_id.in_(chunk), Track.uid.in_(chunk)), Track.deleted_at.is_(None)
-                    )
-                )
-            ).scalars()
+            rows += (await s.execute(select(Track).where(Track.uid.in_(chunk), Track.deleted_at.is_(None)))).scalars()
         for k in range(0, len(dz), 500):
             rows += (
                 await s.execute(
@@ -224,13 +214,13 @@ async def own_infos(ids: list[str]) -> dict[str, OwnInfo]:
                 )
             ).scalars()
         for t in rows:
-            i = t.uid if t.uid in out else (t.nd_song_id if t.nd_song_id in out else dz.get(str(t.deezer_track_id)))
+            i = t.uid if t.uid in out else dz.get(str(t.deezer_track_id))
             if i is None or out[i].title:
                 continue
             ct = library_track(t)
             out[i].artist, out[i].title, out[i].duration_s = t.artist, t.title, t.duration_s
-            out[i].nd_song_id, out[i].ref, out[i].track = t.nd_song_id, ct.ref, ct
-        # a ♥ without a file: the names the catalog cache kept (the same sources `/api/nd/liked` reads)
+            out[i].uid, out[i].ref, out[i].track = t.uid, ct.ref, ct
+        # a ♥ without a file: the names the catalog cache kept
         todo = [i for i, x in out.items() if is_ref(i) and not x.title]
         keys = {f"{p}{i}": i for i in todo for p in ("listen:", "mix:track:")}
         for k in range(0, len(keys), 500):
@@ -251,7 +241,7 @@ async def last_heard(user_id: int, ids: list[str], now: datetime) -> dict[str, d
     out: dict[str, datetime] = {}
     async with session_scope() as session:
         for col, wanted in (
-            (PlayEvent.nd_song_id, [i for i in ids if not is_ref(i)]),
+            (PlayEvent.track_uid, [i for i in ids if not is_ref(i)]),
             (PlayEvent.ref, [i for i in ids if is_ref(i)]),
         ):
             for k in range(0, len(wanted), 500):
@@ -338,9 +328,9 @@ def _seed_tracks(rt: SmartRuntime, ids: list[str], infos: dict[str, OwnInfo]) ->
                 wave.taste_of(
                     x.track
                     or CatalogTrack(
-                        ref=x.ref or f"nd:{x.nd_song_id}",
-                        source="dz" if (x.ref or "").startswith("dz:") else "nd",
-                        id=(x.ref or f"nd:{x.nd_song_id}").split(":", 1)[1],
+                        ref=x.ref or f"lib:{x.uid}",
+                        source="dz" if (x.ref or "").startswith("dz:") else "lib",
+                        id=(x.ref or f"lib:{x.uid}").split(":", 1)[1],
                         title=x.title,
                         artist=x.artist,
                         artists=[x.artist],
@@ -499,7 +489,7 @@ async def _save_items(rt: SmartRuntime, picked: list[tuple[int, build.Cand, floa
                     position=nxt + i,
                     slot=k,
                     ref=c.track.ref,
-                    nd_song_id=c.nd_song_id,
+                    uid=c.uid,
                     fingerprint=wave.fp_of(c)[:1024],
                     artist=(c.track.artist or "")[:256],
                     title=(c.track.title or "")[:256],
@@ -526,15 +516,11 @@ async def _hand_out(rt: SmartRuntime, slots: list[int]) -> list[tuple[int, build
     picked = await _fill(rt, slots)
     await _save(rt.sid, rt)
     await _save_items(rt, picked)
-    stream = [c.track.ref for _, c, _ in picked if not c.nd_song_id and c.track.source != "nd"]
+    stream = [c.track.ref for _, c, _ in picked if not c.uid and c.track.source != "lib"]
     if stream:
         listen.prefetch(rt.user_id, stream)
     listen.warm_light(
-        [
-            f"nd:{c.nd_song_id}" if c.nd_song_id else c.track.ref
-            for _, c, _ in picked
-            if c.nd_song_id or c.track.source != "nd"
-        ]
+        [f"lib:{c.uid}" if c.uid else c.track.ref for _, c, _ in picked if c.uid or c.track.source != "lib"]
     )
     return [(k, c) for k, c, _ in picked]
 
@@ -630,9 +616,9 @@ async def start(
         )
     )
     rt.own_refs = {x.ref for x in infos.values() if x.ref}
-    rt.own_nd = {x.nd_song_id for x in infos.values() if x.nd_song_id}
+    rt.own_uids = {x.uid for x in infos.values() if x.uid}
     state.heard = {x.fp for x in infos.values() if x.fp} | hidden
-    keys = [embedder.song_key(nd) for i in ids if (nd := infos[i].nd_song_id)][:CENTER_MAX]
+    keys = [embedder.song_key(uid) for i in ids if (uid := infos[i].uid)][:CENTER_MAX]
     rt.center = dict.fromkeys(keys, 1.0)
     seeds = _seed_tracks(rt, seed_ids, infos)
     rt.seed_pool = [t.track.model_dump(mode="json") for t in seeds if t.track is not None]
@@ -673,11 +659,14 @@ async def record(rt: SmartRuntime, raw: list[Any]):
 
     st = rt.state
     refs = {c.track.ref for c in st.out.values()} | {x.ref for x in st.played}
-    nds = {c.nd_song_id for c in st.out.values() if c.nd_song_id} | {x.nd_song_id for x in st.played if x.nd_song_id}
+    # the vector key of a library song is `lib:<uid>`: the same key `Played` keeps for the analytics
+    lib_keys = {c.key for c in st.out.values() if c.uid} | {x.key for x in st.played if x.key.startswith("lib:")}
     context = f"smart:{rt.sid}"
     events = []
     for x in raw:
-        if isinstance(x, dict) and ((x.get("ref") in refs) or (x.get("nd_song_id") in nds)):
+        if isinstance(x, dict) and (
+            (x.get("ref") in refs) or (x.get("track_uid") and f"lib:{x['track_uid']}" in lib_keys)
+        ):
             x = {**x, "context": context}
         events.append(x)
     async with session_scope() as s:
@@ -753,12 +742,11 @@ async def next_batch(user: User, sid: str, played: list[Any], at: str | None) ->
     )
 
 
-async def _item(sid: str, ref: str | None, nd_song_id: str | None) -> SmartItem:
+async def _item(sid: str, ref: str | None) -> SmartItem:
     async with session_scope() as session:
-        q = select(SmartItem).where(SmartItem.session_id == sid)
-        q = q.where(
-            or_(*([SmartItem.ref == ref] if ref else []), *([SmartItem.nd_song_id == nd_song_id] if nd_song_id else []))
-        )
+        if ref is None:
+            raise SmartError(400, "Укажите трек")
+        q = select(SmartItem).where(SmartItem.session_id == sid, SmartItem.ref == ref)
         item = (await session.execute(q.limit(1))).scalar_one_or_none()
         if item is None:
             raise SmartError(404, "Такой рекомендации в этом перемешивании не было")
@@ -771,11 +759,11 @@ async def _mark(sid: str, item_id: int, state: str) -> None:
         await s.execute(update(SmartItem).where(SmartItem.id == item_id).values(state=state))
 
 
-async def hide(user: User, sid: str, ref: str | None, nd_song_id: str | None) -> None:
+async def hide(user: User, sid: str, ref: str | None) -> None:
     """«−»: the track is not offered in this context any more (and the session's skips count it as an early
     skip, so what is like it goes down); it stays everywhere else, unlike «Не нравится»."""
     rt = await _runtime(sid, user)
-    item = await _item(sid, ref, nd_song_id)
+    item = await _item(sid, ref)
     async with rt.lock:
         async with session_scope() as session:
             await session.execute(
@@ -785,7 +773,6 @@ async def hide(user: User, sid: str, ref: str | None, nd_song_id: str | None) ->
                     context=rt.context,
                     fingerprint=item.fingerprint,
                     ref=item.ref,
-                    nd_song_id=item.nd_song_id,
                     artist=item.artist,
                     title=item.title,
                     created_at=utcnow(),
@@ -805,14 +792,14 @@ async def hide(user: User, sid: str, ref: str | None, nd_song_id: str | None) ->
         await _save(sid, rt)
 
 
-async def accept(user: User, sid: str, ref: str | None, nd_song_id: str | None) -> tuple[SmartItem, str | None]:
+async def accept(user: User, sid: str, ref: str | None) -> tuple[SmartItem, str | None]:
     """«+»: marks the recommendation as taken (what it raises in the next picks). Returns the item and the Hub
     playlist uid the track has to be put in (`None` in «Понравившиеся»: the client likes it itself)."""
     rt = await _runtime(sid, user)
-    item = await _item(sid, ref, nd_song_id)
+    item = await _item(sid, ref)
     async with rt.lock:
         await _mark(sid, item.id, "added")
-        key = embedder.song_key(item.nd_song_id) if item.nd_song_id else item.ref
+        key = item.ref
         if key not in rt.accepted:
             rt.accepted.append(key)
         await _save(sid, rt)

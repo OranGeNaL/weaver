@@ -37,7 +37,6 @@ async def resolve(ref: str, user: User = Depends(current_user)):
         provider=cand.provider if cand else None,
         bitrate_kbps=cand.bitrate_kbps if cand else None,
         page_url=cand.page_url if cand else None,
-        nd_song_id=c.nd_song_id,
         uid=c.uid,
         stream_url=f"/api/listen/stream?ref={quote(c.ref, safe='')}",
     )

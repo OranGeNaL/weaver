@@ -35,14 +35,14 @@ async def summary(s: AsyncSession, user_id: int, start: date, end: date, timezon
     )
     aliases = defaultdict(set)
     for row in rows:
-        if row.ref and row.nd_song_id:
-            aliases[row.ref].add(row.nd_song_id)
+        if row.ref and row.track_uid:
+            aliases[row.ref].add(row.track_uid)
 
-    def canonical(ref, nd):
-        if nd:
-            return f"nd:{nd}"
+    def canonical(ref, uid):
+        if uid:
+            return f"lib:{uid}"
         known = aliases.get(ref, set())
-        return f"nd:{next(iter(known))}" if len(known) == 1 else ref
+        return f"lib:{next(iter(known))}" if len(known) == 1 else ref
 
     def merge_metadata(target, incoming):
         provenance = incoming.get("provenance", {})
@@ -60,11 +60,10 @@ async def summary(s: AsyncSession, user_id: int, start: date, end: date, timezon
                     if name and incoming_names.count(name) == 1 and existing_names.count(name) == 1:
                         match = existing[existing_names.index(name)]
                         conflict = any(
-                            match.get(key) and artist.get(key) and match[key] != artist[key]
-                            for key in ("ref", "nd_artist_id")
+                            match.get(key) and artist.get(key) and match[key] != artist[key] for key in ("ref",)
                         )
                         if not conflict:
-                            for key in ("ref", "nd_artist_id"):
+                            for key in ("ref",):
                                 if artist.get(key) and not match.get(key):
                                     match[key] = artist[key]
                                     changed = True
@@ -117,32 +116,32 @@ async def summary(s: AsyncSession, user_id: int, start: date, end: date, timezon
         measured_attempts += 1
         measured_listens += int(counted)
         measured_ms += elapsed
-        nd = next((e.nd_song_id for e in events if e.nd_song_id), None)
+        uid = next((e.track_uid for e in events if e.track_uid), None)
         ref = next((e.ref for e in events if e.ref), None)
-        key = canonical(ref, nd)
+        key = canonical(ref, uid)
         if key:
-            resolved_nd = nd or (next(iter(aliases[ref])) if ref and len(aliases.get(ref, ())) == 1 else None)
+            resolved = uid or (next(iter(aliases[ref])) if ref and len(aliases.get(ref, ())) == 1 else None)
             track = tracks.setdefault(
-                key, {"ref": ref, "nd_song_id": resolved_nd, "measured_ms": 0, "listens": 0, "metadata": {}}
+                key, {"ref": ref, "uid": resolved, "measured_ms": 0, "listens": 0, "metadata": {}}
             )
             track["ref"] = track["ref"] or ref
-            track["nd_song_id"] = track["nd_song_id"] or resolved_nd
+            track["uid"] = track["uid"] or resolved
             track["measured_ms"] += elapsed
             track["listens"] += int(counted)
             merge_metadata(track["metadata"], metadata)
     scrobbles = sum(1 for row in historical if row.scrobble)
     legacy = len(historical) - scrobbles
     for row in historical:
-        key = canonical(row.ref, row.nd_song_id)
+        key = canonical(row.ref, row.track_uid)
         if not key:
             continue
         track = tracks.setdefault(
-            key, {"ref": row.ref, "nd_song_id": row.nd_song_id, "measured_ms": 0, "listens": 0, "metadata": {}}
+            key, {"ref": row.ref, "uid": row.track_uid, "measured_ms": 0, "listens": 0, "metadata": {}}
         )
         if row.scrobble:
             track["listens"] += 1
         track["ref"] = track["ref"] or row.ref
-        track["nd_song_id"] = track["nd_song_id"] or row.nd_song_id
+        track["uid"] = track["uid"] or row.track_uid
         merge_metadata(track["metadata"], row.track_metadata or {})
     observed = min((row.ts for row in rows), default=None)
     return {
@@ -156,7 +155,7 @@ async def summary(s: AsyncSession, user_id: int, start: date, end: date, timezon
         "scrobble_evidence": scrobbles,
         "legacy_finish_evidence": legacy,
         "first_observed_at": observed.replace(tzinfo=UTC).isoformat() if observed else None,
-        "tracks": sorted(tracks.values(), key=lambda x: (-x["measured_ms"], x["ref"] or x["nd_song_id"] or "")),
+        "tracks": sorted(tracks.values(), key=lambda x: (-x["measured_ms"], x["ref"] or x["uid"] or "")),
         "quality": {
             "tracks_with_title": sum(bool(t["metadata"].get("title")) for t in tracks.values()),
             "tracks_with_artists": sum(bool(t["metadata"].get("artists")) for t in tracks.values()),

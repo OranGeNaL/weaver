@@ -103,7 +103,7 @@ def cand_json(c: build.Cand) -> dict[str, Any]:
         "track": c.track.model_dump(mode="json"),
         "gens": c.gens,
         "familiar": c.familiar,
-        "nd_song_id": c.nd_song_id,
+        "uid": c.uid,
         "library_track_id": c.library_track_id,
         "sim": c.sim,
     }
@@ -114,7 +114,7 @@ def cand_of(d: dict[str, Any]) -> build.Cand:
         track=CatalogTrack.model_validate(d["track"]),
         gens=dict(d.get("gens") or {}),
         familiar=bool(d.get("familiar")),
-        nd_song_id=d.get("nd_song_id"),
+        uid=d.get("uid"),
         library_track_id=d.get("library_track_id"),
         sim=d.get("sim"),
     )
@@ -129,7 +129,7 @@ class Played:
     """A track of the session that started playing (the latest `HISTORY_MAX`)."""
 
     ref: str
-    nd_song_id: str | None
+    uid: str | None  # the library song, when the library has it
     key: str  # the vector key
     artist: str  # artist key
     familiar: bool
@@ -528,7 +528,7 @@ def _session_weights(st: State, profile: V2Profile) -> None:
         values["ts"] = datetime.fromisoformat(values["ts"])
         values["received_at"] = datetime.fromisoformat(values["received_at"])
         e = TasteEvent(**values)
-        t = profile.find(ref=e.ref, nd_song_id=e.nd_song_id)
+        t = profile.find(ref=e.ref, uid=e.track_uid)
         key = t.key if t else data["key"]
         events.append(e)
         by_id[eid] = key, data["artist"]
@@ -543,17 +543,16 @@ def _session_weights(st: State, profile: V2Profile) -> None:
             else:
                 positives[key] = positives.get(key, 0) + skip_weight(e.position_s, e.duration_s or data.get("length"))
     subjects = [
-        Subject(x.target_type, tuple(x.aliases), x.ref, x.nd_id, x.data or {}) for x in profile.favorite_states.values()
+        Subject(x.target_type, tuple(x.aliases), x.ref, x.uid, x.data or {}) for x in profile.favorite_states.values()
     ]
     for state in fold(events, subjects).values():
         if not state.liked:
             continue
         key, _ = by_id[state.event.event_id]
-        current = profile.find(ref=state.ref, nd_song_id=state.nd_id)
+        current = profile.find(ref=state.ref, uid=state.uid)
         # A fresh global unlike removes only the session like, never finish/late-skip evidence.
         journalled = any(
-            x.target_type == "track"
-            and ((state.ref and x.ref == state.ref) or (state.nd_id and x.nd_id == state.nd_id))
+            x.target_type == "track" and ((state.ref and x.ref == state.ref) or (state.uid and x.uid == state.uid))
             for x in profile.favorite_states.values()
         )
         if not journalled or (current and current.liked):
@@ -586,13 +585,13 @@ async def _learn_v2(sid: str, rt: Runtime, events: list[PlayEvent]) -> None:
         st.seen.add(e.event_id)
         if (e.target_type or "track") != "track":
             continue
-        matched = _match(st, e.ref, e.nd_song_id)
+        matched = _match(st, e.ref, e.track_uid)
         if matched is None:
             old = next(
                 (
                     d
                     for d in reversed(list(st.signals.values()))
-                    if (e.ref and d.get("ref") == e.ref) or (e.nd_song_id and d.get("nd_song_id") == e.nd_song_id)
+                    if (e.ref and d.get("ref") == e.ref) or (e.track_uid and d.get("uid") == e.track_uid)
                 ),
                 None,
             )
@@ -602,7 +601,7 @@ async def _learn_v2(sid: str, rt: Runtime, events: list[PlayEvent]) -> None:
                 "signal",
                 Played(
                     old["ref"],
-                    old.get("nd_song_id"),
+                    old.get("uid"),
                     old["key"],
                     old["artist"],
                     bool(old.get("familiar")),
@@ -706,7 +705,7 @@ def _disliked(c: build.Cand, p: Profile) -> bool:
     t = c.track
     return p.disliked(
         ref=t.ref if t.source in ("dz", "file") else None,
-        nd_song_id=c.nd_song_id,
+        uid=c.uid,
         artist=t.artist,
         artist_ref=t.artist_ref,
     )
@@ -764,15 +763,13 @@ async def _vectors(rt: Runtime) -> dict[str, list[float]]:
 # --- the session's events ----------------------------------------------------------------------------------------
 
 
-def _match(st: State, ref: str | None, nd: str | None) -> tuple[str, build.Cand | Played] | None:
-    """The handed out track an event names (by its ref or Navidrome song; `nd:<song>` refs too)."""
-    if ref and ref.startswith("nd:"):
-        ref, nd = None, nd or ref[3:]
+def _match(st: State, ref: str | None, uid: str | None) -> tuple[str, build.Cand | Played] | None:
+    """The handed out track an event names (by its ref or Hub uid)."""
     for c in st.out.values():
-        if (ref and c.track.ref == ref) or (nd and c.nd_song_id == nd):
+        if (ref and c.track.ref == ref) or (uid and c.uid == uid):
             return "out", c
     for x in reversed(st.played):
-        if (ref and x.ref == ref) or (nd and x.nd_song_id == nd):
+        if (ref and x.ref == ref) or (uid and x.uid == uid):
             return "played", x
     return None
 
@@ -798,7 +795,7 @@ def _signal(keys: list[str], key: str) -> None:
 def _as_played(c: build.Cand) -> Played:
     return Played(
         ref=c.track.ref,
-        nd_song_id=c.nd_song_id,
+        uid=c.uid,
         key=c.key,
         artist=c.artist,
         familiar=c.familiar,
@@ -820,7 +817,7 @@ async def learn(sid: str, rt: Runtime, events: list[PlayEvent]) -> None:
             st.seen.add(e.event_id)
         if (e.target_type or "track") != "track" or e.reverts_event_id:
             continue  # Typed subjects and causal rollbacks are journal data, not a track playback signal.
-        m = _match(st, e.ref, e.nd_song_id)
+        m = _match(st, e.ref, e.track_uid)
         if m is None:
             continue
         x = m[1]
@@ -856,7 +853,7 @@ async def _download(sid: str, rt: Runtime, x: Played) -> None:
     from app.jobs.downloads import query_from_track
 
     st = rt.state
-    if not rt.download_finished or x.nd_song_id or not x.track or x.ref in st.downloads or not x.ref.startswith("dz:"):
+    if not rt.download_finished or x.uid or not x.track or x.ref in st.downloads or not x.ref.startswith("dz:"):
         return
     st.downloads.append(x.ref)
     t = CatalogTrack.model_validate(x.track)
@@ -1002,16 +999,12 @@ async def _seed(seed: dict[str, Any], user: User | None = None) -> tuple[Catalog
 
     if seed.get("by_artist"):
         uid = seed.get("song_uid")
-        nd_id = seed.get("nd_song_id")
         ref = seed.get("ref") or ""
         if ref.startswith("lib:"):
             uid = ref[4:]
-        elif ref.startswith("nd:"):
-            nd_id = ref[3:]
-        if uid or nd_id:
+        if uid:
             async with session_scope() as s:
-                q = select(Track).where(Track.deleted_at.is_(None)).limit(1)
-                q = q.where(Track.uid == uid) if uid else q.where(Track.nd_song_id == nd_id)
+                q = select(Track).where(Track.deleted_at.is_(None), Track.uid == uid).limit(1)
                 t = (await s.execute(q)).scalar_one_or_none()
                 artist_id = None
                 if t is not None and t.album_id is not None:
@@ -1052,20 +1045,7 @@ async def _seed(seed: dict[str, Any], user: User | None = None) -> tuple[Catalog
         if lt.source == "dz" and (full := await catalog_track(lt.ref)) is not None:
             lt = full  # the artist's ref for its radio
         return lt, None
-    if nd := seed.get("nd_song_id"):
-        async with session_scope() as s:
-            t = (
-                await s.execute(select(Track).where(Track.nd_song_id == nd, Track.deleted_at.is_(None)).limit(1))
-            ).scalar_one_or_none()
-            lt = library_track(t) if t is not None else None
-        if lt is None:
-            raise WaveError(404, "Песни нет в библиотеке")
-        if lt.source == "dz" and (full := await catalog_track(lt.ref)) is not None:
-            lt = full  # the artist's ref for its radio
-        return lt, None
     if ref:
-        if ref.startswith("nd:"):
-            return await _seed({"nd_song_id": ref[3:]}, user)
         if ref.startswith("file:"):
             from app import listen
 
@@ -1101,8 +1081,6 @@ async def _seed(seed: dict[str, Any], user: User | None = None) -> tuple[Catalog
             "artist_uid": artist_uid,
             "songs": songs,
         }
-    if seed.get("nd_artist_id"):
-        raise WaveError(404, "Исполнитель не найден: укажите artist_uid")
     if (ref := seed.get("artist_ref")) and svc.deezer is not None:
         try:
             a = await svc.deezer.get_artist(split_ref(ref)[1])
@@ -1289,17 +1267,11 @@ async def _hand_out(sid: str, rt: Runtime, queued: set[str], first: build.Cand |
             await save_items(s, sid, rt.user_id, tracks, values)
     except Exception:
         log.exception("wave %s: handed out tracks not recorded", sid)
-    stream = [c.track.ref for c in tracks if not c.nd_song_id and c.track.source != "nd"]
+    stream = [c.track.ref for c in tracks if not c.uid and c.track.source != "lib"]
     if stream:
         listen.prefetch(rt.user_id, stream)
     # the light copies for a metered network (app.light): library songs plain, the others after their files load
-    listen.warm_light(
-        [
-            f"nd:{c.nd_song_id}" if c.nd_song_id else c.track.ref
-            for c in tracks
-            if c.nd_song_id or c.track.source != "nd"
-        ]
-    )
+    listen.warm_light([f"lib:{c.uid}" if c.uid else c.track.ref for c in tracks if c.uid or c.track.source != "lib"])
     return tracks
 
 
@@ -1340,8 +1312,6 @@ async def save_items(
                 handed_count=1,
                 position=-1 if ref in have else nxt,
                 ref=ref,
-                nd_song_id=c.nd_song_id,
-                key=c.key,
                 artist=(c.track.artist or "")[:256],
                 title=(c.track.title or "")[:256],
                 generator=top_generator(c)[:32],

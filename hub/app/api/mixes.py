@@ -44,7 +44,7 @@ async def mix_out(s: AsyncSession, mix: Mix, user_id: int) -> MixOut:
         ).scalars()
     )
     tracks = [CatalogTrack.model_validate((i.features_json or {}).get("track")) for i in items]
-    annotated = await annotate_tracks(s, [t for t in tracks if t.source != "nd"], user_id)
+    annotated = await annotate_tracks(s, tracks, user_id)
     by_ref = {t.ref: t for t in annotated}
     out: list[MixTrackOut] = []
     for i, t in zip(items, tracks, strict=True):
@@ -52,10 +52,10 @@ async def mix_out(s: AsyncSession, mix: Mix, user_id: int) -> MixOut:
         d = (
             base.model_dump()
             if base is not None
-            else {**t.model_dump(), "owned": bool(i.nd_song_id), "library_track_id": i.track_id}
+            else {**t.model_dump(), "owned": bool(i.track_id), "library_track_id": i.track_id}
         )
-        if i.nd_song_id:
-            d.update(owned=True, nd_song_id=i.nd_song_id, library_track_id=i.track_id or d.get("library_track_id"))
+        if i.track_id:
+            d.update(owned=True, library_track_id=i.track_id)
         f = i.features_json or {}
         out.append(
             MixTrackOut(
@@ -76,9 +76,8 @@ async def mix_out(s: AsyncSession, mix: Mix, user_id: int) -> MixOut:
         mode=mix.mode,  # type: ignore[arg-type]
         mode_title=MODE_TITLES.get(mix.mode, mix.mode),
         created_at=mix.created_at,
-        nd_playlist_id=mix.nd_playlist_id,
         playlist_uid=mix.playlist_uid,
-        ready=sum(1 for t in out if t.nd_song_id),
+        ready=sum(1 for t in out if t.library_track_id),
         total=len(out),
         tracks=out,
         generators=(mix.stats_json or {}).get("generators") or {},
@@ -92,7 +91,6 @@ async def settings_out(s: AsyncSession, user_id: int) -> MixSettingsOut:
         mix_hour=st.mix_hour,
         timezone=get_settings().timezone,  # type: ignore[arg-type]
         next_build_at=core.next_build_at(st.mix_hour),
-        nd_playlist_id=st.nd_playlist_id,
         playlist_uid=st.playlist_uid,
         artists=list(st.artists_json or []),
     )

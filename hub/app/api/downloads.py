@@ -14,7 +14,7 @@ from app.auth import current_user
 from app.catalog.models import split_ref
 from app.db import get_session
 from app.events import bus
-from app.jobs.downloads import create_items, item_links, item_out, item_ref
+from app.jobs.downloads import create_items, item_out, item_playlists, item_ref
 from app.jobs.queue import enqueue, notify
 from app.library.owned import ACTIVE_STATUSES, find_existing, quiet
 from app.models import DownloadBatch, DownloadItem, Job, PendingPlaylistAdd, User
@@ -91,9 +91,9 @@ async def join_active(
             .values(priority=0)
         )
         await s.flush()
-        links = await item_links(s, changed)
+        links = await item_playlists(s, changed)
         for item in changed:
-            bus.publish(user.id, "download", item_out(item, links=links[item.id]).model_dump(mode="json"))
+            bus.publish(user.id, "download", item_out(item, playlist_id=links[item.id]).model_dump(mode="json"))
     return joined
 
 
@@ -116,7 +116,6 @@ async def create_batch(
             ts=body.favorite_ts,
             client=body.favorite_client,
             context=body.favorite_context,
-            mirror_pending=True,
         )
         previous = (
             await s.execute(
@@ -220,7 +219,6 @@ async def create_batch(
                     user.id,
                     FavoriteTarget(ref=ref),
                     True,
-                    mirror_pending=True,
                     client="assistant" if origin == "assistant" else "hub",
                     context="assistant:bulk" if origin == "assistant" else "download",
                 )
@@ -275,8 +273,8 @@ async def list_items(
     if statuses:
         stmt = stmt.where(DownloadItem.status.in_(statuses))
     rows = (await s.execute(stmt.order_by(DownloadItem.id.desc()).limit(limit))).scalars().all()
-    links = await item_links(s, list(rows))
-    return [item_out(r, links=links[r.id]) for r in rows]
+    playlists = await item_playlists(s, list(rows))
+    return [item_out(r, playlist_id=playlists[r.id]) for r in rows]
 
 
 async def _own_item(s: AsyncSession, user: User, item_id: int) -> DownloadItem:
@@ -291,7 +289,7 @@ async def get_item(
     item_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")
 ):
     item = await _own_item(s, user, item_id)
-    return item_out(item, detail=True, links=(await item_links(s, [item]))[item.id])
+    return item_out(item, detail=True, playlist_id=(await item_playlists(s, [item]))[item.id])
 
 
 HITMOZ_SONG = re.compile(r"https?://[^/]*hitm[a-z]*\.[a-z]+/song/(\d+)", re.I)

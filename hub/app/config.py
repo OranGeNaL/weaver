@@ -170,7 +170,7 @@ class MixesCfg(BaseModel):
 class AnalyticsCfg(BaseModel):
     """The admin's insights (INSIGHTS.md 7)."""
 
-    # Hub user names (`nd_username`) left out of the totals and the taste matrix by default (a QA account)
+    # Hub user names left out of the totals and the taste matrix by default (a QA account)
     exclude_users: list[str] = []
 
 
@@ -207,11 +207,6 @@ class Settings(BaseSettings):
     # Required: the Hub refuses to start without it, and SQLite is not supported. Tests use TEST_DATABASE_URL.
     database_url: str = ""
 
-    navidrome_url: str = "http://navidrome:4533"
-    navidrome_admin_user: str = "admin"
-    navidrome_admin_password: str = ""
-
-    public_music_url: str = ""
     public_hub_url: str = ""
 
     hub_secret_key: str = ""
@@ -301,8 +296,6 @@ class Settings(BaseSettings):
 
     # set by tests to skip background workers / scheduled tasks
     disable_background: bool = False
-    # how often an import polls Navidrome for the end of its scan (tests set 0)
-    nd_scan_poll_s: float = 1.0
 
     cfg: AppConfig = Field(default_factory=AppConfig)
 

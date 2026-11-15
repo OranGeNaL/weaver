@@ -131,7 +131,6 @@ class Choice:
     sha256: str | None = None  # kind "library": the immutable blob address
     blob_size: int | None = None  # kind "library": its size
     media_type: str | None = None  # kind "library": by the logical file name
-    nd_song_id: str | None = None  # deprecated alias of `uid` (the Navidrome song, until stage 7)
     uid: str | None = None  # kind "library": the Hub track uid (`lib:<uid>`)
     source: StreamSource | None = None  # upstream that opened last (URL after redirects); renewed when it fails
     local: Path | None = None  # "full" from a source without plain HTTP audio: the copy the Hub downloaded
@@ -244,9 +243,8 @@ async def choose(ref: str, *, background: bool = False, stale: Choice | None = N
 def _usable(c: Choice) -> bool:
     # an owned blob is playable while the bucket has it; a cached copy makes it cheap
     if c.kind == "library":
-        # an unscanned track is looked up again: its deprecated Navidrome song id makes ♥ work until stage 7
-        return bool(c.uid) and c.nd_song_id is not None and (c.path is None or c.path.is_file())
-    return c.path is None or (c.path.is_file() and bool(c.nd_song_id))
+        return bool(c.uid) and (c.path is None or c.path.is_file())
+    return c.path is None or c.path.is_file()
 
 
 MOBILE = "mobile"  # the quality of a stream for a metered network (`light`)
@@ -702,8 +700,6 @@ async def _resolve(ref: str, *, probe: bool, remembered: bool, full_only: bool =
         return await _resolve_file(ref, probe=probe, remembered=remembered)
     if src == "lib":
         return await _resolve_library(ref, id_)
-    if src == "nd":
-        return await _resolve_song(ref, id_)
     if not ((src == "dz" and svc.deezer is not None) or (src == "hm" and "hitmoz" in svc.providers)):
         raise ListenError(400, "Этот трек нельзя послушать")
     choice = await _remembered(ref) if remembered else None
@@ -781,33 +777,6 @@ async def _resolve_library(ref: str, track_ref: str) -> Choice:
         sha256=found.sha256,
         blob_size=found.size,
         media_type=found.media_type,
-        nd_song_id=t.nd_song_id,
-        uid=t.uid,
-    )
-    _choices[ref] = choice
-    return choice
-
-
-async def _resolve_song(ref: str, song_id: str) -> Choice:
-    """A song only the library has (`nd:<song>`, deprecated): its file, resolved through `uid`."""
-    async with session_scope() as s:
-        t = (
-            await s.execute(select(Track).where(Track.nd_song_id == song_id, Track.deleted_at.is_(None)).limit(1))
-        ).scalar_one_or_none()
-        found = await _library_ref(s, t)
-    if t is None or found is None:
-        raise ListenError(404, "Песни нет в библиотеке")
-    choice = Choice(
-        ref,
-        "library",
-        t.artist,
-        t.title,
-        t.duration_s,
-        path=found.local_path,
-        sha256=found.sha256,
-        blob_size=found.size,
-        media_type=found.media_type,
-        nd_song_id=song_id,
         uid=t.uid,
     )
     _choices[ref] = choice
@@ -952,7 +921,6 @@ async def _resolve_hitmoz(ref: str, id_: str, probe: bool) -> Choice:
 class _LibraryTrack(NamedTuple):
     sha256: str | None
     size: int | None
-    nd_song_id: str | None  # deprecated alias of `uid` (until stage 7)
     uid: str
     logical_path: str | None
     media_type: str
@@ -971,11 +939,11 @@ async def _library_ref(s, t: Track | None) -> _LibraryTrack | None:
     if t.blob_id is not None:
         blob = await s.get(Blob, t.blob_id)
         if blob is not None:
-            return _LibraryTrack(blob.sha256, blob.size, t.nd_song_id, t.uid, t.path, media_type, None)
+            return _LibraryTrack(blob.sha256, blob.size, t.uid, t.path, media_type, None)
     if t.path:
         legacy = get_settings().library_dir / Path(*t.path.split("/"))
         if legacy.is_file():
-            return _LibraryTrack(None, None, t.nd_song_id, t.uid, t.path, media_type, legacy)
+            return _LibraryTrack(None, None, t.uid, t.path, media_type, legacy)
     return None
 
 
@@ -1006,7 +974,6 @@ def _library_choice(
         sha256=found.sha256,
         blob_size=found.size,
         media_type=found.media_type,
-        nd_song_id=found.nd_song_id,
         uid=found.uid,
         query=query,
     )

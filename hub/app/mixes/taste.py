@@ -5,7 +5,7 @@
   each × `0.5 ^ (days / 30)`. A download of the user's own weighs nothing: such a track is in the profile (`downloaded`,
   the stash, fallback seeds) with the score of its other events, 0 without them. ♥ that an import of another service
   set don't count (`favorites.imported_targets`).
-- A track is known by its catalog `ref` and/or its Navidrome song; `key` is `nd:<song>` when the library has it
+- A track is known by its catalog `ref` and/or its Hub uid; `key` is `lib:<uid>` when the library has it
   (the key of its audio vector), else the `ref`.
 - Seeds: up to `seeds` best tracks of the last 30 days, ≤ 2 of an artist; without such — own ♥ and downloads, the
   newest first; a new user without any — the top tracks of the artists picked on «Что вы слушаете?».
@@ -64,7 +64,7 @@ def artist_key(name: str | None) -> str:
 class TasteTrack:
     key: str
     ref: str | None = None
-    nd_song_id: str | None = None
+    uid: str | None = None
     artist: str = ""
     title: str = ""
     duration_s: int | None = None
@@ -99,26 +99,24 @@ class Profile:
     artists: dict[str, float] = field(default_factory=dict)  # artist key -> sum of its tracks' scores
     artist_names: dict[str, str] = field(default_factory=dict)
     artist_listens: dict[str, int] = field(default_factory=dict)  # listens (finish, skip ≥ 30 s) per artist
-    by_id: dict[str, str] = field(default_factory=dict)  # ref / nd:<song> / fingerprint -> track key
-    disliked_ids: set[str] = field(default_factory=set)  # refs and nd:<song> of disliked tracks
+    by_id: dict[str, str] = field(default_factory=dict)  # ref / lib:<uid> / fingerprint -> track key
+    disliked_ids: set[str] = field(default_factory=set)  # refs and lib:<uid> of disliked tracks
     disliked_artist_refs: set[str] = field(default_factory=set)
     disliked_artists: set[str] = field(default_factory=set)  # artist keys
     picked_artists: list[dict[str, Any]] = field(default_factory=list)  # onboarding: [{ref, name}]
 
-    def find(
-        self, *, ref: str | None = None, nd_song_id: str | None = None, fp: str | None = None
-    ) -> TasteTrack | None:
-        for k in (ref, song_key(nd_song_id) if nd_song_id else None, fp):
+    def find(self, *, ref: str | None = None, uid: str | None = None, fp: str | None = None) -> TasteTrack | None:
+        for k in (ref, song_key(uid) if uid else None, fp):
             if k and (key := self.by_id.get(k)):
                 return self.tracks[key]
         return None
 
-    def known(self, *, ref: str | None = None, nd_song_id: str | None = None, fp: str | None = None) -> bool:
+    def known(self, *, ref: str | None = None, uid: str | None = None, fp: str | None = None) -> bool:
         """In the user's history: heard, liked, downloaded or disliked."""
-        return self.find(ref=ref, nd_song_id=nd_song_id, fp=fp) is not None
+        return self.find(ref=ref, uid=uid, fp=fp) is not None
 
-    def disliked(self, *, ref: str | None, nd_song_id: str | None, artist: str, artist_ref: str | None) -> bool:
-        if (ref and ref in self.disliked_ids) or (nd_song_id and song_key(nd_song_id) in self.disliked_ids):
+    def disliked(self, *, ref: str | None, uid: str | None, artist: str, artist_ref: str | None) -> bool:
+        if (ref and ref in self.disliked_ids) or (uid and song_key(uid) in self.disliked_ids):
             return True
         return (
             bool(artist_ref and artist_ref in self.disliked_artist_refs) or artist_key(artist) in self.disliked_artists
@@ -164,23 +162,23 @@ class _Builder:
         self.s, self.p = s, p
         self.ids = Ids(s)
 
-    async def track(self, ref: str | None, nd: str | None) -> TasteTrack | None:
-        ref, nd = await self.ids.complete(ref, nd)
-        if not (ref or nd):
+    async def track(self, ref: str | None, uid: str | None) -> TasteTrack | None:
+        ref, uid = await self.ids.complete(ref, uid)
+        if not (ref or uid):
             return None
-        for k in (ref, song_key(nd) if nd else None):
+        for k in (ref, song_key(uid) if uid else None):
             if k and (key := self.p.by_id.get(k)):
                 t = self.p.tracks[key]
-                t.ref, t.nd_song_id = t.ref or ref, t.nd_song_id or nd
+                t.ref, t.uid = t.ref or ref, t.uid or uid
                 self._index(t)
                 return t
-        t = TasteTrack(key=song_key(nd) if nd else ref or "", ref=ref, nd_song_id=nd)
+        t = TasteTrack(key=song_key(uid) if uid else ref or "", ref=ref, uid=uid)
         self.p.tracks[t.key] = t
         self._index(t)
         return t
 
     def _index(self, t: TasteTrack) -> None:
-        for k in (t.ref, song_key(t.nd_song_id) if t.nd_song_id else None, t.fp or None):
+        for k in (t.ref, song_key(t.uid) if t.uid else None, t.fp or None):
             if k:
                 self.p.by_id.setdefault(k, t.key)
 
@@ -239,13 +237,13 @@ async def build_profile(
 
     events = await user_events(s, user.id, HISTORY_DAYS, now=now)
     await b.ids.prime(
-        [(e.ref, e.nd_song_id) for e in events if e.target_type == "track"]
-        + [(x.ref, x.nd_id) for x in favorites.values() if x.target_type == "track"]
+        [(e.ref, e.track_uid) for e in events if e.target_type == "track"]
+        + [(x.ref, x.uid) for x in favorites.values() if x.target_type == "track"]
     )
     for e in events:
         if e.target_type != "track" or e.kind not in ("start", "skip", "finish"):
             continue  # the `dislikes` table is the truth
-        t = await b.track(e.ref, e.nd_song_id)
+        t = await b.track(e.ref, e.track_uid)
         if t is None:
             continue
         d = decay(e.ts, now)
@@ -280,7 +278,7 @@ async def build_profile(
     for state in favorites.values():
         if state.target_type != "track" or not state.liked:
             continue
-        t = await b.track(state.ref, state.nd_id)
+        t = await b.track(state.ref, state.uid)
         if t is None:
             continue
         # an import's ♥ is provenance, not the user's own choice (M4); a later own like overrides it, as in v2
@@ -304,7 +302,7 @@ async def build_profile(
     for item, tr in rows:
         if quiet(item.query_json):
             continue
-        t = await b.track((item.query_json.get("meta") or {}).get("track_ref"), tr.nd_song_id)
+        t = await b.track((item.query_json.get("meta") or {}).get("track_ref"), tr.uid)
         if t is None or t.downloaded:
             continue
         t.downloaded = True  # no weight of its own (M4)
@@ -316,8 +314,8 @@ async def build_profile(
             if d.artist:
                 p.disliked_artists.add(artist_key(d.artist))
             continue
-        p.disliked_ids.update(k for k in (d.ref, song_key(d.nd_song_id) if d.nd_song_id else None) if k)
-        t = await b.track(d.ref, d.nd_song_id)
+        p.disliked_ids.update(k for k in (d.ref,) if k)
+        t = await b.track(d.ref, None)
         if t is not None:
             t.score += W_DISLIKE * decay(d.created_at, now)
             t.artist, t.title = t.artist or d.artist or "", t.title or d.title or ""
@@ -344,15 +342,15 @@ async def build_profile(
 
 async def _names(s: AsyncSession, p: Profile, b: _Builder) -> None:
     """Artist and title of every track: the library's, else the catalog's."""
-    songs = [t.nd_song_id for t in p.tracks.values() if t.nd_song_id]
+    songs = [t.uid for t in p.tracks.values() if t.uid]
     lib: dict[str, Track] = {}
     for i in range(0, len(songs), 500):
         for tr in (
-            await s.execute(select(Track).where(Track.nd_song_id.in_(songs[i : i + 500]), Track.deleted_at.is_(None)))
+            await s.execute(select(Track).where(Track.uid.in_(songs[i : i + 500]), Track.deleted_at.is_(None)))
         ).scalars():
-            lib[tr.nd_song_id] = tr  # type: ignore[index]
+            lib[tr.uid] = tr
     for t in p.tracks.values():
-        if t.nd_song_id and (tr := lib.get(t.nd_song_id)):
+        if t.uid and (tr := lib.get(t.uid)):
             t.artist, t.title, t.duration_s = tr.artist, tr.title, tr.duration_s
             if not t.ref and tr.deezer_track_id:
                 t.ref = f"dz:{tr.deezer_track_id}"

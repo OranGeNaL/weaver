@@ -80,11 +80,11 @@ async def detail(s: AsyncSession, h: History, mix_id: int) -> dict[str, Any] | N
     marks = [mk for x in ls for mk in x.marks]
     items = sorted(info.items, key=lambda i: (STATE_ORDER.get(i.state, 9), i.position))
     seed_keys = stats.get("seed_keys") or []
-    pairs = [(i.ref, i.nd_song_id) for i in items] + [
-        (k, None) if not k.startswith("nd:") else (None, k[3:]) for k in seed_keys
+    pairs = [(i.ref, None) for i in items] + [
+        (k, None) if not k.startswith("lib:") else (None, k[4:]) for k in seed_keys
     ]
-    known = {
-        (i.ref, i.nd_song_id): (
+    known: dict[tuple[str | None, str | None], tuple[str, str]] = {
+        (i.ref, None): (
             ((i.features_json or {}).get("track") or {}).get("artist") or "",
             ((i.features_json or {}).get("track") or {}).get("title") or "",
         )
@@ -130,15 +130,15 @@ async def detail(s: AsyncSession, h: History, mix_id: int) -> dict[str, Any] | N
         "disliked": mark_stats["dislikes"],
     }
 
-    def name(ref, nd):
-        n = name_of.get(f"nd:{nd}" if nd else ref or "")
+    def name(ref, uid):
+        n = name_of.get(f"lib:{uid}" if uid else ref or "")
         return (
             n.out()
             if n
             else {
-                "key": f"nd:{nd}" if nd else ref,
+                "key": f"lib:{uid}" if uid else ref,
                 "ref": ref,
-                "nd_song_id": nd,
+                "uid": uid,
                 "artist": "",
                 "title": names.UNKNOWN,
                 "owned": False,
@@ -148,10 +148,10 @@ async def detail(s: AsyncSession, h: History, mix_id: int) -> dict[str, Any] | N
     out_items = []
     for i in items:
         f = i.features_json or {}
-        aliases = h.aliases.of(i.ref, i.nd_song_id)
+        aliases = h.aliases.of(i.ref, None)
         out_items.append(
             {
-                **name(i.ref, i.nd_song_id),
+                **name(i.ref, None),
                 "position": i.position,
                 "state": i.state,
                 "familiar": i.familiar,
@@ -171,7 +171,7 @@ async def detail(s: AsyncSession, h: History, mix_id: int) -> dict[str, Any] | N
         )
     seeds = []
     for k in seed_keys:
-        n = name(*((k, None) if not k.startswith("nd:") else (None, k[3:])))
+        n = name(*((k, None) if not k.startswith("lib:") else (None, k[4:])))
         seeds.append({**n, "key": k, "facet_id": facet_of.get(k)})
     facets_out = None
     if facets is not None:
@@ -187,7 +187,6 @@ async def detail(s: AsyncSession, h: History, mix_id: int) -> dict[str, Any] | N
     return {
         **row(h, info),
         "description": m.description,
-        "nd_playlist_id": m.nd_playlist_id,
         "playlist_uid": m.playlist_uid,
         "funnel": funnel,
         "seeds": seeds,

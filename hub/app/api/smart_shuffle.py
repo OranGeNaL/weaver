@@ -80,7 +80,7 @@ async def next_(
 async def hide(session_id: str, body: SmartTrackIn, user: User = Depends(current_user)):
     """«−»: do not recommend this track in this playlist («Понравившиеся») any more."""
     try:
-        await smart.hide(user, session_id, body.ref, body.nd_song_id)
+        await smart.hide(user, session_id, body.ref or (f"lib:{body.track_uid}" if body.track_uid else None))
     except smart.SmartError as e:
         raise HTTPException(e.status, str(e)) from e
     return {"ok": True}
@@ -101,7 +101,8 @@ async def add(
     from app.plays import track_uid_of
 
     try:
-        item, playlist_uid = await smart.accept(user, session_id, body.ref, body.nd_song_id)
+        wanted = body.ref or (f"lib:{body.track_uid}" if body.track_uid else None)
+        item, playlist_uid = await smart.accept(user, session_id, wanted)
     except smart.SmartError as e:
         raise HTTPException(e.status, str(e)) from e
     if playlist_uid is None:
@@ -109,7 +110,7 @@ async def add(
     playlist = await get_owned(s, user.id, playlist_uid)
     if playlist is None:
         raise HTTPException(404, "Плейлист не найден")
-    track_uid = body.track_uid or await track_uid_of(s, item.ref, item.nd_song_id)
+    track_uid = body.track_uid or await track_uid_of(s, item.ref)
     if track_uid:
         await add_tracks(s, playlist, [track_uid], added_by=user.id)
         await s.commit()

@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.listening_summary import listened_threshold_ms
 from app.mixes.taste_math import _heard
-from app.models import Mix, MixItem, PlayEvent, WaveItem, WaveSession
+from app.models import Mix, MixItem, PlayEvent, Track, WaveItem, WaveSession
 
 PLAY_KINDS = ("start", "progress", "interrupted", "error", "skip", "finish")
 MARK_KINDS = ("like", "unlike", "dislike", "undislike")
@@ -68,28 +68,28 @@ def mix_of(context: str | None) -> int | None:
 
 
 class Aliases:
-    """`ref` ↔ `nd:<song>` pairs seen in the user's events: one track's keys, as `listening_summary.canonical`."""
+    """`ref` ↔ `lib:<uid>` pairs seen in the user's events: one track's keys, as `listening_summary.canonical`."""
 
     def __init__(self, rows: list[Any]):
-        self.songs: dict[str, set[str]] = defaultdict(set)
+        self.uids: dict[str, set[str]] = defaultdict(set)
         self.refs: dict[str, set[str]] = defaultdict(set)
         for r in rows:
-            if r.ref and r.nd_song_id:
-                self.songs[r.ref].add(r.nd_song_id)
-                self.refs[r.nd_song_id].add(r.ref)
+            if r.ref and r.track_uid:
+                self.uids[r.ref].add(r.track_uid)
+                self.refs[r.track_uid].add(r.ref)
 
-    def key(self, ref: str | None, nd: str | None) -> str:
-        if nd:
-            return f"nd:{nd}"
-        known = self.songs.get(ref or "", set())
-        return f"nd:{next(iter(known))}" if len(known) == 1 else ref or ""
+    def key(self, ref: str | None, uid: str | None) -> str:
+        if uid:
+            return f"lib:{uid}"
+        known = self.uids.get(ref or "", set())
+        return f"lib:{next(iter(known))}" if len(known) == 1 else ref or ""
 
-    def of(self, ref: str | None, nd: str | None) -> set[str]:
-        out = {x for x in (ref, f"nd:{nd}" if nd else None) if x}
+    def of(self, ref: str | None, uid: str | None) -> set[str]:
+        out = {x for x in (ref, f"lib:{uid}" if uid else None) if x}
         if ref:
-            out.update(f"nd:{n}" for n in self.songs.get(ref, ()))
-        if nd:
-            out.update(self.refs.get(nd, ()))
+            out.update(f"lib:{n}" for n in self.uids.get(ref, ()))
+        if uid:
+            out.update(self.refs.get(uid, ()))
         return out
 
 
@@ -98,7 +98,7 @@ class Attempt:
     events: list[PlayEvent]
     key: str
     ref: str | None
-    nd_song_id: str | None
+    uid: str | None
     aliases: set[str]
     started_at: datetime
     client: str
@@ -178,14 +178,14 @@ def mark_stats(marks: list[PlayEvent]) -> dict[str, int]:
 
 def _attempt(events: list[PlayEvent], aliases: Aliases, grouped: bool) -> Attempt:
     ref = next((e.ref for e in events if e.ref), None)
-    nd = next((e.nd_song_id for e in events if e.nd_song_id), None)
+    uid = next((e.track_uid for e in events if e.track_uid), None)
     first = events[0]
     a = Attempt(
         events,
-        aliases.key(ref, nd),
+        aliases.key(ref, uid),
         ref,
-        nd,
-        aliases.of(ref, nd),
+        uid,
+        aliases.of(ref, uid),
         first.ts,
         first.client,
         first.device_id,
@@ -236,7 +236,7 @@ def attempts_of(rows: list[PlayEvent], aliases: Aliases) -> list[Attempt]:
         if r.playback_id and r.device_id:
             groups.setdefault((r.device_id, r.playback_id), []).append(r)
             continue
-        stream = (r.client, aliases.key(r.ref, r.nd_song_id))
+        stream = (r.client, aliases.key(r.ref, r.track_uid))
         if r.kind == "start":
             open_[stream] = [r]
             legacy.append(open_[stream])
@@ -334,15 +334,24 @@ async def load(s: AsyncSession, user_id: int, now: datetime) -> History:
     ).scalars():
         mixes[m.id] = MixInfo(m, [], set())
     if mixes:
-        for i in (
-            await s.execute(
-                select(MixItem).where(MixItem.mix_id.in_(list(mixes))).order_by(MixItem.mix_id, MixItem.position)
-            )
-        ).scalars():
+        items = list(
+            (
+                await s.execute(
+                    select(MixItem).where(MixItem.mix_id.in_(list(mixes))).order_by(MixItem.mix_id, MixItem.position)
+                )
+            ).scalars()
+        )
+        track_ids = {i.track_id for i in items if i.track_id}
+        uids = (
+            dict((await s.execute(select(Track.id, Track.uid).where(Track.id.in_(track_ids)))).all())
+            if track_ids
+            else {}
+        )
+        for i in items:
             info = mixes[i.mix_id]
             info.items.append(i)
             if i.state == "active":
-                info.active |= aliases.of(i.ref, i.nd_song_id)
+                info.active |= aliases.of(i.ref, uids.get(i.track_id) if i.track_id else None)
     h = History(user_id, now, rows, marks, aliases, attempts, [], sessions, wave_items, mixes)
     h.launches = _launches(h)
     return h
@@ -440,7 +449,7 @@ def _attach_mix(h: History, launch: Launch) -> None:
         return
     pid = launch.context.split(":", 1)[1] if launch.context and ":" in launch.context else None
     if pid:
-        if pid in (info.mix.playlist_uid, info.mix.nd_playlist_id):
+        if pid in (info.mix.playlist_uid,):
             launch.mix_id, launch.mix_attribution = info.mix.id, "playlist_id"
         return
     started = [a for a in launch.attempts if a.started] or launch.attempts
@@ -469,7 +478,7 @@ def _attach_marks(h: History, launches: list[Launch]) -> None:
 
 
 def mark_aliases(h: History, m: PlayEvent) -> set[str]:
-    return h.aliases.of(m.ref, m.nd_song_id)
+    return h.aliases.of(m.ref, m.track_uid)
 
 
 def outcome(attempts: list[Attempt], marks: list[PlayEvent], aliases: set[str]) -> dict[str, Any]:
@@ -477,7 +486,7 @@ def outcome(attempts: list[Attempt], marks: list[PlayEvent], aliases: set[str]) 
     `disliked` (the strongest), by the attempts and marks of the list that offered it."""
     mine = [a for a in attempts if a.aliases & aliases]
     kinds = {
-        m.kind for m in marks if {x for x in (m.ref, f"nd:{m.nd_song_id}" if m.nd_song_id else None) if x} & aliases
+        m.kind for m in marks if {x for x in (m.ref, f"lib:{m.track_uid}" if m.track_uid else None) if x} & aliases
     }
     early = next((a.early_skip_at for a in mine if a.early_skip_at is not None), None)
     if "dislike" in kinds:

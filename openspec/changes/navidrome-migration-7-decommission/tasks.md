@@ -1,25 +1,25 @@
 ## 1. Подготовка
 
 - [ ] 1.1 Проверить, что PWA использует `lib:<uid>` и `/api/library/*`; `rg "/api/nd|nd_song_id" web/src` пуст (кроме deprecated-ветки в `api/client.ts`).
-- [ ] 1.2 Проверить, что резолв `nd:` больше не нужен; составить список ссылок `rg "navidrome|Navidrome|nd_song_id|nd_album_id|nd_artist_id|nd_playlist_id" hub/app web/src`.
-- [ ] 1.3 Проверить, что все тесты зелёные до удаления; зафиксировать базовый прогон.
+- [x] 1.2 Проверить, что резолв `nd:` больше не нужен; составить список ссылок `rg "navidrome|Navidrome|nd_song_id|nd_album_id|nd_artist_id|nd_playlist_id" hub/app web/src`.
+- [x] 1.3 Проверить, что все тесты зелёные до удаления; зафиксировать базовый прогон.
 
 ## 2. Удаление кода
 
 - [ ] 2.1 Удалить `hub/app/library/navidrome.py`, `hub/app/api/medialib.py` и регистрацию роутера; проверить `rg "medialib|NavidromeClient|admin_client|user_navidrome|NavidromeAdmin|NavidromeHistory|SubsonicError"`.
-- [ ] 2.2 Удалить ND-задачи/циклы (`nd_scan`, `scrobbles_loop`, `NavidromeSync`, `sync_navidrome`, `enqueue_scan`); `nd:`-резолв и legacy `lib:<int>` в `listen.py` удалить в 6.7 после 6.6; проверить `rg`.
+- [x] 2.2 Удалить ND-задачи/циклы (`nd_scan`, `scrobbles_loop`, `NavidromeSync`, `sync_navidrome`, `enqueue_scan`); `nd:`-резолв и legacy `lib:<int>` в `listen.py` удалить в 6.7 после 6.6; проверить `rg`.
 - [ ] 2.3 Удалить `nd_*`-поля из моделей, схем, API и веб-типов, включая `nd_song_ids`, `import_collections.nd_playlist_id`, `favorite_subjects.nd_id`, `mirror_pending` (но **не** `superseded_scrobble`), `dislikes.nd_song_id`, `wave_items`/`smart_items`/`smart_hidden`/`mix_items.nd_song_id`, `mix_settings`/`mixes.nd_playlist_id`; `navidrome_sync` уже удалена на этапе 5, `wave_sessions.seed_json` остаётся; проверить `rg "nd_song_id|nd_album_id|nd_artist_id|nd_playlist_id|nd_username|nd_password|nd_song_ids|nd_id|navidrome_sync|mirror_pending"` (пусто).
-- [ ] 2.4 Удалить ND-пользователей и `player_seen_at` из админских ответов; проверить тесты `/api/admin/users`.
+- [x] 2.4 Удалить ND-пользователей и `player_seen_at` из админских ответов; проверить тесты `/api/admin/users`.
 - [ ] 2.5 Удалить `navidrome`/`_navidrome_ok` из `/healthz` и `/api/system/health`, `HealthOut` и веб-типов; проверить тесты system.
 - [ ] 2.6 Удалить `public_music_url` из `MeOut`/`/api/auth/me`, `music_url` из `/api/auth/options`, `player_seen_at` из админских схем и `Admin.tsx`/`AdminUser.tsx`; проверить `rg "public_music_url|music_url|player_seen_at"`.
-- [ ] 2.7 Перевести `mixes/*`, `insights/*`, `listening_summary.py`, `favorites.py` с `nd_*`-ключей на `ref`/`uid`; `wave_sessions.seed_json` не дропать, читать `artist_uid`; проверить `rg "nd_song_id|nd_artist_id|nd_playlist_id" hub/app/mixes hub/app/insights hub/app/favorites.py hub/app/listening_summary.py` (пусто).
+- [x] 2.7 Перевести `mixes/*`, `insights/*`, `listening_summary.py`, `favorites.py` с `nd_*`-ключей на `ref`/`uid`; `wave_sessions.seed_json` не дропать, читать `artist_uid`; проверить `rg "nd_song_id|nd_artist_id|nd_playlist_id" hub/app/mixes hub/app/insights hub/app/favorites.py hub/app/listening_summary.py` (пусто).
 
 ## 3. Схема
 
-- [ ] 3.1 Создать миграцию удаления полного таблично-квалифицированного перечня из design §2 (после 2.7, без `navidrome_sync` и `wave_sessions.seed_json`); проверить `alembic upgrade head` на пустой БД.
-- [ ] 3.2 Проверить откат миграции: колонки восстанавливаются nullable, приложение не падает; `navidrome_sync` не восстанавливается.
-- [ ] 3.3 Проверить, что после миграции модели и БД согласованы (`alembic check` или эквивалент).
-- [ ] 3.4 Проверить, что `navidrome_sync` и `wave_sessions.seed_json` не дропаются повторно; проверить миграцию и `rg`.
+- [x] 3.1 Создать миграцию удаления полного таблично-квалифицированного перечня из design §2 (после 2.7, без `navidrome_sync` и `wave_sessions.seed_json`); проверить `alembic upgrade head` на пустой БД.
+- [x] 3.2 Проверить откат миграции: колонки восстанавливаются nullable, приложение не падает; `navidrome_sync` не восстанавливается.
+- [x] 3.3 Проверить, что после миграции модели и БД согласованы (`alembic check` или эквивалент).
+- [x] 3.4 Проверить, что `navidrome_sync` и `wave_sessions.seed_json` не дропаются повторно; проверить миграцию и `rg`.
 
 ## 4. Инфраструктура и конфигурация
 - [ ] 4.1 Удалить сервис `navidrome`, том `navidrome-data`, mount `navidrome.toml` и `depends_on`; проверить `docker compose config`.

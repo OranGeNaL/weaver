@@ -35,8 +35,7 @@ from app.models import (
 TargetType = Literal["track", "album", "artist"]
 
 log = None
-ND_FIELDS = {"track": "nd_song_id", "album": "nd_album_id", "artist": "nd_artist_id"}
-ND_LISTS = {"track": "song", "album": "album", "artist": "artist"}
+TARGET_TYPES = ("track", "album", "artist")
 
 
 def decision_id(operation: str, target_type: str, key: str) -> str:
@@ -60,19 +59,9 @@ def subject_data(raw: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def aliases(obj: Any) -> set[str]:
-    """The Hub uid, the catalog ref and the deprecated Navidrome id of one target, as alias keys."""
-    typ = obj.target_type or "track"
-    nd = getattr(obj, ND_FIELDS[typ], None)
+    """The Hub uid and the catalog ref of one target, as alias keys."""
     uid = getattr(obj, "uid", None) or getattr(obj, "track_uid", None)
-    return {
-        x
-        for x in (
-            f"ref:{obj.ref}" if obj.ref else None,
-            f"uid:{uid}" if uid else None,
-            f"nd:{nd}" if nd else None,
-        )
-        if x
-    }
+    return {x for x in (f"ref:{obj.ref}" if obj.ref else None, f"uid:{uid}" if uid else None) if x}
 
 
 class AliasIndex:
@@ -115,7 +104,6 @@ class State:
     event: PlayEvent  # latest effective independent decision
     received_at: datetime  # latest arrival including causal compensation
     ref: str | None = None
-    nd_id: str | None = None
     data: dict[str, Any] | None = None
     aliases: list[str] = field(default_factory=list)
     uid: str | None = None
@@ -269,20 +257,19 @@ def fold(
             e,
             arrivals[k],
             e.ref or (prev.ref if prev else None),
-            getattr(e, ND_FIELDS[k[0]]) or (prev.nd_id if prev else None),
             {**(prev.data or {} if prev else {}), **(e.target_data or {})},
             uid=getattr(e, "track_uid", None) or (prev.uid if prev else None),
         )
-    # A rolled-back first like still has a neutral state and must not bootstrap from ND as a new like.
+    # A rolled-back first like still has a neutral state and must not bootstrap a new like.
     for e in reversed(ordered):
         k = index.key(e)
         if k not in out and not e.reverts_event_id and identity(e) not in redundant:
-            out[k] = State(*k, False, None, e, arrivals[k], e.ref, getattr(e, ND_FIELDS[k[0]]), e.target_data)
+            out[k] = State(*k, False, None, e, arrivals[k], e.ref, e.target_data)
     for subject in subjects:
         k = index.root((subject.target_type, min(subject.aliases))) if subject.aliases else None
         if k in out:
             st = out[k]
-            st.ref, st.nd_id = subject.ref or st.ref, subject.nd_id or st.nd_id
+            st.ref = subject.ref or st.ref
             st.uid = getattr(subject, "uid", None) or st.uid
             st.data = {**(subject.data or {}), **(st.data or {})}
     for key, st in out.items():
@@ -298,22 +285,22 @@ async def snapshot(session: AsyncSession, user_id: int, now: datetime | None = N
     q = q.where(PlayEvent.ts <= now)
     events = list((await session.execute(q)).scalars())
     subjects = list((await session.execute(select(FavoriteSubject))).scalars())
-    partial = [(e.ref, e.nd_song_id) for e in events if e.target_type == "track" and not (e.ref and e.nd_song_id)]
+    partial = [(e.ref, e.track_uid) for e in events if e.target_type == "track" and not (e.ref and e.track_uid)]
     if partial:
         from app.plays import Ids
 
         fill = Ids(session)
         await fill.prime(partial)
 
-        for ref, nd in set(partial):
-            ref, nd = await fill.complete(ref, nd)
-            if ref and nd:
+        for ref, uid in set(partial):
+            ref, uid = await fill.complete(ref, uid)
+            if ref and uid:
                 subjects.append(
                     FavoriteSubject(
                         target_type="track",
                         ref=ref,
-                        nd_id=nd,
-                        aliases=[f"ref:{ref}", f"nd:{nd}"],
+                        uid=uid,
+                        aliases=[f"ref:{ref}", f"uid:{uid}"],
                         canonical_key=f"ref:{ref}",
                         data={},
                     )
@@ -324,7 +311,7 @@ async def snapshot(session: AsyncSession, user_id: int, now: datetime | None = N
 async def remember(s: AsyncSession, target: FavoriteTarget, *, extra_aliases: Iterable[str] = ()) -> FavoriteSubject:
     typ = target.target_type
     keys = aliases(target) | set(extra_aliases)
-    # Usually one indexed hit; JSON aliases also retain replaced ND song ids.
+    # Usually one indexed hit; JSON aliases also retain replaced ids of a merged subject.
     subjects = list((await s.execute(select(FavoriteSubject).where(FavoriteSubject.target_type == typ))).scalars())
     matches = [x for x in subjects if keys.intersection(x.aliases or [])]
     data: dict[str, Any] = {}
@@ -335,7 +322,7 @@ async def remember(s: AsyncSession, target: FavoriteTarget, *, extra_aliases: It
     if matches:
         row = matches[0]
         for other in matches[1:]:
-            row.ref, row.nd_id = row.ref or other.ref, row.nd_id or other.nd_id
+            row.ref, row.uid = row.ref or other.ref, row.uid or other.uid
             await s.delete(other)
     else:
         row = FavoriteSubject(target_type=typ, canonical_key=min(keys), aliases=[], data={})
@@ -344,9 +331,9 @@ async def remember(s: AsyncSession, target: FavoriteTarget, *, extra_aliases: It
         row.ref = target.ref
     # A snapshot can still contain an old replaced song: observing that alias alone
     # must not move the canonical library id back from the verified replacement.
-    if nd_id := getattr(target, ND_FIELDS[typ]):
-        if not row.nd_id or target.ref or extra_aliases:
-            row.nd_id = nd_id
+    if target.uid:
+        if not row.uid or target.ref or extra_aliases:
+            row.uid = target.uid
     row.aliases, row.data, row.enriched_at = sorted(keys), data, utcnow()
     await s.flush()
     return row
@@ -363,7 +350,6 @@ async def record(
     client: str = "hub",
     context: str | None = None,
     reverts_event_id: str | None = None,
-    mirror_pending: bool = False,
     normalize: bool = True,
     event_id: str | None = None,
 ) -> PlayEvent:
@@ -371,15 +357,7 @@ async def record(
 
     target = target.model_copy()
     if target.target_type == "track":
-        target.ref, target.nd_song_id = await Ids(s).complete(target.ref, target.nd_song_id)
-        from app.plays import track_ids_of_uid, track_uid_of
-
-        if not target.uid:
-            target.uid = await track_uid_of(s, target.ref, target.nd_song_id)
-        elif not (target.ref and target.nd_song_id):
-            ref, nd = await track_ids_of_uid(s, target.uid)
-            target.ref = target.ref or ref
-            target.nd_song_id = target.nd_song_id or nd
+        target.ref, target.uid = await Ids(s).complete(target.ref, target.uid)
     row = await remember(s, target)
     eid = event_id or decision_id(operation or uuid.uuid4().hex, target.target_type, row.canonical_key)
     now = utcnow()
@@ -396,7 +374,6 @@ async def record(
             context=context,
             received_at=now,
             reverts_event_id=reverts_event_id,
-            mirror_pending=mirror_pending,
         )
         .on_conflict_do_nothing()
     )
@@ -410,7 +387,6 @@ def target_of(state: State) -> FavoriteTarget:
         target_type=cast(TargetType, state.target_type),
         ref=state.ref,
         uid=state.uid,
-        **{ND_FIELDS[state.target_type]: state.nd_id},
         target_data=state.data,
     )
 
@@ -425,18 +401,16 @@ async def command(
     ts: datetime | None = None,
     client: str = "pwa",
     context: str | None = None,
-    nd=None,
 ) -> list[PlayEvent]:
     """Journal the user's decisions; the Hub is their only owner, so no external service is called.
 
     A retried command is idempotent by `event_id`: it returns the stored event and never replays an old decision.
-    `nd` is accepted and ignored for callers that still pass a Navidrome client (deprecated until stage 7).
     """
-    from app.plays import Ids, event_time, track_uid_of
+    from app.plays import Ids, event_time
 
     operation = operation or uuid.uuid4().hex
     events: list[PlayEvent] = []
-    for typ in ND_FIELDS:
+    for typ in TARGET_TYPES:
         group = [t.model_copy() for t in targets if t.target_type == typ]
         if not group:
             continue
@@ -445,12 +419,9 @@ async def command(
         }
         for t in group:
             if typ == "track":
-                t.ref, t.nd_song_id = await Ids(s).complete(t.ref, t.nd_song_id)
-                t.uid = t.uid or await track_uid_of(s, t.ref, t.nd_song_id)
+                t.ref, t.uid = await Ids(s).complete(t.ref, t.uid)
         for target in group:
             subject = await remember(s, target)
-            if not getattr(target, ND_FIELDS[typ]) and subject.nd_id:
-                setattr(target, ND_FIELDS[typ], subject.nd_id)
             if not target.uid and subject.uid:
                 target.uid = subject.uid
             eid = event_ids[id(target)]
@@ -513,7 +484,6 @@ async def download_requested(s: AsyncSession, item: DownloadItem):
         operation=f"download:{item.id}:{uuid.uuid4().hex}",
         client="assistant" if item.query_json.get("favorite_client") == "assistant" else "hub",
         context=item.query_json.get("favorite_context") or "download",
-        mirror_pending=True,
     )
     item.query_json = {
         **item.query_json,
@@ -536,7 +506,7 @@ async def download_failed(s: AsyncSession, item: DownloadItem):
         await record(
             s,
             item.user_id,
-            FavoriteTarget(ref=original.ref, nd_song_id=original.nd_song_id),
+            FavoriteTarget(ref=original.ref, uid=original.track_uid),
             False,
             operation=f"failed:{original.event_id}",
             reverts_event_id=original.event_id,
@@ -552,9 +522,9 @@ async def imported_targets(s: AsyncSession, user_id: int) -> set[tuple[str, str]
     imports = list((await s.execute(select(Import).where(Import.user_id == user_id))).scalars())
     for imp in imports:
         opts = imp.options_json or {}
-        for typ, opt in (("track", "liked"), ("album", "liked_album_ids"), ("artist", "liked_artist_ids")):
+        for typ, opt in (("album", "liked_album_ids"), ("artist", "liked_artist_ids")):
             for x in opts.get(opt, []):
-                keys.update({(typ, f"nd:{x}"), (typ, f"uid:{x}")})  # nd ids of old imports, uids since stage 5
+                keys.add((typ, f"uid:{x}"))
         for x in opts.get("liked_uids", []):
             keys.add(("track", f"uid:{x}"))
     rows = (

@@ -9,13 +9,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import (
-    NdSongOut,
     PlaylistAddIn,
     PlaylistCreateIn,
     PlaylistOut,
     PlaylistPageOut,
     PlaylistRemoveIn,
     PlaylistReorderIn,
+    PlaylistTrackOut,
 )
 from app.auth import current_user
 from app.db import get_session
@@ -30,20 +30,18 @@ def pl_out(p: Playlist, song_count: int = 0, duration_s: int = 0) -> PlaylistOut
 
 
 def track_ref(t: Track) -> str:
-    """A library track as a ref: its Deezer record, else its deprecated Navidrome song, else its Hub uid."""
+    """A library track as a ref: its Deezer record, else its Hub uid (`lib:<uid>`)."""
     if t.deezer_track_id:
         return f"dz:{t.deezer_track_id}"
-    if t.nd_song_id:
-        return f"nd:{t.nd_song_id}"
     return f"lib:{t.uid}"
 
 
-def ref_source(ref: str) -> Literal["dz", "hm", "mb", "nd", "file"]:
+def ref_source(ref: str) -> Literal["dz", "hm", "mb", "file"]:
     prefix = ref.split(":", 1)[0]
-    return cast(Literal["dz", "hm", "mb", "nd", "file"], prefix)
+    return cast(Literal["dz", "hm", "mb", "file"], prefix)
 
 
-async def songs_of(s: AsyncSession, tracks_: list[Track]) -> list[NdSongOut]:
+async def songs_of(s: AsyncSession, tracks_: list[Track]) -> list[PlaylistTrackOut]:
     """The playlist's tracks in order, as the PWA's player expects them."""
     album_ids = {t.album_id for t in tracks_ if t.album_id}
     albums = (
@@ -57,7 +55,7 @@ async def songs_of(s: AsyncSession, tracks_: list[Track]) -> list[NdSongOut]:
         album = albums.get(t.album_id) if t.album_id else None
         cover = f"/api/library/albums/{album.uid}/cover" if album is not None and album.cover_blob_id else None
         out.append(
-            NdSongOut(
+            PlaylistTrackOut(
                 ref=ref,
                 source=ref_source(ref),
                 id=ref.split(":", 1)[1],
@@ -76,9 +74,6 @@ async def songs_of(s: AsyncSession, tracks_: list[Track]) -> list[NdSongOut]:
                 owned=True,
                 library_track_id=t.id,
                 uid=t.uid,
-                nd_song_id=t.nd_song_id,
-                nd_album_id=None,
-                nd_artist_id=None,
             )
         )
     return out
@@ -108,7 +103,7 @@ async def _owned(s: AsyncSession, user: User, uid: str) -> Playlist:
 
 
 async def _resolve_uids(s: AsyncSession, body: PlaylistAddIn) -> list[str]:
-    """The Hub track uids the request names: `uids` first, then `library_track_ids`, then deprecated `song_ids`."""
+    """The Hub track uids the request names: `uids` first, then `library_track_ids`."""
     uids = list(dict.fromkeys(body.uids))
     if body.library_track_ids:
         by_id = {
@@ -118,14 +113,6 @@ async def _resolve_uids(s: AsyncSession, body: PlaylistAddIn) -> list[str]:
             ).scalars()
         }
         uids += [by_id[i] for i in body.library_track_ids if i in by_id]
-    if body.song_ids:
-        found = {
-            t.nd_song_id: t.uid
-            for t in (
-                await s.execute(select(Track).where(Track.nd_song_id.in_(body.song_ids), Track.deleted_at.is_(None)))
-            ).scalars()
-        }
-        uids += [found[x] for x in body.song_ids if x in found]
     return list(dict.fromkeys(uids))
 
 

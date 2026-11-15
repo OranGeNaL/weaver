@@ -3,14 +3,12 @@
 Job kinds:
 - `expand_batch`  — album/artist/track refs → download items
 - `download_item` — one track end to end, ends in `done` after `catalog_commit` (or at once if already owned)
-- `nd_sync`       — coalesced, best-effort Navidrome link plus the Hub-side effects of a committed item
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import unicodedata
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -30,7 +28,6 @@ from app.jobs.queue import PermanentError, enqueue, handler, notify, on_final_fa
 from app.library import probe
 from app.library.catalog import catalog_commit
 from app.library.importer import ImportSpec, cleanup_dir, import_file, staging_dir_for
-from app.library.navidrome import admin_client
 from app.library.owned import find_existing, quiet, star_only
 from app.matching.select import (
     classify,
@@ -64,22 +61,15 @@ USER_FLAGS = (
 MAX_TRIES_PER_PROVIDER = 3
 MAX_SHOWN = 15  # candidates kept on the item for the user to pick from
 MAX_SHOWN_REUPLOADS = 5
-SCAN_PASSES = 3  # more Navidrome scans after one that left tracks unlinked
 MAYBE_CENSORED = "Возможна цензура: копий без цензуры не нашлось"
 
 
 # --- item state + events ------------------------------------------------------------------
 
 
-async def item_links(s: AsyncSession, items: list[DownloadItem]) -> dict[int, tuple[str | None, str | None]]:
-    """item id -> (Navidrome song id, batch target playlist id) for `item_out`."""
-    track_ids = {i.track_id for i in items if i.track_id}
+async def item_playlists(s: AsyncSession, items: list[DownloadItem]) -> dict[int, str | None]:
+    """item id -> the batch's target playlist id for `item_out`."""
     batch_ids = {i.batch_id for i in items}
-    songs = (
-        dict((await s.execute(select(Track.id, Track.nd_song_id).where(Track.id.in_(track_ids)))).all())
-        if track_ids
-        else {}
-    )
     playlists = (
         dict(
             (
@@ -91,18 +81,10 @@ async def item_links(s: AsyncSession, items: list[DownloadItem]) -> dict[int, tu
         if batch_ids
         else {}
     )
-    return {
-        i.id: (
-            songs.get(i.track_id) if i.track_id is not None else None,
-            playlists.get(i.batch_id) if i.batch_id is not None else None,
-        )
-        for i in items
-    }
+    return {i.id: playlists.get(i.batch_id) if i.batch_id is not None else None for i in items}
 
 
-def item_out(
-    item: DownloadItem, *, detail: bool = False, links: tuple[str | None, str | None] = (None, None)
-) -> DownloadItemOut:
+def item_out(item: DownloadItem, *, detail: bool = False, playlist_id: str | None = None) -> DownloadItemOut:
     q = (item.query_json or {}).get("query", {})
     meta = (item.query_json or {}).get("meta") or {}
     return DownloadItemOut(
@@ -119,8 +101,7 @@ def item_out(
         track_id=item.track_id,
         library_track_id=(item.query_json or {}).get("library_track_id"),
         uid=(item.query_json or {}).get("uid"),
-        nd_song_id=links[0],
-        playlist_id=links[1],
+        playlist_id=playlist_id,
         track_ref=item_ref(item),
         star=quiet(item.query_json),
         liked=bool((item.query_json or {}).get("star")) and not bool((item.query_json or {}).get("star_failed")),
@@ -164,8 +145,8 @@ async def update_item(item_id: int, **fields: Any) -> DownloadItem | None:
         await s.refresh(item)
         if "status" in fields and item.status in TERMINAL:
             await mixes_done(s, [item])
-        links = (await item_links(s, [item]))[item.id]
-    bus.publish(item.user_id, "download", item_out(item, links=links).model_dump(mode="json"))
+        links = (await item_playlists(s, [item]))[item.id]
+    bus.publish(item.user_id, "download", item_out(item, playlist_id=links).model_dump(mode="json"))
     return item
 
 
@@ -340,7 +321,7 @@ async def handle_download_item(job: Job) -> None:
             qj["replaces"] = existing_id
             await update_item(item_id, query_json=qj)
         elif existing_id:
-            # the catalog already holds the track: commit the item at once, ND linking is a later best-effort pass
+            # the catalog already holds the track: commit the item at once
             async with session_scope() as s:
                 item = await s.get(DownloadItem, item_id, with_for_update=True)
                 track = await s.get(Track, existing_id)
@@ -348,8 +329,7 @@ async def handle_download_item(job: Job) -> None:
                     await catalog_commit(s, item, track)
                     await s.flush()
             await update_item(item_id, warnings=["Уже есть в библиотеке"])
-            async with session_scope() as s:
-                await enqueue_nd_sync(s)
+            await committed_effects(item_id)
             notify()
             return
 
@@ -623,8 +603,7 @@ async def import_downloaded(
         from app.listen import forget
 
         await forget(meta["track_ref"])  # from now on listening plays the library file
-    async with session_scope() as s:
-        await enqueue_nd_sync(s)
+    await committed_effects(item_id)
     notify()
 
 
@@ -634,109 +613,16 @@ async def _download_failed(job: Job, exc: Exception) -> None:
     await update_item(int(job.payload_json["item_id"]), status="failed", error=f"{exc}"[:500])
 
 
-# --- scan + link + playlists ---------------------------------------------------------------------
+# --- the Hub-side effects of a committed item ---------------------------------------------------------------
 
 
-async def enqueue_nd_sync(s: AsyncSession) -> None:
-    """Coalesced transitional pass: Navidrome linking plus the Hub-side effects of committed items."""
-    pending = (
-        await s.execute(select(Job.id).where(Job.kind == "nd_sync", Job.status == "queued").limit(1))
-    ).scalar_one_or_none()
-    if pending is None:
-        await enqueue(s, "nd_sync", {}, delay_s=1)
-
-
-_sync_lock = asyncio.Lock()
-
-
-@handler("nd_sync")
-async def handle_nd_sync(job: Job) -> None:
-    """Best-effort Navidrome link, then `imports_done`/`mixes_done`; ND-only records stay inert until stage 5."""
-    linked = 0
-    async with _sync_lock:
-        try:
-            nd = admin_client()
-            try:
-                await nd.scan_and_wait(poll_s=get_settings().nd_scan_poll_s)
-                linked = await link_unlinked(nd)
-            finally:
-                await nd.aclose()
-        except Exception as e:
-            # the Hub catalog is already committed: an unavailable Navidrome must not fail the job
-            log.warning("nd_sync: Navidrome link skipped: %r", e)
-    log.info("nd_sync done, linked %s tracks", linked)
+async def committed_effects(item_id: int) -> None:
+    """A committed item's Hub-side effects: its import's playlists are rewritten, its mix is synced soon."""
     async with session_scope() as s:
-        items = list((await s.execute(select(DownloadItem).where(DownloadItem.status == "done"))).scalars())
-        fresh = [i for i in items if not (i.query_json or {}).get("nd_effects_done")]
-        if fresh:
-            await imports_done(s, fresh)
-            await mixes_done(s, fresh)
-            for item in fresh:
-                item.query_json = {**(item.query_json or {}), "nd_effects_done": True}
-            await s.flush()
-        still = (
-            await s.execute(select(func.count()).select_from(Track).where(Track.nd_song_id.is_(None)))
-        ).scalar_one()
-    if not still:
-        return
-    # Navidrome may need another pass (file just landed while the scan was running) — a few, not forever: each pass is
-    # a new job (its `attempts` start at 0), so the passes are counted in the payload.
-    passes = int((job.payload_json or {}).get("pass") or 0)
-    if passes < SCAN_PASSES:
-        async with session_scope() as s:
-            await enqueue(s, "nd_sync", {"pass": passes + 1}, delay_s=10)
-        notify()
-    else:
-        log.warning("nd_sync: %s tracks still not found in Navidrome", still)
-
-
-def _same_path(nd_path: str | None, rel: str | None) -> bool:
-    """Navidrome reports the real path with its music folder prefix (e.g. `/music/Artist/...`)."""
-    if not nd_path or not rel:
-        return False
-    nd_path, rel = _nfc(nd_path), _nfc(rel)
-    return nd_path == rel or nd_path.endswith("/" + rel)
-
-
-async def link_unlinked(nd) -> int:
-    """Find Navidrome song ids for tracks that don't have one yet (search3 by title, match by real path)."""
-    async with session_scope() as s:
-        tracks = (await s.execute(select(Track).where(Track.nd_song_id.is_(None)).limit(500))).scalars().all()
-        n = 0
-        for t in tracks:
-            hit = None
-            # NFC: Navidrome finds nothing by a decomposed title («и» + U+0306 for «й»); its album and artist are
-            # asked next for a title it still can't find
-            for i, q in enumerate(dict.fromkeys(_nfc(x) for x in (t.title, t.album, t.artist) if x and x.strip())):
-                try:
-                    res = await nd.search3(q, song_count=100)
-                except Exception as e:
-                    log.warning("search3 failed for track %s: %r", t.id, e)
-                    continue
-                songs = res.get("song", [])
-                hit = next((x for x in songs if _same_path(x.get("path"), t.path)), None)
-                if hit is None and i == 0:
-                    hit = next(
-                        (
-                            x
-                            for x in songs
-                            if _nfc(x.get("title")) == _nfc(t.title)
-                            and _nfc(x.get("album")) == _nfc(t.album)
-                            and (t.duration_s is None or abs((x.get("duration") or 0) - t.duration_s) <= 2)
-                            and not any(o.nd_song_id == x["id"] for o in tracks)
-                        ),
-                        None,
-                    )
-                if hit:
-                    break
-            if hit:
-                t.nd_song_id = hit["id"]
-                n += 1
-        return n
-
-
-def _nfc(text: str | None) -> str:
-    return unicodedata.normalize("NFC", text or "")
+        item = await s.get(DownloadItem, item_id)
+        if item is not None:
+            await imports_done(s, [item])
+            await mixes_done(s, [item])
 
 
 async def imports_done(s: AsyncSession, items: list[DownloadItem]) -> None:

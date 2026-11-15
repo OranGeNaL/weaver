@@ -203,7 +203,6 @@ async def import_out(s: AsyncSession, imp: Import) -> ImportOut:
                 owned=counts.get(c.id, (0, 0))[1],
                 cover_url=c.cover_url,
                 playlist_uid=c.playlist_uid,
-                nd_playlist_id=c.nd_playlist_id,
             )
             for c in colls
         ],
@@ -213,7 +212,7 @@ async def import_out(s: AsyncSession, imp: Import) -> ImportOut:
     )
 
 
-def item_out(it: ImportItem, kind: str, nd_song_id: str | None = None, dl: DownloadItem | None = None) -> ImportItemOut:
+def item_out(it: ImportItem, kind: str, uid: str | None = None, dl: DownloadItem | None = None) -> ImportItemOut:
     raw = it.raw_json or {}
     return ImportItemOut(
         id=it.id,
@@ -229,7 +228,7 @@ def item_out(it: ImportItem, kind: str, nd_song_id: str | None = None, dl: Downl
         match=it.match,
         score=it.score,
         status=it.status,
-        nd_song_id=nd_song_id,
+        uid=uid,
         download_item_id=it.download_item_id,
         download_status=dl.status if dl else None,
         error=dl.error if dl else None,
@@ -368,7 +367,6 @@ async def store_snapshot(s: AsyncSession, imp: Import, snap: Snapshot) -> int:
                 external_id=sc.external_id,
                 title=sc.title,
                 selected=sc.selected,
-                nd_song_ids=[],
             )
             s.add(coll)
             await s.flush()

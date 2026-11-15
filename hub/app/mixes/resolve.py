@@ -45,9 +45,9 @@ def library_track(t) -> CatalogTrack:
             explicit=t.explicit,
         )
     return CatalogTrack(
-        ref=f"nd:{t.nd_song_id}",
-        source="nd",
-        id=str(t.nd_song_id),
+        ref=f"lib:{t.uid}",
+        source="lib",
+        id=t.uid,
         title=t.title,
         artist=t.artist,
         artists=[t.artist],
@@ -101,7 +101,7 @@ async def _search(hit: Hit) -> Resolution:
 async def resolve_hit(source: str, hit: Hit) -> CatalogTrack | None:
     async with session_scope() as s:
         lib = await find_existing(s, artist=hit.artist, title=hit.title, duration_s=hit.duration_s)
-        if lib is not None and lib.nd_song_id:
+        if lib is not None:
             return library_track(lib)
         known = await _remembered(s, source, "track", external_id(hit))
     if known is None:

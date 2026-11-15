@@ -18,7 +18,7 @@ CHUNK = 500
 @dataclass
 class Name:
     ref: str | None
-    nd_song_id: str | None
+    uid: str | None
     artist: str
     title: str
     owned: bool  # the song is in the library
@@ -26,13 +26,13 @@ class Name:
 
     @property
     def key(self) -> str:
-        return f"nd:{self.nd_song_id}" if self.nd_song_id else self.ref or ""
+        return f"lib:{self.uid}" if self.uid else self.ref or ""
 
     def out(self) -> dict[str, Any]:
         return {
             "key": self.key,
             "ref": self.ref,
-            "nd_song_id": self.nd_song_id,
+            "uid": self.uid,
             "artist": self.artist,
             "title": self.title,
             "owned": self.owned,
@@ -63,8 +63,8 @@ async def resolve(
     pairs: Iterable[tuple[str | None, str | None]],
     known: dict[tuple[str | None, str | None], tuple[str, str]] | None = None,
 ) -> dict[str, Name]:
-    """(ref, nd_song_id) -> `Name`, keyed by `Name.key` of the pair as given (nd:<song>, else the ref). `known` —
-    names the caller already has (the taste profile's), trusted after the library."""
+    """(ref, uid) -> `Name`, keyed by `Name.key` of the pair as given (`lib:<uid>`, else the ref). `known` — names
+    the caller already has (the taste profile's), trusted after the library."""
     pairs = {(r or None, n or None) for r, n in pairs if r or n}
     songs = sorted({n for _, n in pairs if n})
     refs = sorted({r for r, _ in pairs if r})
@@ -72,11 +72,9 @@ async def resolve(
     by_dz: dict[str, Track] = {}
     for chunk in _chunks(songs):
         for tr in (
-            await s.execute(
-                select(Track).where(Track.nd_song_id.in_(chunk), Track.deleted_at.is_(None)).order_by(Track.id)
-            )
+            await s.execute(select(Track).where(Track.uid.in_(chunk), Track.deleted_at.is_(None)).order_by(Track.id))
         ).scalars():
-            by_song[tr.nd_song_id] = tr  # type: ignore[index]  # the newest row wins
+            by_song[tr.uid] = tr  # the newest row wins
     dz = sorted({r[3:] for r in refs if r.startswith("dz:")})
     for chunk in _chunks(dz):
         for tr in (
@@ -91,14 +89,14 @@ async def resolve(
     for ref, nd in sorted(pairs, key=lambda x: (x[0] or "", x[1] or "")):
         tr = by_song.get(nd) if nd else None
         tr = tr or (by_dz.get(ref) if ref else None)
-        key = f"nd:{nd}" if nd else ref or ""
+        key = f"lib:{nd}" if nd else ref or ""
         if tr is not None:
             out[key] = Name(
                 ref or (f"dz:{tr.deezer_track_id}" if tr.deezer_track_id else None),
-                nd or tr.nd_song_id,
+                nd or tr.uid,
                 tr.artist,
                 tr.title,
-                bool(tr.nd_song_id),
+                True,
                 "library",
             )
         elif known and (name := known.get((ref, nd))) and name[0] and name[1]:
@@ -124,11 +122,11 @@ async def resolve(
         return [*(by_ref.get(ref, []) if ref else []), *(by_nd.get(nd, []) if nd else [])]
 
     # the latest playback metadata of each track (the Hub completed it on write from the library and the catalog)
-    for column, values in ((PlayEvent.ref, want_refs), (PlayEvent.nd_song_id, want_songs)):
+    for column, values in ((PlayEvent.ref, want_refs), (PlayEvent.track_uid, want_songs)):
         for chunk in _chunks(values):
             rows = (
                 await s.execute(
-                    select(PlayEvent.ref, PlayEvent.nd_song_id, PlayEvent.track_metadata)
+                    select(PlayEvent.ref, PlayEvent.track_uid, PlayEvent.track_metadata)
                     .where(column.in_(chunk), PlayEvent.track_metadata.is_not(None))
                     .order_by(PlayEvent.ts.desc(), PlayEvent.id.desc())
                 )
@@ -143,43 +141,50 @@ async def resolve(
             if isinstance(raw, dict) and raw.get("ref") in by_ref:
                 for pair in by_ref[raw["ref"]]:
                     take(pair, _track_name(raw), "catalog")
-    for column, values in ((MixItem.ref, want_refs), (MixItem.nd_song_id, want_songs)):
-        for chunk in _chunks(values):
-            for ref, nd, features in (
-                await s.execute(
-                    select(MixItem.ref, MixItem.nd_song_id, MixItem.features_json)
-                    .where(column.in_(chunk))
-                    .order_by(MixItem.id.desc())
-                )
-            ).all():
-                for pair in targets(ref, nd):
-                    take(pair, _track_name((features or {}).get("track")), "mix")
-    for column, values in ((WaveItem.ref, want_refs), (WaveItem.nd_song_id, want_songs)):
-        for chunk in _chunks(values):
-            for ref, nd, artist, title in (
-                await s.execute(
-                    select(WaveItem.ref, WaveItem.nd_song_id, WaveItem.artist, WaveItem.title)
-                    .where(column.in_(chunk), func.length(WaveItem.title) > 0)
-                    .order_by(WaveItem.id.desc())
-                )
-            ).all():
-                for pair in targets(ref, nd):
-                    take(pair, (artist, title) if artist and title else None, "wave")
+    for chunk in _chunks(want_refs):
+        for ref, features in (
+            await s.execute(
+                select(MixItem.ref, MixItem.features_json).where(MixItem.ref.in_(chunk)).order_by(MixItem.id.desc())
+            )
+        ).all():
+            for pair in by_ref.get(ref or "", []):
+                take(pair, _track_name((features or {}).get("track")), "mix")
+    for chunk in _chunks(want_songs):
+        for uid, features in (
+            await s.execute(
+                select(Track.uid, MixItem.features_json)
+                .join(MixItem, MixItem.track_id == Track.id)
+                .where(Track.uid.in_(chunk))
+                .order_by(MixItem.id.desc())
+            )
+        ).all():
+            for pair in by_nd.get(uid, []):
+                take(pair, _track_name((features or {}).get("track")), "mix")
+    for chunk in _chunks(want_refs):
+        for ref, artist, title in (
+            await s.execute(
+                select(WaveItem.ref, WaveItem.artist, WaveItem.title)
+                .where(WaveItem.ref.in_(chunk), func.length(WaveItem.title) > 0)
+                .order_by(WaveItem.id.desc())
+            )
+        ).all():
+            for pair in by_ref.get(ref, []):
+                take(pair, (artist, title) if artist and title else None, "wave")
     for ref, nd in missing:
         artist, title, source = found.get((ref, nd), ("", UNKNOWN, "unknown"))
-        out[f"nd:{nd}" if nd else ref or ""] = Name(ref, nd, artist, title, False, source)
+        out[f"lib:{nd}" if nd else ref or ""] = Name(ref, nd, artist, title, False, source)
     return out
 
 
-async def library_songs(s: AsyncSession, songs: Iterable[str]) -> set[str]:
-    """Which of these Navidrome songs the library has (`owned`)."""
-    songs = sorted(set(songs))
+async def library_songs(s: AsyncSession, uids: Iterable[str]) -> set[str]:
+    """Which of these Hub track uids the library has (`owned`)."""
+    uids = sorted(set(uids))
     out: set[str] = set()
-    for chunk in _chunks(songs):
+    for chunk in _chunks(uids):
         out.update(
             x
             for x in (
-                await s.execute(select(Track.nd_song_id).where(Track.nd_song_id.in_(chunk), Track.deleted_at.is_(None)))
+                await s.execute(select(Track.uid).where(Track.uid.in_(chunk), Track.deleted_at.is_(None)))
             ).scalars()
             if x
         )

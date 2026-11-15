@@ -1,7 +1,7 @@
 """Read-only replay over a Postgres copy: python -m app.mixes.evaluate --help.
 
 This evaluates the *history-score proxy*, not an unrecorded recommendation policy.
-No application lifecycle, migrations, catalog, embedder or Navidrome client is started.
+No application lifecycle, migrations, catalog or embedder client is started.
 """
 
 from __future__ import annotations
@@ -73,10 +73,8 @@ def read_snapshot(
         PlayEvent.ts,
         PlayEvent.kind,
         PlayEvent.ref,
-        PlayEvent.nd_song_id,
+        PlayEvent.track_uid,
         PlayEvent.target_type,
-        PlayEvent.nd_album_id,
-        PlayEvent.nd_artist_id,
         PlayEvent.target_data,
         PlayEvent.reverts_event_id,
         PlayEvent.position_s,
@@ -102,7 +100,7 @@ def read_snapshot(
         "Historical state before journal coverage is incomplete; unjournalled removals are unknown.",
         "Current likes/dislikes, onboarding, downloads, aliases and metadata were not imported into the past.",
         "Historical vectors, facets, generator contributions and exposure propensities are not recorded.",
-        "v1 baseline uses corrected B ledger and local events only; phantom ND/network heuristics are not reproduced.",
+        "v1 baseline uses corrected B ledger and local events only; phantom network heuristics are not reproduced.",
     ]
     if missing_received:
         limitations.append("Events without received_at are unavailable in available-at mode.")
@@ -175,7 +173,7 @@ def outcomes(snapshot, *, until, timezone, model, mode):
         at = e.ts - timedelta(microseconds=1)
         past = replace(snapshot, subjects=(), metadata=(), downloads=(), dislikes=(), picked_artists=())
         p = profile_for(past, until=at, timezone=timezone, model=model, mode=mode)
-        t = p.find(ref=e.ref, nd_song_id=e.nd_song_id)
+        t = p.find(ref=e.ref, uid=e.track_uid)
         rows.append(
             {
                 "event_id": e.event_id,

@@ -364,7 +364,7 @@ class ChatTools:
                                 c.title,
                                 c.selected,
                                 _counts(by_coll.get(c.id, [])),
-                                c.playlist_uid or c.nd_playlist_id,
+                                c.playlist_uid,
                             ]
                             for c in colls
                         ],

@@ -148,7 +148,7 @@ async def annotate_tracks(
         if hit is not None:
             o.owned = True
             o.library_track_id = hit.id
-            o.nd_song_id = hit.nd_song_id
+            o.uid = hit.uid
         else:
             o.downloading = t.ref in downloading_refs or fp in downloading_fps
             o.star_pending = t.ref in star_refs

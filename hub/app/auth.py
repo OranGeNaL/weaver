@@ -1,8 +1,7 @@
-"""Local accounts: sign-in by argon2id password, Hub-issued tokens in HttpOnly cookies, per-user Navidrome clients.
+"""Local accounts: sign-in by argon2id password, Hub-issued tokens in HttpOnly cookies.
 
-The Hub is the source of truth for accounts since stage 4: `POST /api/auth/login` never asks Navidrome. The ND
-client of a user is only a transitional proxy channel for `/api/nd/*` and stays empty for accounts created now
-(`user_navidrome` must not be called without credentials).
+The Hub is the source of truth for accounts: `POST /api/auth/login` never asks an external media server and no
+per-user media-server client exists any more.
 """
 
 from __future__ import annotations
@@ -19,10 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import tokens
 from app.config import get_settings
 from app.db import get_session, session_scope
-from app.library.navidrome import NavidromeClient
 from app.models import LoginAttempt, RefreshToken, User, utcnow
 from app.passwords import verify_password
-from app.security import decrypt
 
 log = logging.getLogger(__name__)
 
@@ -237,18 +234,6 @@ async def admin_user(user: User = Depends(current_user)) -> User:
     return user
 
 
-def user_navidrome(user: User) -> NavidromeClient:
-    """Navidrome client acting as this user (transitional ND proxy). The Hub never calls it without credentials."""
-    if not user.nd_username or not user.nd_password_enc:
-        raise HTTPException(409, "Учётная запись Navidrome для этого пользователя не привязана")
-    return NavidromeClient(user.nd_username, decrypt(user.nd_password_enc))
-
-
-def has_navidrome(user: User) -> bool:
-    """Whether the transitional `/api/nd/*` proxy may talk to Navidrome as this user."""
-    return bool(user.nd_username and user.nd_password_enc)
-
-
 CurrentUser = Annotated[User, Depends(current_user)]
 AdminUser = Annotated[User, Depends(admin_user)]
 SessionDep = Annotated[AsyncSession, Depends(get_session, scope="function")]
@@ -262,14 +247,12 @@ __all__ = [
     "clear_auth_cookies",
     "current_family",
     "find_user_for_login",
-    "has_navidrome",
     "login",
     "logout",
     "password_login",
     "refresh_session",
     "set_auth_cookies",
     "sign_in_user",
-    "user_navidrome",
 ]
 
 # backwards-compatible aliases used across the codebase and tests

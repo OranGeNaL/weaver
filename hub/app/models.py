@@ -40,15 +40,12 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    # the local account name (`username`): the Hub owns accounts since stage 4, Navidrome is no longer the source
+    # the local account name (`username`): the Hub owns accounts
     username: Mapped[str] = mapped_column(String(128), unique=True)
     # argon2id; empty for a sign-in-only-by-OIDC account
     password_hash: Mapped[str | None] = mapped_column(Text)
     # set by bootstrap-by-token and by the CLI reset: everything but login/refresh/logout/me/password answers 403
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
-    # the Navidrome account of pre-stage-4 users: kept nullable for the transition, dropped in stage 7
-    nd_username: Mapped[str | None] = mapped_column(String(128), unique=True)
-    nd_password_enc: Mapped[str | None] = mapped_column(Text)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     # Google account linked to this user ("sub" of its ID token); moved into `oauth_links` by the stage-4
@@ -219,7 +216,7 @@ class Artist(Base):
 
 
 class Album(Base):
-    """Album as the Hub manages it. `uid` is written into files as HOMEMUSIC_ALBUM_ID (Navidrome album PID)."""
+    """Album as the Hub manages it. `uid` is written into files as HOMEMUSIC_ALBUM_ID."""
 
     __tablename__ = "albums"
     __table_args__ = (Index("ix_albums_artist_id", "artist_id"),)
@@ -250,7 +247,7 @@ class Track(Base):
     __table_args__ = (Index("ix_tracks_fingerprint", "fingerprint"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    uid: Mapped[str] = mapped_column(String(36), unique=True)  # HOMEMUSIC_TRACK_ID (Navidrome track PID)
+    uid: Mapped[str] = mapped_column(String(36), unique=True)  # HOMEMUSIC_TRACK_ID
     album_id: Mapped[int | None] = mapped_column(ForeignKey("albums.id", ondelete="SET NULL"), index=True)
     path: Mapped[str | None] = mapped_column(String(1024), index=True)  # logical library path (display/export)
     blob_id: Mapped[int | None] = mapped_column(ForeignKey("blobs.id", ondelete="SET NULL"), index=True)
@@ -258,7 +255,6 @@ class Track(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     # catalog integrity: `missing_blob`, cleared by catalog_reconcile
     integrity_issue: Mapped[str | None] = mapped_column(String(32))
-    nd_song_id: Mapped[str | None] = mapped_column(String(64), index=True)
     artist: Mapped[str] = mapped_column(String(512))
     title: Mapped[str] = mapped_column(String(512))
     album: Mapped[str | None] = mapped_column(String(512))
@@ -514,9 +510,6 @@ class ImportCollection(Base):
     # the Hub playlist this collection became (source of truth since stage 5)
     playlist_uid: Mapped[str | None] = mapped_column(String(36))
     track_uids: Mapped[list[Any]] = mapped_column(JSONB, default=list)  # what the Hub playlist holds now
-    # deprecated aliases until stage 7: the same uid and the same track uids
-    nd_playlist_id: Mapped[str | None] = mapped_column(String(64))
-    nd_song_ids: Mapped[list[Any]] = mapped_column(JSONB, default=list)
 
 
 class ImportItem(Base):
@@ -557,14 +550,12 @@ class SourceMap(Base):
 
 
 class PlayEvent(Base):
-    """One listening event of a user (MIXES.md 3.2): start/skip/finish of a track, ♥, «Не нравится». From the app,
-    the PWA's own player, or Navidrome's scrobble history (`client` "navidrome")."""
+    """One listening event of a user (MIXES.md 3.2): start/skip/finish of a track, ♥, «Не нравится»."""
 
     __tablename__ = "play_events"
     __table_args__ = (
         UniqueConstraint("user_id", "event_id", name="uq_play_events_user_event"),
         Index("ix_play_events_user_ts", "user_id", "ts"),
-        Index("ix_play_events_song", "nd_song_id"),
         Index("ix_play_events_user_target_ts", "user_id", "target_type", "ts", "id"),
         Index("ix_play_events_playback", "user_id", "device_id", "playback_id"),
         Index("ix_play_events_user_launch", "user_id", "launch_id"),
@@ -577,13 +568,9 @@ class PlayEvent(Base):
     kind: Mapped[str] = mapped_column(String(16))  # start/skip/finish/like/unlike/dislike/undislike
     ref: Mapped[str | None] = mapped_column(String(64))  # catalog track
     track_uid: Mapped[str | None] = mapped_column(String(36), index=True)  # the Hub track
-    nd_song_id: Mapped[str | None] = mapped_column(String(64))  # Navidrome song (deprecated alias until stage 7)
     target_type: Mapped[str] = mapped_column(String(16), default="track", server_default="track")
-    nd_album_id: Mapped[str | None] = mapped_column(String(64), index=True)
-    nd_artist_id: Mapped[str | None] = mapped_column(String(64), index=True)
     target_data: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     reverts_event_id: Mapped[str | None] = mapped_column(String(64))
-    mirror_pending: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     playback_id: Mapped[str | None] = mapped_column(String(64))
     device_id: Mapped[str | None] = mapped_column(String(64))
     listened_ms: Mapped[int | None] = mapped_column()
@@ -595,7 +582,7 @@ class PlayEvent(Base):
     position_s: Mapped[float | None] = mapped_column(Float)
     duration_s: Mapped[float | None] = mapped_column(Float)
     context: Mapped[str | None] = mapped_column(String(128))  # mix:<id>, wave:<session>, album, playlist, search...
-    client: Mapped[str] = mapped_column(String(32))  # app/<version>, pwa, navidrome
+    client: Mapped[str] = mapped_column(String(32))  # app/<version>, pwa
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     # analytics (INSIGHTS.md 6.5): every event of one launched list shares `launch_id` ("wave:<sid>" for a wave);
     # `launch_origin` — where it was launched. The taste profile never reads them.
@@ -614,21 +601,19 @@ class FavoriteSubject(Base):
     canonical_key: Mapped[str] = mapped_column(String(128))
     ref: Mapped[str | None] = mapped_column(String(64), index=True)
     uid: Mapped[str | None] = mapped_column(String(36), index=True)  # the Hub track/album/artist uid
-    nd_id: Mapped[str | None] = mapped_column(String(64), index=True)
     aliases: Mapped[list[Any]] = mapped_column(JSONB, default=list)
     data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     enriched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class Dislike(Base):
-    """«Не нравится»: a track (`ref` and/or `nd_song_id`) or an artist (`artist_ref`) the user doesn't want to hear."""
+    """«Не нравится»: a track (`ref`) or an artist (`artist_ref`) the user doesn't want to hear."""
 
     __tablename__ = "dislikes"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     ref: Mapped[str | None] = mapped_column(String(64))
-    nd_song_id: Mapped[str | None] = mapped_column(String(64))
     artist_ref: Mapped[str | None] = mapped_column(String(64))
     artist: Mapped[str | None] = mapped_column(String(512))  # for showing the list
     title: Mapped[str | None] = mapped_column(String(512))
@@ -644,7 +629,6 @@ class MixSettings(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     mode: Mapped[str] = mapped_column(String(16), default="normal")  # normal/favorites/discover
     mix_hour: Mapped[int] = mapped_column(Integer, default=5)  # local time (`Settings.timezone`)
-    nd_playlist_id: Mapped[str | None] = mapped_column(String(64))  # deprecated alias until stage 7
     playlist_uid: Mapped[str | None] = mapped_column(String(36))  # «Микс дня» in the Hub: one uid for good
     # onboarding: [{ref, name}] the user picked on «Что вы слушаете?» (a new user without history)
     artists_json: Mapped[list[Any]] = mapped_column(JSONB, default=list)
@@ -663,7 +647,6 @@ class Mix(Base):
     title: Mapped[str] = mapped_column(String(256))
     description: Mapped[str] = mapped_column(Text, default="")
     mode: Mapped[str] = mapped_column(String(16))
-    nd_playlist_id: Mapped[str | None] = mapped_column(String(64))  # deprecated alias until stage 7
     playlist_uid: Mapped[str | None] = mapped_column(String(36))  # the Hub playlist of the mix
     status: Mapped[str] = mapped_column(String(16), default="active")  # active/closed
     batch_id: Mapped[int | None] = mapped_column(ForeignKey("download_batches.id", ondelete="SET NULL"))
@@ -683,7 +666,6 @@ class MixItem(Base):
     state: Mapped[str] = mapped_column(String(16), default="active")  # active/reserve/failed
     familiar: Mapped[bool] = mapped_column(Boolean, default=False)
     ref: Mapped[str | None] = mapped_column(String(64), index=True)  # catalog track
-    nd_song_id: Mapped[str | None] = mapped_column(String(64), index=True)
     track_id: Mapped[int | None] = mapped_column(ForeignKey("tracks.id", ondelete="SET NULL"), index=True)
     generator: Mapped[str] = mapped_column(String(32))  # the strongest one: favorites/stash/ytm_radio/...
     score: Mapped[float] = mapped_column(Float, default=0)
@@ -707,7 +689,7 @@ class WaveSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     mode: Mapped[str] = mapped_column(String(16), default="normal")  # normal/favorites/discover, as a mix's
-    seed_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB)  # {ref|nd_song_id|artist_ref, title}: «по треку»
+    seed_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB)  # {ref|artist_ref, title}: «по треку»
     batch_id: Mapped[int | None] = mapped_column(ForeignKey("download_batches.id", ondelete="SET NULL"))
     state_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     # analytics (INSIGHTS.md 6.2–6.3): where the wave was started, by what client, the raw request; a session the
@@ -736,8 +718,6 @@ class WaveItem(Base):
     handed_count: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     position: Mapped[int] = mapped_column(Integer)  # the order of first hand-outs in the session, from 0
     ref: Mapped[str] = mapped_column(String(64))
-    nd_song_id: Mapped[str | None] = mapped_column(String(64))
-    key: Mapped[str] = mapped_column(String(64))  # the vector key (nd:<song> or the ref)
     artist: Mapped[str] = mapped_column(String(256), default="", server_default="")
     title: Mapped[str] = mapped_column(String(256), default="", server_default="")
     generator: Mapped[str] = mapped_column(String(32))  # `wave.top_generator`
@@ -760,7 +740,7 @@ class SmartSession(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    context: Mapped[str] = mapped_column(String(80))  # "liked" or "playlist:<Navidrome id>"
+    context: Mapped[str] = mapped_column(String(80))  # "liked" or "playlist:<uid>"
     title: Mapped[str | None] = mapped_column(String(256))  # the playlist's name as the client sent it
     own_count: Mapped[int] = mapped_column(Integer, default=0)
     per_rec: Mapped[int] = mapped_column(Integer, default=3)  # own songs per recommendation
@@ -785,7 +765,6 @@ class SmartItem(Base):
     position: Mapped[int] = mapped_column(Integer)  # the order of hand-outs in the session, from 0
     slot: Mapped[int] = mapped_column(Integer)  # which recommendation place of the list it took
     ref: Mapped[str] = mapped_column(String(64))
-    nd_song_id: Mapped[str | None] = mapped_column(String(64))
     fingerprint: Mapped[str] = mapped_column(String(1024), default="", server_default="")
     artist: Mapped[str] = mapped_column(String(256), default="", server_default="")
     title: Mapped[str] = mapped_column(String(256), default="", server_default="")
@@ -810,7 +789,6 @@ class SmartHidden(Base):
     context: Mapped[str] = mapped_column(String(80))
     fingerprint: Mapped[str] = mapped_column(String(1024))
     ref: Mapped[str | None] = mapped_column(String(64))
-    nd_song_id: Mapped[str | None] = mapped_column(String(64))
     artist: Mapped[str] = mapped_column(String(256), default="", server_default="")
     title: Mapped[str] = mapped_column(String(256), default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

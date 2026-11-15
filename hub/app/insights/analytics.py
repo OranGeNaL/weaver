@@ -58,12 +58,7 @@ def source(a: Attempt) -> str:
 
 def _item_of(info, a: Attempt):
     return next(
-        (
-            i
-            for i in info.items
-            if i.state == "active"
-            and a.aliases & {x for x in (i.ref, f"nd:{i.nd_song_id}" if i.nd_song_id else None) if x}
-        ),
+        (i for i in info.items if i.state == "active" and a.aliases & {x for x in (i.ref,) if x}),
         None,
     )
 
@@ -133,7 +128,7 @@ async def listening(
     def inside(ts: datetime | None) -> bool:
         return ts is not None and begin <= ts < stop
 
-    players = [a for a in h.attempts if not a.scrobble and a.client != "navidrome"]
+    players = [a for a in h.attempts if not a.scrobble]
     in_period = [a for a in players if inside(a.started_at)]
     heard = [a for a in h.attempts if inside(a.heard_at)]
     first_heard: dict[str, datetime] = {}
@@ -142,11 +137,11 @@ async def listening(
         if a.heard_at and (a.key not in first_heard or a.heard_at < first_heard[a.key]):
             first_heard[a.key], first_attempt[a.key] = a.heard_at, a
     heard_keys = {a.key: a for a in h.attempts if a.heard_at}
-    name_of = await names.resolve(s, [(a.ref, a.nd_song_id) for a in heard_keys.values()])
+    name_of = await names.resolve(s, [(a.ref, a.uid) for a in heard_keys.values()])
 
     def name(a: Attempt) -> names.Name:
-        return name_of.get(f"nd:{a.nd_song_id}" if a.nd_song_id else a.ref or "") or names.Name(
-            a.ref, a.nd_song_id, "", names.UNKNOWN, False, "unknown"
+        return name_of.get(f"lib:{a.uid}" if a.uid else a.ref or "") or names.Name(
+            a.ref, a.uid, "", names.UNKNOWN, False, "unknown"
         )
 
     artist_first: dict[str, datetime] = {}
@@ -330,7 +325,7 @@ async def _mix_block(s: AsyncSession, h: History, user: User, period_launches: l
             if m.kind == "like":
                 al = launches.mark_aliases(h, m)
                 if item := next(
-                    (i for i in info.items if i.state == "active" and h.aliases.of(i.ref, i.nd_song_id) & al), None
+                    (i for i in info.items if i.state == "active" and h.aliases.of(i.ref, None) & al), None
                 ):
                     liked[item.generator] += 1
     offered = Counter(i.generator for m in built for i in m.items if i.state == "active")
@@ -362,12 +357,12 @@ def _wave_block(h: History, inside) -> dict:
         items = h.wave_items.get(x.wave_id or "", [])
         offered.update(i.generator for i in items)
         for a in x.attempts:
-            if item := next((i for i in items if a.aliases & (h.aliases.of(i.ref, i.nd_song_id) | {i.key})), None):
+            if item := next((i for i in items if a.aliases & h.aliases.of(i.ref, None)), None):
                 matched.append((item.generator, a))
         for m in x.marks:
             if m.kind == "like" and (
                 item := next(
-                    (i for i in items if launches.mark_aliases(h, m) & (h.aliases.of(i.ref, i.nd_song_id) | {i.key})),
+                    (i for i in items if launches.mark_aliases(h, m) & h.aliases.of(i.ref, None)),
                     None,
                 )
             ):
@@ -391,7 +386,7 @@ def _wave_block(h: History, inside) -> dict:
 
 
 def _quality(h: History, plays, period_launches: list[Launch], inside) -> dict:
-    player_rows = [r for r in plays if not r.scrobble and r.client != "navidrome"]
+    player_rows = [r for r in plays if not r.scrobble]
     return {
         "events_without_context": sum(r.context is None for r in player_rows),
         "events_without_playback": sum(r.playback_id is None for r in player_rows),

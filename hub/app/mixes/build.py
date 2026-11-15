@@ -72,7 +72,7 @@ class Cand:
     track: CatalogTrack
     gens: dict[str, int] = field(default_factory=dict)  # generator -> best position in its list
     familiar: bool = False
-    nd_song_id: str | None = None
+    uid: str | None = None  # the library song, when the library has it
     library_track_id: int | None = None
     sim: float | None = None
     score: float = 0.0
@@ -83,7 +83,7 @@ class Cand:
     @property
     def key(self) -> str:
         """The audio vector key: the library song, else the catalog track."""
-        return embedder.song_key(self.nd_song_id) if self.nd_song_id else self.track.ref
+        return embedder.song_key(self.uid) if self.uid else self.track.ref
 
     @property
     def artist(self) -> str:
@@ -147,11 +147,11 @@ def taste_track(t: TasteTrack) -> CatalogTrack | None:
             artists=[t.artist],
             duration_s=t.duration_s,
         )
-    if t.nd_song_id and t.artist:
+    if t.uid and t.artist:
         return CatalogTrack(
-            ref=f"nd:{t.nd_song_id}",
-            source="nd",
-            id=t.nd_song_id,
+            ref=f"lib:{t.uid}",
+            source="lib",
+            id=t.uid,
             title=t.title,
             artist=t.artist,
             artists=[t.artist],
@@ -429,39 +429,35 @@ def merge(results: list[GenResult]) -> dict[str, Cand]:
 
 
 async def link_library(cands: dict[str, Cand]) -> None:
-    """Which candidates the library has (its Navidrome song): those need no download."""
+    """Which candidates the library has (its Hub uid): those need no download."""
     from app.library.owned import annotate_tracks
 
     dz = [c for c in cands.values() if c.track is not None and c.track.source == "dz"]
     async with session_scope() as s:
         for c, o in zip(dz, await annotate_tracks(s, [c.track for c in dz]), strict=True):
-            if o.owned and o.nd_song_id:
-                c.nd_song_id, c.library_track_id = o.nd_song_id, o.library_track_id
-        nd: dict[str, Cand] = {}
+            if o.owned and o.uid:
+                c.uid, c.library_track_id = o.uid, o.library_track_id
+        lib: dict[str, Cand] = {}
         for c in cands.values():
-            if c.track is not None and c.track.source == "nd" and c.track.id:
-                nd[c.track.id] = c
-        for tid, song in (
-            await s.execute(select(Track.id, Track.nd_song_id).where(Track.nd_song_id.in_(list(nd))))
-        ).all():
-            if not song:
-                continue
-            target = nd.get(song)
+            if c.track is not None and c.track.source == "lib" and c.track.id:
+                lib[c.track.id] = c
+        for tid, uid in (await s.execute(select(Track.id, Track.uid).where(Track.uid.in_(list(lib))))).all():
+            target = lib.get(uid)
             if target is not None:
-                target.nd_song_id, target.library_track_id = song, tid
+                target.uid, target.library_track_id = uid, tid
 
 
 def keep_reason(c: Cand, p: Profile, cfg) -> str | None:
     """Return the first rejection reason, or None when kept; sets `familiar`."""
     t = c.track
     ref = t.ref if t.source == "dz" else None
-    if p.disliked(ref=ref, nd_song_id=c.nd_song_id, artist=t.artist, artist_ref=t.artist_ref):
+    if p.disliked(ref=ref, uid=c.uid, artist=t.artist, artist_ref=t.artist_ref):
         return "disliked"
     if version_kind(split_version(t.title)[1]) in BANNED_VERSIONS:
         return "version"
     if t.duration_s and not cfg.min_duration_s <= t.duration_s <= cfg.max_duration_s:
         return "duration"
-    known = p.find(ref=ref, nd_song_id=c.nd_song_id, fp=fingerprint(t.artist, t.title))
+    known = p.find(ref=ref, uid=c.uid, fp=fingerprint(t.artist, t.title))
     if isinstance(p, V2Profile):
         c.familiar = bool(known and known.familiar) or p.artist_listens.get(c.artist, 0) > UNFAMILIAR_MAX_LISTENS
         if known and known.familiar and known.last_heard and known.last_heard >= p.now - timedelta(days=RECENT_DAYS):
@@ -494,7 +490,7 @@ def score_parts(c: Cand, weights: dict[str, float], profile: Profile | None = No
     gens = sum(weights.get(g, 0.5) / math.log2(pos + 2) for g, pos in c.gens.items())
     pop = POP_WEIGHT * popularity(c.track.rank)
     if isinstance(profile, V2Profile):
-        t = profile.find(ref=c.track.ref, nd_song_id=c.nd_song_id, fp=fingerprint(c.track.artist, c.track.title))
+        t = profile.find(ref=c.track.ref, uid=c.uid, fp=fingerprint(c.track.artist, c.track.title))
         track_penalty = 0.5 * max(t.score, -4) if t and t.score < 0 else 0
         artist_score = profile.artists.get(c.artist, 0)
         artist_penalty = 0.3 * max(artist_score, -3) if artist_score < 0 else 0
@@ -524,7 +520,7 @@ def score(c: Cand, weights: dict[str, float], profile: Profile | None = None) ->
 def known_of(c: Cand, p: Profile) -> dict[str, Any] | None:
     """What the profile knew of a candidate when the mix was built (none: an unknown track)."""
     t = c.track
-    known = p.find(ref=t.ref if t.source == "dz" else None, nd_song_id=c.nd_song_id, fp=fingerprint(t.artist, t.title))
+    known = p.find(ref=t.ref if t.source == "dz" else None, uid=c.uid, fp=fingerprint(t.artist, t.title))
     if known is None:
         return None
     v2 = isinstance(p, V2Profile)
@@ -551,9 +547,9 @@ async def library_items() -> list[dict[str, str]]:
     async with session_scope() as s:
         rows = (
             await s.execute(
-                select(Track.nd_song_id, Blob.sha256)
+                select(Track.uid, Blob.sha256)
                 .join(Blob, Blob.id == Track.blob_id)
-                .where(Track.nd_song_id.is_not(None), Track.deleted_at.is_(None), Blob.status == "committed")
+                .where(Track.deleted_at.is_(None), Blob.status == "committed")
             )
         ).all()
     b = storage_backend()

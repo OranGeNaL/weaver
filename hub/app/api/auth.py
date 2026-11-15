@@ -47,7 +47,6 @@ async def me_out(s: AsyncSession, user: User) -> MeOut:
         id=user.id,
         username=user.username,
         is_admin=user.is_admin,
-        public_music_url=settings.public_music_url,
         public_hub_url=settings.public_hub_url,
         google_email=user.google_email,
         email=user.email,
@@ -71,7 +70,6 @@ async def options():
         invites=True,
         email_signup=mailer.configured(),
         google_client_id=settings.google_client_id or None,
-        music_url=settings.public_music_url,
         oidc_providers=[OidcProviderOut(name=p.name, title=p.title) for p in oidc.enabled()],
     )
 

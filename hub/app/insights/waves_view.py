@@ -30,9 +30,9 @@ def seed_kind(w: WaveSession | None) -> str:
             return "track_artist"
         if (req.get("ref") or "").startswith("file:"):
             return "file"
-        if req.get("ref") or req.get("nd_song_id"):
+        if req.get("ref") or req.get("song_uid"):
             return "track"
-        if req.get("nd_artist_id"):
+        if req.get("artist_uid"):
             return "library_artist"
         if req.get("artist_ref"):
             return "artist"
@@ -43,7 +43,7 @@ def seed_kind(w: WaveSession | None) -> str:
         return "file"
     if seed.get("ref"):
         return "track"
-    if seed.get("nd_artist_id"):
+    if seed.get("artist_uid"):
         return "library_artist"
     if seed.get("artist_ref"):
         return "artist"
@@ -59,9 +59,9 @@ def _seed(w: WaveSession | None) -> dict[str, Any] | None:
         "title": seed.get("title"),
         "artist": seed.get("artist"),
         "ref": ref,
-        "nd_song_id": req.get("nd_song_id") or (ref[3:] if ref and ref.startswith("nd:") else None),
+        "song_uid": req.get("song_uid") or (ref[4:] if ref and ref.startswith("lib:") else None),
         "artist_ref": seed.get("artist_ref"),
-        "nd_artist_id": seed.get("nd_artist_id"),
+        "artist_uid": seed.get("artist_uid"),
     }
 
 
@@ -141,18 +141,14 @@ async def detail(s: AsyncSession, h: History, sid: str) -> dict[str, Any] | None
     state = (w.state_json or {}) if w else {}
     items = h.wave_items.get(sid, [])
     events = sorted([e for a in launch.attempts for e in a.events] + launch.marks, key=lambda e: (e.ts, e.id))
-    pairs = [(i.ref, i.nd_song_id) for i in items] + [(e.ref, e.nd_song_id) for e in events]
-    known: dict[tuple[str | None, str | None], tuple[str, str]] = {
-        (i.ref, i.nd_song_id): (i.artist, i.title) for i in items
-    }
+    pairs = [(i.ref, None) for i in items] + [(e.ref, e.track_uid) for e in events]
+    known: dict[tuple[str | None, str | None], tuple[str, str]] = {(i.ref, None): (i.artist, i.title) for i in items}
     name_of = await names.resolve(s, pairs, known)
 
-    def name(ref, nd):
-        n = name_of.get(f"nd:{nd}" if nd else ref or "")
+    def name(ref, uid):
+        n = name_of.get(f"lib:{uid}" if uid else ref or "")
         return (
-            n.out()
-            if n
-            else {"key": ref, "ref": ref, "nd_song_id": nd, "artist": "", "title": names.UNKNOWN, "owned": False}
+            n.out() if n else {"key": ref, "ref": ref, "uid": uid, "artist": "", "title": names.UNKNOWN, "owned": False}
         )
 
     return {
@@ -164,7 +160,7 @@ async def detail(s: AsyncSession, h: History, sid: str) -> dict[str, Any] | None
         "seeds_used": state.get("seeds_used"),
         "items": [
             {
-                **name(i.ref, i.nd_song_id),
+                **name(i.ref, None),
                 "position": i.position,
                 "first_handed_at": i.first_handed_at,
                 "last_handed_at": i.last_handed_at,
@@ -176,7 +172,7 @@ async def detail(s: AsyncSession, h: History, sid: str) -> dict[str, Any] | None
                 "score": i.score,
                 "sim": i.sim,
                 "value": i.value,
-                **launches.outcome(launch.attempts, launch.marks, h.aliases.of(i.ref, i.nd_song_id) | {i.key}),
+                **launches.outcome(launch.attempts, launch.marks, h.aliases.of(i.ref, None)),
             }
             for i in items
         ],
@@ -184,7 +180,7 @@ async def detail(s: AsyncSession, h: History, sid: str) -> dict[str, Any] | None
             {
                 "ts": e.ts,
                 "kind": e.kind,
-                "track": name(e.ref, e.nd_song_id),
+                "track": name(e.ref, e.track_uid),
                 "position_s": e.position_s,
                 "client": e.client,
             }
